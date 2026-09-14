@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from threading import Lock
 from uuid import uuid4
 
 
@@ -103,7 +104,8 @@ class SQLiteIntentStore:
     """SQLite test/dev implementation of the atomic intent and outbox contract."""
 
     def __init__(self, path: str | Path) -> None:
-        self.connection = sqlite3.connect(str(path))
+        self._lock = Lock()
+        self.connection = sqlite3.connect(str(path), check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(
             """
@@ -123,7 +125,8 @@ class SQLiteIntentStore:
         self.connection.commit()
 
     def close(self) -> None:
-        self.connection.close()
+        with self._lock:
+            self.connection.close()
 
     def persist(self, intent: Intent, verdict: Verdict) -> Status:
         status = Status.APPROVED if verdict.allowed else Status.RISK_REJECTED
@@ -131,7 +134,7 @@ class SQLiteIntentStore:
         payload["source"] = intent.source.value
         payload["created_at"] = intent.created_at.isoformat()
         timestamp = now().isoformat()
-        with self.connection:
+        with self._lock, self.connection:
             self.connection.execute(
                 """INSERT INTO order_intents(
                     intent_id, correlation_id, source, strategy_id, run_id, payload_json,
@@ -151,13 +154,15 @@ class SQLiteIntentStore:
         return status
 
     def status(self, intent_id: str) -> Status:
-        row = self.connection.execute("SELECT status FROM order_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        with self._lock:
+            row = self.connection.execute("SELECT status FROM order_intents WHERE intent_id=?", (intent_id,)).fetchone()
         if row is None:
             raise KeyError(intent_id)
         return Status(row["status"])
 
     def outbox_state(self, intent_id: str) -> str | None:
-        row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=?", (intent_id,)).fetchone()
+        with self._lock:
+            row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=?", (intent_id,)).fetchone()
         return str(row["state"]) if row is not None else None
 
     def transition(self, intent_id: str, target: Status) -> None:
@@ -166,7 +171,7 @@ class SQLiteIntentStore:
             raise ValueError("UNKNOWN orders require reconciliation; they cannot be resent")
         if current is Status.RECONCILING and target is Status.APPROVED:
             raise ValueError("reconciliation cannot enqueue a fresh order")
-        with self.connection:
+        with self._lock, self.connection:
             self.connection.execute(
                 "UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?",
                 (target.value, now().isoformat(), intent_id),
@@ -177,7 +182,7 @@ class SQLiteIntentStore:
         uncertain = tuple(status.value for status in _UNCERTAIN)
         marks = ",".join("?" for _ in uncertain)
         timestamp = now().isoformat()
-        with self.connection:
+        with self._lock, self.connection:
             cursor = self.connection.execute(
                 f"UPDATE order_intents SET status=?, updated_at=? WHERE status IN ({marks})",
                 (Status.UNKNOWN.value, timestamp, *uncertain),

@@ -10,6 +10,8 @@ from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
+
 
 def health_document() -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
@@ -94,6 +96,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except URLError:
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
+    def _intent(self) -> Intent:
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 8_192:
+            raise ValueError("invalid request body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError("intent body must be an object")
+        return Intent(
+            source=Source(value["source"]),
+            account_id=str(value["account_id"]),
+            symbol=str(value["symbol"]),
+            side=str(value["side"]),
+            quantity=int(value["quantity"]),
+            limit_price=str(value["limit_price"]),
+            strategy_id=str(value["strategy_id"]) if value.get("strategy_id") else None,
+            run_id=str(value["run_id"]) if value.get("run_id") else None,
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
@@ -108,6 +128,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.partition("?")[0] == "/api/v1/autotrade/intents":
+            try:
+                intent = self._intent()
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid autotrade intent"})
+                return
+            coordinator = getattr(self.server, "order_coordinator")
+            status, verdict = coordinator.accept(intent)
+            self._json(
+                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
+                {
+                    "intent_id": intent.intent_id,
+                    "correlation_id": intent.correlation_id,
+                    "status": status.value,
+                    "risk_reasons": list(verdict.reasons),
+                },
+            )
+            return
         self._json(HTTPStatus.FORBIDDEN, {"message": "Autotrade mutation is disabled"})
 
     do_PUT = do_POST
@@ -122,8 +160,15 @@ def create_server(
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     server.upstream_origin = (upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN", "http://127.0.0.1:21322")).rstrip("/")  # type: ignore[attr-defined]
+    store = SQLiteIntentStore(os.getenv("AUTOTRADE_GATEWAY_DB", ":memory:"))
+    server.order_store = store  # type: ignore[attr-defined]
+    server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
     return server
 
 
 if __name__ == "__main__":
-    create_server().serve_forever()
+    running_server = create_server()
+    try:
+        running_server.serve_forever()
+    finally:
+        getattr(running_server, "order_store").close()

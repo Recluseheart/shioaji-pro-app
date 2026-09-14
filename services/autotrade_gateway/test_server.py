@@ -44,6 +44,7 @@ class GatewayServerTest(unittest.TestCase):
         self.server.shutdown()
         self.thread.join()
         self.server.server_close()
+        getattr(self.server, "order_store").close()
         self.upstream.shutdown()
         self.upstream_thread.join()
         self.upstream.server_close()
@@ -66,6 +67,20 @@ class GatewayServerTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             urlopen(Request(f"{self.base}/api/v1/order/place_order", method="POST"))
         self.assertEqual(raised.exception.code, 403)
+
+    def test_intent_ingress_records_a_disarmed_risk_rejection_without_outbox(self) -> None:
+        body = json.dumps({
+            "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 409)
+        receipt = json.load(raised.exception)
+        self.assertEqual(receipt["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        store = getattr(self.server, "order_store")
+        self.assertEqual(store.outbox_state(receipt["intent_id"]), None)
 
     def test_read_proxy_preserves_path_but_never_forwards_browser_credentials(self) -> None:
         request = Request(

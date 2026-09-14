@@ -3,7 +3,9 @@
 目前 Gateway 是 Shioaji Pro Web UI 的唯一 Autotrade API 入口雛形。它固定
 在 loopback 上運行，沒有 Shioaji session、API key、CA 或任何正式交易權限。
 所有 HTTP mutation（POST、PUT、PATCH、DELETE）都回應 `403`；這是預期行為，
-不是可繞過的暫時限制。
+不是可繞過的暫時限制。唯一例外是 `POST /api/v1/autotrade/intents`：它是
+broker-free 的稽核 ingress，在目前固定 `DISARMED` 的設定下只會持久化
+`RISK_REJECTED` receipt，絕不建立 outbox 或觸碰 broker。
 
 ## 啟動唯讀開發環境
 
@@ -41,6 +43,10 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 等可能已送達 broker 的狀態都必須變為 `UNKNOWN`。`UNKNOWN` 只能進入
 `RECONCILING`，不得直接建立新的 outbox 或重送。這項限制同時適用手動與策略
 單。
+
+開發時 ingress 預設使用 process-local SQLite memory store；如需保留隔離測試
+資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。它不是 production database，
+也不得指向既有 Autotrade database 或 backup。
 
 ## 現在尚未具備的能力
 

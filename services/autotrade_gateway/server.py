@@ -13,6 +13,33 @@ from urllib.request import Request, urlopen
 from .order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
 
 
+# These GET routes have no order-mutation semantics in the Shioaji HTTP
+# contract.  POST-shaped read APIs and SSE need dedicated adapters: forwarding
+# them generically would blur the only-mutation-owner boundary.
+READ_PROXY_EXACT_PATHS = frozenset({
+    "/api/v1/health",
+    "/api/v1/info",
+    "/api/v1/watchlist",
+})
+READ_PROXY_PREFIXES = (
+    "/api/v1/auth/accounts",
+    "/api/v1/auth/ca_expiretime",
+    "/api/v1/auth/usage",
+    "/api/v1/data/",
+    "/api/v1/monitor/",
+    "/api/v1/order/trades",
+    "/api/v1/order/combotrades",
+    "/api/v1/order/stock_reserve_summary",
+    "/api/v1/order/stock_reserve_detail",
+    "/api/v1/order/earmarking_detail",
+)
+
+
+def is_allowed_read_path(path: str) -> bool:
+    """Return whether a path belongs to the deliberately narrow GET proxy."""
+    return path in READ_PROXY_EXACT_PATHS or path.startswith(READ_PROXY_PREFIXES)
+
+
 def health_document() -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
     return {
@@ -123,8 +150,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/autotrade/overview":
             self._json(HTTPStatus.OK, overview_document(getattr(self.server, "order_store")))
             return
-        if path.startswith("/api/"):
+        if is_allowed_read_path(path):
             self._proxy_read()
+            return
+        if path.startswith("/api/"):
+            self._json(HTTPStatus.NOT_FOUND, {"message": "read route not permitted"})
             return
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
 

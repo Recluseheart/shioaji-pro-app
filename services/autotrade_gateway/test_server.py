@@ -84,17 +84,23 @@ class GatewayServerTest(unittest.TestCase):
 
     def test_read_proxy_preserves_path_but_never_forwards_browser_credentials(self) -> None:
         request = Request(
-            f"{self.base}/api/v1/contracts?code=2330",
+            f"{self.base}/api/v1/data/contracts?code=2330",
             headers={"Accept": "application/json", "Authorization": "Bearer browser-secret", "Cookie": "session=browser-secret"},
         )
         with urlopen(request) as response:
             self.assertEqual(response.status, 200)
-            self.assertEqual(json.load(response), {"path": "/api/v1/contracts?code=2330"})
+            self.assertEqual(json.load(response), {"path": "/api/v1/data/contracts?code=2330"})
         path, headers = ReadServiceHandler.received[-1]
-        self.assertEqual(path, "/api/v1/contracts?code=2330")
+        self.assertEqual(path, "/api/v1/data/contracts?code=2330")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Authorization", headers)
         self.assertNotIn("Cookie", headers)
+
+    def test_unlisted_read_route_is_not_forwarded_to_the_sidecar(self) -> None:
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(f"{self.base}/api/v1/order/place_order")
+        self.assertEqual(raised.exception.code, 404)
+        self.assertEqual(ReadServiceHandler.received, [])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,14 @@ it talks directly to your local `shioaji server`.
 以 Shioaji HTTP API 打造的專業交易終端：即時行情、K 線、五檔、閃電下單、
 圖表點價下單、停損停利觸價單、可拖拉的自訂版面。
 
+> Autotrade refactor branch status: this branch adds a loopback-only,
+> fail-closed Autotrade Gateway and seven observation panels. The Gateway is
+> `SIM` / `DISARMED`, has no broker session or CA, and rejects every mutation.
+> Do not use the upstream manual order controls as a substitute for the new
+> common Gateway path; migrating those controls through durable intent, risk,
+> outbox and the single execution worker remains in progress. See
+> [Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md).
+
 **介面 100% 開源** — UI、行情串流、下單鏈路全部都在這個 repo，
 clone 下來就能 build 出完整的 Web 版終端。桌面版外殼（Tauri）、
 AI Agent 與策略回測為專屬模組，直接到 Releases 下載安裝檔即可使用。
@@ -165,6 +173,13 @@ pnpm dev
 
 開啟 [http://localhost:5173](http://localhost:5173) —— dev server 會把
 `/api` 代理到 `localhost:8080`。
+
+### Autotrade Gateway development（安全唯讀）
+
+不要啟動交易伺服器也可驗證自動交易觀察 UI：依
+[Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md) 啟動 Gateway 和
+開發伺服器，然後在面板庫選擇「自動交易」類別或套用三個 Autotrade 預設版面。
+此路徑沒有 API secret、broker session、CA 或任何可用 order mutation。
 
 ## Deploy as a Shioaji custom app 部署為內建 App
 

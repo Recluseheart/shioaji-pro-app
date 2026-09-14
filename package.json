@@ -8,6 +8,7 @@
         "dev": "vite",
         "build": "tsc -b && vite build",
         "test": "vitest run",
+        "test:e2e": "playwright test",
         "preview": "vite preview"
     },
     "dependencies": {
@@ -33,6 +34,7 @@
         "remark-gfm": "^4.0.1"
     },
     "devDependencies": {
+        "@playwright/test": "^1.63.0",
         "@tauri-apps/cli": "^2.11.2",
         "@types/d3-hierarchy": "^3.1.7",
         "@types/d3-sankey": "^0.12.5",

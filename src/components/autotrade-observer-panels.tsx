@@ -58,6 +58,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
     }, []);
     const copy = PANEL_COPY[kind];
     const count = overview ? countFor(kind, overview) : 0;
+    const displayedOrders = kind === 'reconciliation' ? overview?.reconciliation : overview?.orders;
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>{copy.title}</strong>
@@ -67,6 +68,16 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <Badge label='項目' value={String(count)} tone='#8892a6' />
             </div>
             <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{error ?? copy.empty}</div>
+            {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
+                <div style={{ display: 'grid', gap: 5 }}>
+                    {displayedOrders.map((item) => {
+                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string };
+                        return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
+                            {order.source} · {order.status} · {order.correlation_id?.slice(0, 8)}
+                        </div>;
+                    })}
+                </div>
+            )}
             {kind === 'strategy_control' && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button disabled title='Gateway 目前固定 DISARMED'>驗證策略</button>

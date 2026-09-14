@@ -12,7 +12,7 @@ export type AutotradeOverview = {
     health: AutotradeHealth;
     strategies: unknown[];
     signals: unknown[];
-    orders: unknown[];
+    orders: AutotradeOrderObservation[];
     risk: { mode: string; limits_source: string; last_verdict: unknown };
     reconciliation: unknown[];
     performance: {
@@ -21,6 +21,16 @@ export type AutotradeOverview = {
         realized_pnl: string;
         unrealized_pnl: string;
     };
+};
+
+export type AutotradeOrderObservation = {
+    intent_id: string;
+    correlation_id: string;
+    source: string;
+    status: string;
+    strategy_id: string | null;
+    run_id: string | null;
+    updated_at: string;
 };
 
 const fallback: AutotradeHealth = {
@@ -62,7 +72,12 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
         signals: list('signals'),
-        orders: list('orders'),
+        orders: list('orders').flatMap((item): AutotradeOrderObservation[] => {
+            if (!item || typeof item !== 'object') return [];
+            const order = item as Record<string, unknown>;
+            if (typeof order.intent_id !== 'string' || typeof order.correlation_id !== 'string' || typeof order.source !== 'string' || typeof order.status !== 'string') return [];
+            return [{ intent_id: order.intent_id, correlation_id: order.correlation_id, source: order.source, status: order.status, strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null, run_id: typeof order.run_id === 'string' ? order.run_id : null, updated_at: typeof order.updated_at === 'string' ? order.updated_at : '' }];
+        }),
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',

@@ -55,6 +55,7 @@ READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/portfolio/settlements",
     "/api/v1/portfolio/trading_limits",
 })
+MARKET_SSE_PATH = "/api/v1/stream/data"
 
 
 def is_allowed_read_path(path: str) -> bool:
@@ -167,6 +168,35 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except URLError:
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
+    def _relay_market_sse(self) -> None:
+        """Relay the single upstream market stream without credentials or buffering."""
+        upstream = getattr(self.server, "upstream_origin")
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() in {"accept", "last-event-id"}
+        }
+        request = Request(f"{upstream}{self.path}", headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=5) as response:
+                self.send_response(response.status)
+                self.send_header("Content-Type", response.headers.get_content_type())
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                while chunk := response.read(4_096):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+        except HTTPError as error:
+            self._bytes(error.code, error.read(), error.headers.get_content_type())
+        except URLError:
+            self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji market stream unavailable"})
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser can leave a stream at any time; upstream state is
+            # intentionally not changed because subscribe lifecycle is still
+            # an explicit compatibility task.
+            return
+
     def _read_query_body(self) -> bytes:
         size = int(self.headers.get("Content-Length", "0"))
         if size <= 0 or size > 65_536:
@@ -204,6 +234,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/autotrade/overview":
             self._json(HTTPStatus.OK, overview_document(getattr(self.server, "order_store")))
+            return
+        if path == MARKET_SSE_PATH:
+            self._relay_market_sse()
             return
         if is_allowed_read_path(path):
             self._proxy_read()

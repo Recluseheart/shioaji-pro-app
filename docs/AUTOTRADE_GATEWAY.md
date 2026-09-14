@@ -34,8 +34,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 第一批上游以 `POST` 表示的 read query 使用各自的 compatibility allowlist，而
 不是擴大 generic proxy 或例外放行 mutation namespace：已支援 snapshots、K 線、
 ticks、scanner、data lookup、trades、portfolio／風控、保留庫存與 usage；body
-最大 64 KiB，且只接受 JSON object 或 array。其餘 POST query、SSE、stream
-subscribe／unsubscribe 仍未接通。
+最大 64 KiB，且只接受 JSON object 或 array。其餘 POST query 與 stream
+subscribe／unsubscribe 仍未接通。市場的 aggregate SSE `GET /api/v1/stream/data`
+已可透過 Gateway relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證），但不會代替
+subscription lifecycle；沒有明確的 upstream subscription 時不會製造行情事件。
 
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 

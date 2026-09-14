@@ -18,6 +18,14 @@ class ReadServiceHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         type(self).received.append((self.path, dict(self.headers.items()), b""))
+        if self.path.startswith("/api/v1/stream/data"):
+            payload = b"id: cursor-1\nevent: tick\ndata: {\"code\":\"2330\"}\n\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         payload = json.dumps({"path": self.path}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -128,6 +136,21 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(path, "/api/v1/data/snapshots")
         self.assertEqual(upstream_body, body)
         self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertNotIn("Authorization", headers)
+
+    def test_market_sse_is_relayed_without_browser_credentials(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/stream/data?region=TW",
+            headers={"Accept": "text/event-stream", "Last-Event-ID": "cursor-0", "Authorization": "Bearer browser-secret"},
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            self.assertIn(b"id: cursor-1", response.read())
+        path, headers, body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/stream/data?region=TW")
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["Accept"], "text/event-stream")
+        self.assertEqual(headers["Last-Event-Id"], "cursor-0")
         self.assertNotIn("Authorization", headers)
 
 

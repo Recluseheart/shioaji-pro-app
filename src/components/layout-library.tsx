@@ -41,6 +41,7 @@ const CATEGORY_COLORS: Record<PanelCategory, string> = {
     account: vars.color.success,
     derivatives: '#8b5cf6',
     tools: vars.color.mutedForeground,
+    autotrade: '#22c55e',
 };
 
 // 儲存版面可選角標 — lucide 名稱字串存進 Profile.icon

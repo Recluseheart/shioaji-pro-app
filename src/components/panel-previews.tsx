@@ -682,4 +682,12 @@ export const PANEL_PREVIEWS: Record<BlockType, ReactNode> = {
             <rect x='8' y='54' width='52' height='14' rx='5' fill={muted} fillOpacity='0.2' />
         </Frame>
     ),
+    auto_command: (
+        <Frame>
+            <rect x='8' y='10' width='34' height='12' rx='3' fill={accent} fillOpacity='0.65' />
+            <rect x='46' y='10' width='28' height='12' rx='3' fill={muted} fillOpacity='0.3' />
+            <rect x='78' y='10' width='30' height='12' rx='3' fill={up} fillOpacity='0.45' />
+            {[32, 45, 58].map((y) => <Ln key={y} x={10} y={y} w={96} />)}
+        </Frame>
+    ),
 };

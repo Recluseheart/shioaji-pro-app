@@ -51,6 +51,7 @@ import { TrayPanel } from './components/tray-panel';
 import { VolProfile } from './components/vol-profile';
 import { WarrantPanel } from './components/warrant-panel';
 import { Watchlist } from './components/watchlist';
+import { AutoCommandCenter } from './components/auto-command-center';
 import * as grid from './grid.css';
 import { useHotkeys } from './hooks/use-hotkeys';
 import { useWatchlist } from './hooks/use-watchlist';
@@ -364,6 +365,8 @@ function BlockBody({
             ) : (
                 <BlockPlaceholder />
             );
+        case 'auto_command':
+            return <AutoCommandCenter />;
     }
 }
 

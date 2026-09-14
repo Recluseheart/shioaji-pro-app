@@ -70,7 +70,8 @@ export type BlockType =
     | 'signals'
     | 'optpnl'
     | 'backtest'
-    | 'assistant';
+    | 'assistant'
+    | 'auto_command';
 
 // 'industries' 區塊已移出市場脈動（產業地圖歸產業全景面板）— 舊存檔的
 // 'industries' 值由面板端讀時過濾、權重按比例併入其餘區塊
@@ -114,7 +115,8 @@ export type PanelCategory =
     | 'trading'
     | 'account'
     | 'derivatives'
-    | 'tools';
+    | 'tools'
+    | 'autotrade';
 
 export const PANEL_CATEGORIES: { key: PanelCategory; label: string }[] = [
     { key: 'market', label: '行情' },
@@ -122,6 +124,7 @@ export const PANEL_CATEGORIES: { key: PanelCategory; label: string }[] = [
     { key: 'account', label: '帳務分析' },
     { key: 'derivatives', label: '選擇權/衍生品' },
     { key: 'tools', label: '工具' },
+    { key: 'autotrade', label: '自動交易' },
 ];
 
 export const BLOCK_META: Record<
@@ -368,6 +371,14 @@ export const BLOCK_META: Record<
         pinnable: false,
         singleton: true,
         defaultSize: { w: 7, h: 14, minW: 5, minH: 9 },
+    },
+    auto_command: {
+        label: '自動交易總覽',
+        description: '策略、風控、委託與對帳的安全總覽',
+        category: 'autotrade',
+        pinnable: false,
+        singleton: true,
+        defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
     },
 };
 

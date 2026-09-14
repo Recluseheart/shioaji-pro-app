@@ -31,8 +31,11 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   `Accept` 與 cache validators；不轉送瀏覽器的 Authorization 或 Cookie。未列入
   的 route 一律 `404`，不會被通用 proxy 放行。
 
-上游以 `POST` 表示的 read query 及 SSE 尚未接通；它們需要各自的 compatibility
-adapter，而不是擴大 generic proxy 或例外放行 mutation namespace。
+第一批上游以 `POST` 表示的 read query 使用各自的 compatibility allowlist，而
+不是擴大 generic proxy 或例外放行 mutation namespace：已支援 snapshots、K 線、
+ticks、scanner、data lookup、trades、portfolio／風控、保留庫存與 usage；body
+最大 64 KiB，且只接受 JSON object 或 array。其餘 POST query、SSE、stream
+subscribe／unsubscribe 仍未接通。
 
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 

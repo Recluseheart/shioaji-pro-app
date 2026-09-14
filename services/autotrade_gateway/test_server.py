@@ -11,13 +11,24 @@ from services.autotrade_gateway.server import create_server
 
 
 class ReadServiceHandler(BaseHTTPRequestHandler):
-    received: list[tuple[str, dict[str, str]]] = []
+    received: list[tuple[str, dict[str, str], bytes]] = []
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
     def do_GET(self) -> None:  # noqa: N802
-        type(self).received.append((self.path, dict(self.headers.items())))
+        type(self).received.append((self.path, dict(self.headers.items()), b""))
+        payload = json.dumps({"path": self.path}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:  # noqa: N802
+        size = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(size)
+        type(self).received.append((self.path, dict(self.headers.items()), body))
         payload = json.dumps({"path": self.path}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -90,8 +101,9 @@ class GatewayServerTest(unittest.TestCase):
         with urlopen(request) as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(json.load(response), {"path": "/api/v1/data/contracts?code=2330"})
-        path, headers = ReadServiceHandler.received[-1]
+        path, headers, body = ReadServiceHandler.received[-1]
         self.assertEqual(path, "/api/v1/data/contracts?code=2330")
+        self.assertEqual(body, b"")
         self.assertEqual(headers["Accept"], "application/json")
         self.assertNotIn("Authorization", headers)
         self.assertNotIn("Cookie", headers)
@@ -101,6 +113,22 @@ class GatewayServerTest(unittest.TestCase):
             urlopen(f"{self.base}/api/v1/order/place_order")
         self.assertEqual(raised.exception.code, 404)
         self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_allowlisted_read_query_post_preserves_json_but_not_credentials(self) -> None:
+        body = b'{"contracts":["2330"]}'
+        request = Request(
+            f"{self.base}/api/v1/data/snapshots",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer browser-secret"},
+            method="POST",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        path, headers, upstream_body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/data/snapshots")
+        self.assertEqual(upstream_body, body)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertNotIn("Authorization", headers)
 
 
 if __name__ == "__main__":

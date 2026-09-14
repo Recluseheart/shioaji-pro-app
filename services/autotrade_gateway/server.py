@@ -33,6 +33,28 @@ READ_PROXY_PREFIXES = (
     "/api/v1/order/stock_reserve_detail",
     "/api/v1/order/earmarking_detail",
 )
+READ_QUERY_POST_PATHS = frozenset({
+    "/api/v1/auth/usage",
+    "/api/v1/data/credit_enquire",
+    "/api/v1/data/index_components",
+    "/api/v1/data/kbars",
+    "/api/v1/data/scanner",
+    "/api/v1/data/short_stock_sources",
+    "/api/v1/data/snapshots",
+    "/api/v1/data/ticks",
+    "/api/v1/order/combotrades",
+    "/api/v1/order/earmarking_detail",
+    "/api/v1/order/stock_reserve_detail",
+    "/api/v1/order/stock_reserve_summary",
+    "/api/v1/order/trades",
+    "/api/v1/portfolio/account_balance",
+    "/api/v1/portfolio/margin",
+    "/api/v1/portfolio/position_unit",
+    "/api/v1/portfolio/profit_loss",
+    "/api/v1/portfolio/profitloss_sum",
+    "/api/v1/portfolio/settlements",
+    "/api/v1/portfolio/trading_limits",
+})
 
 
 def is_allowed_read_path(path: str) -> bool:
@@ -124,6 +146,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except URLError:
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
+    def _proxy_read_query(self, body: bytes) -> None:
+        """Forward an explicitly read-only JSON query without browser credentials."""
+        upstream = getattr(self.server, "upstream_origin")
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() in {"accept", "content-type"}
+        }
+        request = Request(f"{upstream}{self.path}", data=body, headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=5) as response:
+                self._bytes(
+                    response.status,
+                    response.read(),
+                    response.headers.get_content_type(),
+                )
+        except HTTPError as error:
+            self._bytes(error.code, error.read(), error.headers.get_content_type())
+        except URLError:
+            self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
+
+    def _read_query_body(self) -> bytes:
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 65_536:
+            raise ValueError("invalid read query body size")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].lower() != "application/json":
+            raise ValueError("read query must be JSON")
+        body = self.rfile.read(size)
+        parsed = json.loads(body)
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError("read query must be a JSON object or array")
+        return body
+
     def _intent(self) -> Intent:
         size = int(self.headers.get("Content-Length", "0"))
         if size <= 0 or size > 8_192:
@@ -159,7 +214,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.partition("?")[0] == "/api/v1/autotrade/intents":
+        path = self.path.partition("?")[0]
+        if path == "/api/v1/autotrade/intents":
             try:
                 intent = self._intent()
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -176,6 +232,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "risk_reasons": list(verdict.reasons),
                 },
             )
+            return
+        if path in READ_QUERY_POST_PATHS:
+            try:
+                body = self._read_query_body()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid read query"})
+                return
+            self._proxy_read_query(body)
             return
         self._json(HTTPStatus.FORBIDDEN, {"message": "Autotrade mutation is disabled"})
 

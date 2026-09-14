@@ -12,6 +12,7 @@ from services.autotrade_gateway.order_core import (
     SQLiteIntentStore,
     Status,
 )
+from services.autotrade_gateway.worker import ExecutionWorker
 
 
 class OrderCoreTest(unittest.TestCase):
@@ -51,6 +52,24 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
+
+    def test_timeout_claim_becomes_unknown_and_is_not_retried(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+
+        class TimeoutDispatcher:
+            calls = 0
+            def dispatch(self, _intent_id: str) -> None:
+                self.calls += 1
+                raise TimeoutError()
+
+        dispatcher = TimeoutDispatcher()
+        worker = ExecutionWorker(self.store, dispatcher)
+        self.assertTrue(worker.dispatch_once())
+        self.assertFalse(worker.dispatch_once())
+        self.assertEqual(dispatcher.calls, 1)
+        self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
 
 
 if __name__ == "__main__":

@@ -193,6 +193,22 @@ class SQLiteIntentStore:
             )
         return cursor.rowcount
 
+    def claim_outbox(self) -> str | None:
+        """Claim once; a leased record is never available for blind retry."""
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at LIMIT 1").fetchone()
+            if row is None:
+                return None
+            intent_id = str(row["intent_id"])
+            changed = self.connection.execute("UPDATE execution_outbox SET state='LEASED', updated_at=? WHERE intent_id=? AND state='PENDING'", (now().isoformat(), intent_id))
+            return intent_id if changed.rowcount == 1 else None
+
+    def mark_delivery_unknown(self, intent_id: str, reason: str) -> None:
+        with self._lock, self.connection:
+            timestamp = now().isoformat()
+            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
+            self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.UNKNOWN.value, timestamp, intent_id))
+
 
 class OrderCoordinator:
     """One ingress point for manual UI and strategy intents; it owns no broker."""

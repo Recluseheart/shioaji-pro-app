@@ -84,8 +84,27 @@ class GatewayServerTest(unittest.TestCase):
 
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(f"{self.base}/api/v1/order/place_order", method="POST"))
+            urlopen(Request(f"{self.base}/api/v1/order/cancel_order", method="POST"))
         self.assertEqual(raised.exception.code, 403)
+
+    def test_manual_place_order_is_durably_rejected_while_disarmed(self) -> None:
+        body = json.dumps({
+            "contract": {"code": "2330"},
+            "stock_order": {
+                "action": "Buy", "price": 1000, "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/order/place_order", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 409)
+        receipt = json.load(raised.exception)
+        self.assertEqual(receipt["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        store = getattr(self.server, "order_store")
+        self.assertEqual(store.outbox_state(receipt["intent_id"]), None)
+        self.assertEqual(store.observation_orders()[0]["source"], "MANUAL_UI")
+        self.assertEqual(ReadServiceHandler.received, [])
 
     def test_intent_ingress_records_a_disarmed_risk_rejection_without_outbox(self) -> None:
         body = json.dumps({

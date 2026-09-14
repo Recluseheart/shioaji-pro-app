@@ -249,6 +249,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
             run_id=str(value["run_id"]) if value.get("run_id") else None,
         )
 
+    def _manual_place_order_intent(self) -> Intent:
+        """Map the upstream stock/futures limit-order shape into the common spine.
+
+        This is deliberately an ingress-only compatibility step.  The fixed
+        DISARMED gate records the request and returns a risk receipt; no
+        sidecar order endpoint is contacted until a future worker is able to
+        own the complete durable delivery protocol.
+        """
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 65_536:
+            raise ValueError("invalid manual order body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError("manual order body must be an object")
+        contract = value.get("contract")
+        stock_order = value.get("stock_order")
+        futures_order = value.get("futures_order")
+        if not isinstance(contract, dict) or bool(stock_order) == bool(futures_order):
+            raise ValueError("one stock or futures order is required")
+        order = stock_order if stock_order else futures_order
+        if not isinstance(order, dict) or not isinstance(order.get("account"), dict):
+            raise ValueError("manual order account is required")
+        account = order["account"]
+        return Intent(
+            source=Source.MANUAL_UI,
+            account_id=str(account["account_id"]),
+            symbol=str(contract["code"]),
+            side=str(order["action"]).upper(),
+            quantity=int(order["quantity"]),
+            limit_price=str(order["price"]),
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
@@ -270,6 +302,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        if path == "/api/v1/order/place_order":
+            try:
+                intent = self._manual_place_order_intent()
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid manual order"})
+                return
+            coordinator = getattr(self.server, "order_coordinator")
+            status, verdict = coordinator.accept(intent)
+            self._json(
+                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
+                {
+                    "intent_id": intent.intent_id,
+                    "correlation_id": intent.correlation_id,
+                    "status": status.value,
+                    "risk_reasons": list(verdict.reasons),
+                },
+            )
+            return
         if path == "/api/v1/autotrade/intents":
             try:
                 intent = self._intent()

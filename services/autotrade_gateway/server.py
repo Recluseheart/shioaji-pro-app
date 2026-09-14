@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 def health_document() -> dict[str, Any]:
@@ -62,12 +65,45 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _proxy_read(self) -> None:
+        """Forward allowed read traffic without forwarding browser credentials."""
+        upstream = getattr(self.server, "upstream_origin")
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() in {"accept", "if-none-match", "if-modified-since"}
+        }
+        request = Request(f"{upstream}{self.path}", headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=5) as response:
+                self._bytes(
+                    response.status,
+                    response.read(),
+                    response.headers.get_content_type(),
+                )
+        except HTTPError as error:
+            self._bytes(error.code, error.read(), error.headers.get_content_type())
+        except URLError:
+            self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/v1/autotrade/health":
+        path = self.path.partition("?")[0]
+        if path == "/api/v1/autotrade/health":
             self._json(HTTPStatus.OK, health_document())
             return
-        if self.path == "/api/v1/autotrade/overview":
+        if path == "/api/v1/autotrade/overview":
             self._json(HTTPStatus.OK, overview_document())
+            return
+        if path.startswith("/api/"):
+            self._proxy_read()
             return
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
 
@@ -79,8 +115,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
     do_PATCH = do_POST
 
 
-def create_server(host: str = "127.0.0.1", port: int = 18082) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), GatewayHandler)
+def create_server(
+    host: str = "127.0.0.1",
+    port: int = 18082,
+    upstream_origin: Optional[str] = None,
+) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer((host, port), GatewayHandler)
+    server.upstream_origin = (upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN", "http://127.0.0.1:21322")).rstrip("/")  # type: ignore[attr-defined]
+    return server
 
 
 if __name__ == "__main__":

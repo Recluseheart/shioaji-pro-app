@@ -23,6 +23,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 - `GET /api/v1/autotrade/overview`：策略、訊號、訂單、風控、對帳與績效的
   聚合 read model。沒有持久資料來源時各事件陣列必須為空，不能製造 broker
   activity 來填滿 UI。
+- 其他 `/api/*` 的 `GET`：僅轉送至本機 Shioaji HTTP sidecar（預設
+  `http://127.0.0.1:21322`，可用 `SHIOAJI_HTTP_ORIGIN` 指定）。只保留
+  `Accept` 與 cache validators；不轉送瀏覽器的 Authorization 或 Cookie。
 
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 
@@ -32,7 +35,7 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 spine：MANUAL_UI、STRATEGY、SYSTEM_TRIGGER 共用 intent、correlation id、
 risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試／開發契約；
 正式移植時必須以 PostgreSQL store 取代，並由唯一的 Execution Gateway worker
-持有 Shioaji HTTP session。
+持有 Shioaji HTTP session。read proxy 只供相容讀取，不能成為 mutation 的繞道。
 
 程序 restart 時，`APPROVED`、`SENDING`、`PENDING_SUBMIT`、`SUBMITTED`
 等可能已送達 broker 的狀態都必須變為 `UNKNOWN`。`UNKNOWN` 只能進入

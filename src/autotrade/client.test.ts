@@ -24,4 +24,18 @@ describe('normalizeAutotradeOverview', () => {
             performance: { run_count: 0, filled_order_count: 0 },
         });
     });
+
+    it('keeps an adapter-provided broker identity as read-only observation data', () => {
+        const overview = normalizeAutotradeOverview({
+            health: { environment: 'SIM', trading_gate: 'DISARMED' },
+            orders: [{
+                intent_id: 'intent-1', correlation_id: 'correlation-1',
+                source: 'MANUAL_UI', status: 'PENDING_SUBMIT',
+                broker_order_id: 'MOCK-ORDER-1',
+            }],
+        });
+        expect(overview.orders).toEqual([expect.objectContaining({
+            intent_id: 'intent-1', broker_order_id: 'MOCK-ORDER-1',
+        })]);
+    });
 });

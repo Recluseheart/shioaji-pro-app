@@ -44,6 +44,13 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 `RECONCILING`，不得直接建立新的 outbox 或重送。這項限制同時適用手動與策略
 單。
 
+worker 只有在 adapter 回傳不可空的 broker order identity 後，才可把 leased
+outbox 標為 `DISPATCHED` 並將 intent 前進為 `PENDING_SUBMIT`；identity 會和
+intent 一起持久化並出現在唯讀 observation。任何 timeout、例外或缺少 identity
+都維持 delivery-ambiguous，轉為 `UNKNOWN`，不會猜測成功或重送。SQLite 舊
+journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
+內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。
+
 開發時 ingress 預設使用 process-local SQLite memory store；如需保留隔離測試
 資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。設定
 `AUTOTRADE_GATEWAY_DATABASE_URL` 與受限格式的 `AUTOTRADE_GATEWAY_PG_SCHEMA`
@@ -52,7 +59,6 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 
 ## 現在尚未具備的能力
 
-- PostgreSQL migration／持久 read model。
 - Shioaji 1.7.4/1.7.5 HTTP adapter 與唯一 session owner worker。
 - 任何實際或 simulation broker mutation、策略啟動、取消、平倉或自動平倉。
 - callback、SSE、reconciliation snapshot 與完整 UI event chain。

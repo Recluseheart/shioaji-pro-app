@@ -114,7 +114,7 @@ class SQLiteIntentStore:
                 source TEXT NOT NULL, strategy_id TEXT, run_id TEXT,
                 payload_json TEXT NOT NULL, status TEXT NOT NULL,
                 risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL, broker_order_id TEXT
             );
             CREATE TABLE IF NOT EXISTS execution_outbox (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
@@ -122,6 +122,16 @@ class SQLiteIntentStore:
             );
             """
         )
+        # `CREATE TABLE IF NOT EXISTS` does not evolve a persisted development
+        # database.  Keep this narrowly-scoped migration idempotent so an old
+        # intent journal can expose an already-assigned broker identity without
+        # rebuilding or discarding its audit history.
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(order_intents)")
+        }
+        if "broker_order_id" not in columns:
+            self.connection.execute("ALTER TABLE order_intents ADD COLUMN broker_order_id TEXT")
         self.connection.commit()
 
     def close(self) -> None:
@@ -216,11 +226,11 @@ class SQLiteIntentStore:
         with self._lock, self.connection:
             timestamp = now().isoformat()
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
-            self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, timestamp, intent_id))
+            self.connection.execute("UPDATE order_intents SET status=?, broker_order_id=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 
-    def observation_orders(self) -> list[dict[str, str]]:
+    def observation_orders(self) -> list[dict[str, str | None]]:
         with self._lock:
-            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
         return [dict(row) for row in rows]
 
 

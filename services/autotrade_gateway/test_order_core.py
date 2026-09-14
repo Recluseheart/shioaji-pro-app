@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -79,6 +80,35 @@ class OrderCoreTest(unittest.TestCase):
         self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
         self.assertEqual(self.store.status(intent.intent_id), Status.PENDING_SUBMIT)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
+        self.assertEqual(self.store.observation_orders()[0]["broker_order_id"], "MOCK-ORDER-1")
+
+    def test_existing_sqlite_journal_gains_broker_identity_without_rebuild(self) -> None:
+        self.store.close()
+        journal = Path(self.temp_dir.name) / "gateway-test.db"
+        legacy = sqlite3.connect(journal)
+        legacy.execute("DROP TABLE execution_outbox")
+        legacy.execute("DROP TABLE order_intents")
+        legacy.execute(
+            """CREATE TABLE order_intents (
+                intent_id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL,
+                source TEXT NOT NULL, strategy_id TEXT, run_id TEXT,
+                payload_json TEXT NOT NULL, status TEXT NOT NULL,
+                risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        legacy.execute(
+            """INSERT INTO order_intents VALUES
+            ('historic-intent', 'historic-correlation', 'MANUAL_UI', NULL, NULL,
+             '{}', 'UNKNOWN', '[]', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"""
+        )
+        legacy.commit()
+        legacy.close()
+
+        self.store = SQLiteIntentStore(journal)
+        observation = self.store.observation_orders()
+        self.assertEqual(observation[0]["intent_id"], "historic-intent")
+        self.assertIsNone(observation[0]["broker_order_id"])
 
 
 if __name__ == "__main__":

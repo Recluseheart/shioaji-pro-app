@@ -31,7 +31,8 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL,
                 source TEXT NOT NULL, strategy_id TEXT, run_id TEXT,
                 payload_json TEXT NOT NULL, status TEXT NOT NULL,
-                risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                broker_order_id TEXT
             );
             CREATE TABLE IF NOT EXISTS execution_outbox (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
@@ -40,6 +41,7 @@ class PostgresIntentStore:
             CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
             """
         )
+        self.connection.execute("ALTER TABLE order_intents ADD COLUMN IF NOT EXISTS broker_order_id TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -126,9 +128,9 @@ class PostgresIntentStore:
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
-            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.PENDING_SUBMIT.value, timestamp, intent_id))
+            self.connection.execute("UPDATE order_intents SET status=%s, broker_order_id=%s, updated_at=%s WHERE intent_id=%s", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 
-    def observation_orders(self) -> list[dict[str, str]]:
+    def observation_orders(self) -> list[dict[str, str | None]]:
         with self._lock:
-            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
         return [dict(row) for row in rows]

@@ -48,3 +48,19 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertTrue(worker.dispatch_once())
         self.assertFalse(worker.dispatch_once())
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
+
+    def test_broker_identity_is_persisted_with_pending_submit(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent_id: str) -> str:
+                return "POSTGRES-MOCK-ORDER-1"
+
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        self.assertEqual(self.store.status(intent.intent_id), Status.PENDING_SUBMIT)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
+        self.assertEqual(
+            self.store.observation_orders()[0]["broker_order_id"],
+            "POSTGRES-MOCK-ORDER-1",
+        )

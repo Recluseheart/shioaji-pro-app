@@ -19,6 +19,33 @@ def health_document() -> dict[str, Any]:
     }
 
 
+def overview_document() -> dict[str, Any]:
+    """Read model for the Autotrade panels.
+
+    This seed deliberately reports only durable facts it owns.  It must not
+    manufacture strategy activity, orders, or broker callbacks merely to make
+    a dashboard appear busy.
+    """
+    return {
+        "health": health_document(),
+        "strategies": [],
+        "signals": [],
+        "orders": [],
+        "risk": {
+            "mode": "ENFORCING",
+            "limits_source": "not_configured",
+            "last_verdict": None,
+        },
+        "reconciliation": [],
+        "performance": {
+            "run_count": 0,
+            "filled_order_count": 0,
+            "realized_pnl": "0",
+            "unrealized_pnl": "0",
+        },
+    }
+
+
 class GatewayHandler(BaseHTTPRequestHandler):
     server_version = "AutotradeGateway/0.1"
 
@@ -38,6 +65,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/api/v1/autotrade/health":
             self._json(HTTPStatus.OK, health_document())
+            return
+        if self.path == "/api/v1/autotrade/overview":
+            self._json(HTTPStatus.OK, overview_document())
             return
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
 

@@ -27,6 +27,14 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
 
+    def test_overview_never_invents_broker_activity(self) -> None:
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertEqual(overview["health"]["environment"], "SIM")
+        self.assertEqual(overview["strategies"], [])
+        self.assertEqual(overview["orders"], [])
+        self.assertEqual(overview["reconciliation"], [])
+
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:
             urlopen(Request(f"{self.base}/api/v1/order/place_order", method="POST"))

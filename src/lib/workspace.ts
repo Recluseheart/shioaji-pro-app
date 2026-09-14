@@ -71,7 +71,13 @@ export type BlockType =
     | 'optpnl'
     | 'backtest'
     | 'assistant'
-    | 'auto_command';
+    | 'auto_command'
+    | 'strategy_control'
+    | 'signal_timeline'
+    | 'auto_orders'
+    | 'risk_limits'
+    | 'reconciliation'
+    | 'run_performance';
 
 // 'industries' 區塊已移出市場脈動（產業地圖歸產業全景面板）— 舊存檔的
 // 'industries' 值由面板端讀時過濾、權重按比例併入其餘區塊
@@ -380,6 +386,30 @@ export const BLOCK_META: Record<
         singleton: true,
         defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
     },
+    strategy_control: {
+        label: '策略控制', description: '策略驗證、Dry Run 與安全控制', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    signal_timeline: {
+        label: '訊號與決策', description: '策略訊號、風控決策與 intent 時間線', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
+    },
+    auto_orders: {
+        label: '自動委託與持倉', description: '策略歸屬的委託、成交與持倉', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
+    },
+    risk_limits: {
+        label: '風控與限額', description: 'Risk Engine verdict 與生效限額', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    reconciliation: {
+        label: '對帳佇列', description: 'UNKNOWN、RECONCILING 與人工審核案件', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    run_performance: {
+        label: '執行績效', description: '策略 run、成交與損益摘要', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
 };
 
 // 預設/內建版面一律以「傳統 24 欄」撰寫（好讀好改），匯出前統一
@@ -416,6 +446,64 @@ const RAW_LAYOUT_PRESETS: { name: string; desc: string; workspace: Workspace }[]
         name: '標準看盤',
         desc: '自選+排行 / K線+持倉 / 五檔+下單+明細',
         workspace: RAW_DEFAULT_WORKSPACE,
+    },
+    {
+        name: '完整交易終端',
+        desc: '原始手動交易終端加上自動交易安全總覽',
+        workspace: {
+            blocks: [
+                { id: 'chart-at', type: 'chart', pin: null },
+                { id: 'ticket-at', type: 'ticket', pin: null },
+                { id: 'dock-at', type: 'dock', pin: null },
+                { id: 'auto-command-at', type: 'auto_command', pin: null },
+            ],
+            layout: [
+                { i: 'chart-at', x: 0, y: 0, w: 13, h: 15, minW: 6, minH: 7 },
+                { i: 'ticket-at', x: 13, y: 0, w: 5, h: 15, minW: 4, minH: 10 },
+                { i: 'auto-command-at', x: 18, y: 0, w: 6, h: 15, minW: 5, minH: 6 },
+                { i: 'dock-at', x: 0, y: 15, w: 24, h: 9, minW: 6, minH: 5 },
+            ],
+        },
+    },
+    {
+        name: '自動交易控制',
+        desc: '策略、風控、委託與對帳；目前所有控制固定 DISARMED',
+        workspace: {
+            blocks: [
+                { id: 'auto-command-ac', type: 'auto_command', pin: null },
+                { id: 'strategy-control-ac', type: 'strategy_control', pin: null },
+                { id: 'risk-limits-ac', type: 'risk_limits', pin: null },
+                { id: 'auto-orders-ac', type: 'auto_orders', pin: null },
+                { id: 'reconciliation-ac', type: 'reconciliation', pin: null },
+            ],
+            layout: [
+                { i: 'auto-command-ac', x: 0, y: 0, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'strategy-control-ac', x: 8, y: 0, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'risk-limits-ac', x: 16, y: 0, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'auto-orders-ac', x: 0, y: 11, w: 14, h: 11, minW: 5, minH: 6 },
+                { i: 'reconciliation-ac', x: 14, y: 11, w: 10, h: 11, minW: 5, minH: 6 },
+            ],
+        },
+    },
+    {
+        name: '自動交易觀察',
+        desc: '只讀取策略訊號、訂單、對帳與績效',
+        workspace: {
+            blocks: [
+                { id: 'auto-command-ao', type: 'auto_command', pin: null },
+                { id: 'signal-timeline-ao', type: 'signal_timeline', pin: null },
+                { id: 'auto-orders-ao', type: 'auto_orders', pin: null },
+                { id: 'reconciliation-ao', type: 'reconciliation', pin: null },
+                { id: 'run-performance-ao', type: 'run_performance', pin: null },
+            ],
+            layout: [
+                { i: 'auto-command-ao', x: 0, y: 0, w: 6, h: 12, minW: 5, minH: 6 },
+                { i: 'signal-timeline-ao', x: 6, y: 0, w: 10, h: 12, minW: 5, minH: 6 },
+                { i: 'auto-orders-ao', x: 16, y: 0, w: 8, h: 12, minW: 5, minH: 6 },
+                { i: 'reconciliation-ao', x: 0, y: 12, w: 12, h: 10, minW: 5, minH: 6 },
+                { i: 'run-performance-ao', x: 12, y: 12, w: 12, h: 10, minW: 5, minH: 6 },
+            ],
+        },
     },
     {
         name: '當沖交易',

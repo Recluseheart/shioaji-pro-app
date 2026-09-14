@@ -43,6 +43,17 @@ describe('grid base upscale', () => {
         }
     });
 
+    it('ships the three safe Autotrade workspaces with all seven panels', () => {
+        const presets = ['完整交易終端', '自動交易控制', '自動交易觀察'];
+        const types = new Set(
+            presets.flatMap((name) => LAYOUT_PRESETS.find((preset) => preset.name === name)?.workspace.blocks.map((block) => block.type) ?? []),
+        );
+        for (const type of [
+            'auto_command', 'strategy_control', 'signal_timeline', 'auto_orders',
+            'risk_limits', 'reconciliation', 'run_performance',
+        ]) expect(types).toContain(type);
+    });
+
     it('render/store round-trip is lossless for every density k|12', () => {
         for (const k of [1, 2, 3, 4]) {
             const fromRender = GRID_LEGACY_SCALE / k;

@@ -52,6 +52,7 @@ import { VolProfile } from './components/vol-profile';
 import { WarrantPanel } from './components/warrant-panel';
 import { Watchlist } from './components/watchlist';
 import { AutoCommandCenter } from './components/auto-command-center';
+import { AutotradeObserverPanels } from './components/autotrade-observer-panels';
 import * as grid from './grid.css';
 import { useHotkeys } from './hooks/use-hotkeys';
 import { useWatchlist } from './hooks/use-watchlist';
@@ -367,6 +368,13 @@ function BlockBody({
             );
         case 'auto_command':
             return <AutoCommandCenter />;
+        case 'strategy_control':
+        case 'signal_timeline':
+        case 'auto_orders':
+        case 'risk_limits':
+        case 'reconciliation':
+        case 'run_performance':
+            return <AutotradeObserverPanels kind={block.type} />;
     }
 }
 

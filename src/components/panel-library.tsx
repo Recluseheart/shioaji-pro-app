@@ -31,10 +31,12 @@ import {
     Package,
     PieChart,
     Radio,
+    RefreshCw,
     Rows,
     ScrollText,
     Search,
     Star,
+    ShieldCheck,
     Table,
     TrendingUp,
     Users,
@@ -97,6 +99,12 @@ const PANEL_ICONS: Record<BlockType, LucideIcon> = {
     backtest: FlaskConical,
     assistant: Bot,
     auto_command: Activity,
+    strategy_control: Bot,
+    signal_timeline: Radio,
+    auto_orders: ClipboardList,
+    risk_limits: ShieldCheck,
+    reconciliation: RefreshCw,
+    run_performance: AreaChart,
 };
 
 const ALL_TYPES = Object.keys(BLOCK_META) as BlockType[];

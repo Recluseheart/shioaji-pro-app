@@ -118,3 +118,8 @@ class PostgresIntentStore:
         with self._lock, self.connection.transaction():
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.UNKNOWN.value, timestamp, intent_id))
+
+    def observation_orders(self) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+        return [dict(row) for row in rows]

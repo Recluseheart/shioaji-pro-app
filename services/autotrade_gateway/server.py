@@ -24,24 +24,25 @@ def health_document() -> dict[str, Any]:
     }
 
 
-def overview_document() -> dict[str, Any]:
+def overview_document(store: Any = None) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
     This seed deliberately reports only durable facts it owns.  It must not
     manufacture strategy activity, orders, or broker callbacks merely to make
     a dashboard appear busy.
     """
+    orders = store.observation_orders() if store is not None else []
     return {
         "health": health_document(),
         "strategies": [],
         "signals": [],
-        "orders": [],
+        "orders": orders,
         "risk": {
             "mode": "ENFORCING",
             "limits_source": "not_configured",
             "last_verdict": None,
         },
-        "reconciliation": [],
+        "reconciliation": [item for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}],
         "performance": {
             "run_count": 0,
             "filled_order_count": 0,
@@ -120,7 +121,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, health_document())
             return
         if path == "/api/v1/autotrade/overview":
-            self._json(HTTPStatus.OK, overview_document())
+            self._json(HTTPStatus.OK, overview_document(getattr(self.server, "order_store")))
             return
         if path.startswith("/api/"):
             self._proxy_read()

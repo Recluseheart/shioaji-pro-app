@@ -209,6 +209,11 @@ class SQLiteIntentStore:
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.UNKNOWN.value, timestamp, intent_id))
 
+    def observation_orders(self) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+        return [dict(row) for row in rows]
+
 
 class OrderCoordinator:
     """One ingress point for manual UI and strategy intents; it owns no broker."""

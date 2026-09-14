@@ -5,6 +5,7 @@ import unittest
 from uuid import uuid4
 
 from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, Source, Status
+from services.autotrade_gateway.worker import ExecutionWorker
 
 
 class PostgresIntentStoreTest(unittest.TestCase):
@@ -37,3 +38,13 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
+
+    def test_worker_timeout_is_unknown_without_retry(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        class TimeoutDispatcher:
+            def dispatch(self, _intent_id: str) -> None: raise TimeoutError()
+        worker = ExecutionWorker(self.store, TimeoutDispatcher())
+        self.assertTrue(worker.dispatch_once())
+        self.assertFalse(worker.dispatch_once())
+        self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)

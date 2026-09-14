@@ -99,3 +99,22 @@ class PostgresIntentStore:
             )
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE state IN ('PENDING','LEASED')", (timestamp,))
         return cursor.rowcount
+
+    def claim_outbox(self) -> str | None:
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                """WITH candidate AS (
+                    SELECT intent_id FROM execution_outbox WHERE state='PENDING'
+                    ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+                ) UPDATE execution_outbox AS outbox SET state='LEASED', updated_at=%s
+                FROM candidate WHERE outbox.intent_id=candidate.intent_id
+                RETURNING outbox.intent_id""",
+                (now().isoformat(),),
+            ).fetchone()
+        return str(row["intent_id"]) if row else None
+
+    def mark_delivery_unknown(self, intent_id: str, reason: str) -> None:
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.UNKNOWN.value, timestamp, intent_id))

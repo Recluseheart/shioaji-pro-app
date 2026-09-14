@@ -56,6 +56,10 @@ READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/portfolio/trading_limits",
 })
 MARKET_SSE_PATH = "/api/v1/stream/data"
+MARKET_STREAM_POST_PATHS = frozenset({
+    "/api/v1/stream/subscribe",
+    "/api/v1/stream/unsubscribe",
+})
 
 
 def is_allowed_read_path(path: str) -> bool:
@@ -266,7 +270,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        if path in READ_QUERY_POST_PATHS:
+        if path in READ_QUERY_POST_PATHS or path in MARKET_STREAM_POST_PATHS:
             try:
                 body = self._read_query_body()
             except (TypeError, ValueError, json.JSONDecodeError):

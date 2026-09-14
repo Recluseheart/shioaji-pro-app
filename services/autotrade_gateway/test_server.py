@@ -153,6 +153,21 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Last-Event-Id"], "cursor-0")
         self.assertNotIn("Authorization", headers)
 
+    def test_market_subscription_is_allowlisted_but_order_mutations_remain_denied(self) -> None:
+        body = b'{"contracts":[{"code":"2330"}],"quote_type":"tick"}'
+        request = Request(
+            f"{self.base}/api/v1/stream/subscribe",
+            data=body,
+            headers={"Content-Type": "application/json", "Cookie": "browser-secret"},
+            method="POST",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        path, headers, upstream_body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/stream/subscribe")
+        self.assertEqual(upstream_body, body)
+        self.assertNotIn("Cookie", headers)
+
 
 if __name__ == "__main__":
     unittest.main()

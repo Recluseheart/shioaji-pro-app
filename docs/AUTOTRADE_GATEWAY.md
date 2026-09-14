@@ -45,8 +45,10 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 單。
 
 開發時 ingress 預設使用 process-local SQLite memory store；如需保留隔離測試
-資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。它不是 production database，
-也不得指向既有 Autotrade database 或 backup。
+資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。設定
+`AUTOTRADE_GATEWAY_DATABASE_URL` 與受限格式的 `AUTOTRADE_GATEWAY_PG_SCHEMA`
+時，Gateway 會使用 schema-scoped PostgreSQL intent/outbox store；需要安裝
+`psycopg[binary]`。兩者都不得指向既有 Autotrade database 或 backup。
 
 ## 現在尚未具備的能力
 

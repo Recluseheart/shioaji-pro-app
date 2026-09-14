@@ -160,7 +160,16 @@ def create_server(
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     server.upstream_origin = (upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN", "http://127.0.0.1:21322")).rstrip("/")  # type: ignore[attr-defined]
-    store = SQLiteIntentStore(os.getenv("AUTOTRADE_GATEWAY_DB", ":memory:"))
+    database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
+    if database_url:
+        from .postgres_intent_store import PostgresIntentStore
+
+        store = PostgresIntentStore(
+            database_url,
+            os.getenv("AUTOTRADE_GATEWAY_PG_SCHEMA", "autotrade_gateway"),
+        )
+    else:
+        store = SQLiteIntentStore(os.getenv("AUTOTRADE_GATEWAY_DB", ":memory:"))
     server.order_store = store  # type: ignore[attr-defined]
     server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
     return server

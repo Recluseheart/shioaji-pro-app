@@ -1,0 +1,101 @@
+"""PostgreSQL implementation of the Gateway intent/outbox safety contract."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict
+from threading import Lock
+
+from .order_core import Intent, Status, Verdict, _UNCERTAIN, now
+
+
+class PostgresIntentStore:
+    """Schema-scoped store; import psycopg only when PostgreSQL is configured."""
+
+    def __init__(self, dsn: str, schema: str) -> None:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema):
+            raise ValueError("PostgreSQL schema name is invalid")
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as error:
+            raise RuntimeError("install psycopg[binary] to use AUTOTRADE_GATEWAY_DATABASE_URL") from error
+        self._lock = Lock()
+        self.connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+        self.connection.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        self.connection.execute(f'SET search_path TO "{schema}"')
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_intents (
+                intent_id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL,
+                source TEXT NOT NULL, strategy_id TEXT, run_id TEXT,
+                payload_json TEXT NOT NULL, status TEXT NOT NULL,
+                risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS execution_outbox (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
+            """
+        )
+
+    def close(self) -> None:
+        with self._lock:
+            self.connection.close()
+
+    def persist(self, intent: Intent, verdict: Verdict) -> Status:
+        status = Status.APPROVED if verdict.allowed else Status.RISK_REJECTED
+        payload = asdict(intent)
+        payload["source"] = intent.source.value
+        payload["created_at"] = intent.created_at.isoformat()
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO order_intents(
+                    intent_id, correlation_id, source, strategy_id, run_id, payload_json,
+                    status, risk_reasons_json, created_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (intent.intent_id, intent.correlation_id, intent.source.value, intent.strategy_id,
+                 intent.run_id, json.dumps(payload, separators=(",", ":")), status.value,
+                 json.dumps(verdict.reasons), intent.created_at.isoformat(), timestamp),
+            )
+            if verdict.allowed:
+                self.connection.execute(
+                    "INSERT INTO execution_outbox(intent_id,state,created_at,updated_at) VALUES (%s,'PENDING',%s,%s)",
+                    (intent.intent_id, timestamp, timestamp),
+                )
+        return status
+
+    def status(self, intent_id: str) -> Status:
+        with self._lock:
+            row = self.connection.execute("SELECT status FROM order_intents WHERE intent_id=%s", (intent_id,)).fetchone()
+        if row is None:
+            raise KeyError(intent_id)
+        return Status(row["status"])
+
+    def outbox_state(self, intent_id: str) -> str | None:
+        with self._lock:
+            row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=%s", (intent_id,)).fetchone()
+        return str(row["state"]) if row else None
+
+    def transition(self, intent_id: str, target: Status) -> None:
+        current = self.status(intent_id)
+        if current is Status.UNKNOWN and target is not Status.RECONCILING:
+            raise ValueError("UNKNOWN orders require reconciliation; they cannot be resent")
+        if current is Status.RECONCILING and target is Status.APPROVED:
+            raise ValueError("reconciliation cannot enqueue a fresh order")
+        with self._lock, self.connection.transaction():
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (target.value, now().isoformat(), intent_id))
+
+    def recover(self) -> int:
+        uncertain = tuple(status.value for status in _UNCERTAIN)
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                "UPDATE order_intents SET status=%s, updated_at=%s WHERE status = ANY(%s)",
+                (Status.UNKNOWN.value, timestamp, list(uncertain)),
+            )
+            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE state IN ('PENDING','LEASED')", (timestamp,))
+        return cursor.rowcount

@@ -60,11 +60,29 @@ MARKET_STREAM_POST_PATHS = frozenset({
     "/api/v1/stream/subscribe",
     "/api/v1/stream/unsubscribe",
 })
+MARKET_STREAM_CAPABILITIES = frozenset({
+    "calculated_index",
+    "index_components",
+    "index_contribution",
+    "industry_contribution",
+    "scanner",
+})
 
 
 def is_allowed_read_path(path: str) -> bool:
     """Return whether a path belongs to the deliberately narrow GET proxy."""
     return path in READ_PROXY_EXACT_PATHS or path.startswith(READ_PROXY_PREFIXES)
+
+
+def is_allowed_market_stream_post(path: str) -> bool:
+    """Allow only named market subscriptions, never an arbitrary stream POST."""
+    if path in MARKET_STREAM_POST_PATHS:
+        return True
+    for action in ("subscribe", "unsubscribe"):
+        prefix = f"/api/v1/stream/{action}/"
+        if path.startswith(prefix):
+            return path.removeprefix(prefix) in MARKET_STREAM_CAPABILITIES
+    return False
 
 
 def health_document() -> dict[str, Any]:
@@ -270,7 +288,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        if path in READ_QUERY_POST_PATHS or path in MARKET_STREAM_POST_PATHS:
+        if path in READ_QUERY_POST_PATHS or is_allowed_market_stream_post(path):
             try:
                 body = self._read_query_body()
             except (TypeError, ValueError, json.JSONDecodeError):

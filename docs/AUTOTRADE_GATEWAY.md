@@ -38,7 +38,9 @@ ticks、scanner、data lookup、trades、portfolio／風控、保留庫存與 us
 aggregate SSE `GET /api/v1/stream/data`
 與明確列舉的 `POST /api/v1/stream/subscribe`／`unsubscribe` 已可透過 Gateway
 relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證）；它們只改變行情 subscription，
-不會建立 order intent 或呼叫交易 mutation。
+不會建立 order intent 或呼叫交易 mutation。上游 capability subscriptions 也只允許
+`calculated_index`、`index_contribution`、`industry_contribution`、
+`index_components` 與 `scanner` 五個明確 suffix。
 
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 

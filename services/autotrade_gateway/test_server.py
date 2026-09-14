@@ -168,6 +168,33 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(upstream_body, body)
         self.assertNotIn("Cookie", headers)
 
+    def test_allowlisted_market_capability_subscription_is_forwarded(self) -> None:
+        body = b'{"index":{"code":"IX0001"}}'
+        request = Request(
+            f"{self.base}/api/v1/stream/subscribe/calculated_index",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        path, _, upstream_body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/stream/subscribe/calculated_index")
+        self.assertEqual(upstream_body, body)
+
+    def test_unlisted_market_capability_is_not_forwarded(self) -> None:
+        body = b'{"index":{"code":"IX0001"}}'
+        request = Request(
+            f"{self.base}/api/v1/stream/subscribe/not-a-capability",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request)
+        self.assertEqual(raised.exception.code, 403)
+        self.assertEqual(ReadServiceHandler.received, [])
+
 
 if __name__ == "__main__":
     unittest.main()

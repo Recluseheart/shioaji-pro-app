@@ -71,6 +71,15 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
 
+    def test_broker_identity_advances_claim_to_pending_submit(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        class AcceptedDispatcher:
+            def dispatch(self, _intent_id: str) -> str: return "MOCK-ORDER-1"
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        self.assertEqual(self.store.status(intent.intent_id), Status.PENDING_SUBMIT)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
+
 
 if __name__ == "__main__":
     unittest.main()

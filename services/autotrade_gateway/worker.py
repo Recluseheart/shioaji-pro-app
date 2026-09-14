@@ -6,7 +6,7 @@ from typing import Protocol
 
 
 class Dispatcher(Protocol):
-    def dispatch(self, intent_id: str) -> None: ...
+    def dispatch(self, intent_id: str) -> str: ...
 
 
 class ExecutionWorker:
@@ -19,7 +19,8 @@ class ExecutionWorker:
         if intent_id is None:
             return False
         try:
-            self.dispatcher.dispatch(intent_id)
+            broker_order_id = self.dispatcher.dispatch(intent_id)
+            self.store.mark_pending_submit(intent_id, broker_order_id)
         except Exception as error:
             # A timeout/crash never implies delivery did not happen.
             self.store.mark_delivery_unknown(intent_id, f"dispatch_uncertain:{type(error).__name__}")

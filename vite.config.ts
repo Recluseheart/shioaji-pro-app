@@ -133,10 +133,14 @@ export default defineConfig(({ mode, command }) => {
                 allow: [searchForWorkspaceRoot(process.cwd()), modulesAllowDir],
             },
             proxy: {
-                // dev 打自帶 sidecar（scripts/dev-api.sh，與 CI 打包同版
-                // binary、port 21322）— 確保 API/UI 版本相符，不依賴使用
-                // 者自裝在 8080 的 CLI。要打別台時用 VITE_API_TARGET 蓋掉
-                '/api': env.VITE_API_TARGET ?? 'http://127.0.0.1:21322',
+                // Public Web must use the local Gateway as its only API
+                // origin.  The Gateway owns compatibility allowlists and
+                // fails closed for every order mutation; it can read from a
+                // sidecar internally without exposing that sidecar to the
+                // browser.  VITE_API_TARGET is retained solely for an
+                // isolated Gateway fixture in tests, never as a documented
+                // direct-sidecar escape hatch.
+                '/api': env.VITE_API_TARGET ?? 'http://127.0.0.1:18082',
             },
         },
     };

@@ -20,7 +20,9 @@ export default defineConfig({
             reuseExistingServer: !process.env.CI,
         },
         {
-            command: `PATH=${node22Path}:$PATH PORT=4175 VITE_API_TARGET=http://127.0.0.1:18082 pnpm dev`,
+            // Intentionally omit VITE_API_TARGET: this proves the public Web
+            // development default cannot silently return to a direct sidecar.
+            command: `PATH=${node22Path}:$PATH PORT=4175 pnpm dev`,
             url: 'http://127.0.0.1:4175',
             reuseExistingServer: !process.env.CI,
         },

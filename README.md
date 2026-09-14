@@ -164,15 +164,18 @@ shioaji server check          # 確認狀態
 切正式環境：`shioaji server start --production`（需先完成 CA 憑證設定，
 請務必先在模擬環境完整測試）。
 
-### 4. Run the app 啟動前端
+### 4. Run the app through the Gateway 啟動前端
 
 ```sh
+python3 -m services.autotrade_gateway.server
 pnpm install
 pnpm dev
 ```
 
-開啟 [http://localhost:5173](http://localhost:5173) —— dev server 會把
-`/api` 代理到 `localhost:8080`。
+開啟 [http://localhost:5173](http://localhost:5173) —— dev server 預設只把
+`/api` 代理到 loopback Gateway `127.0.0.1:18082`。Gateway 才會把明確列舉的
+read contract 轉給 sidecar；未完成的 stream 與所有 order mutation 都會被安全
+拒絕，不能以直連 `localhost:8080` 代替。
 
 ### Autotrade Gateway development（安全唯讀）
 

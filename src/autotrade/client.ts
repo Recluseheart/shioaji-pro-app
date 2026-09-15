@@ -196,6 +196,19 @@ export async function fetchAutotradeOverview(): Promise<AutotradeOverview> {
     return normalizeAutotradeOverview(await apiGet<unknown>('/api/v1/autotrade/overview'));
 }
 
+async function fetchAutotradeObservation(resource: 'intents' | 'orders', intentId: string): Promise<AutotradeOrderObservation | null> {
+    const value = await apiGet<unknown>(`/api/v1/autotrade/${resource}/${encodeURIComponent(intentId)}`);
+    return normalizeAutotradeOverview({ orders: [value] }).orders[0] ?? null;
+}
+
+export function fetchAutotradeIntent(intentId: string) {
+    return fetchAutotradeObservation('intents', intentId);
+}
+
+export function fetchAutotradeOrder(intentId: string) {
+    return fetchAutotradeObservation('orders', intentId);
+}
+
 export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): Promise<StrategyPreview> {
     const document = await apiPost<Record<string, unknown>>(
         `/api/v1/autotrade/strategies/reference-fixture/${action}`,

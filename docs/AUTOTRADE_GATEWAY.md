@@ -30,6 +30,10 @@ subscription、HTTP 啟動路由或 broker capability。僅隔離測試可明確
 event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固定
 `DISARMED` 時只產生 `RISK_REJECTED` audit receipt，永不建立 outbox。
 
+瀏覽器的 `POST /api/v1/autotrade/intents` 僅接受 `MANUAL_UI` source。它不能
+冒充 `STRATEGY` 或 `SYSTEM_TRIGGER`；這兩種來源未來只能由 Gateway process
+內的 runtime 呼叫共用 coordinator，避免瀏覽器繞過 strategy/run 身分邊界。
+
 ## 啟動唯讀開發環境
 
 ```sh

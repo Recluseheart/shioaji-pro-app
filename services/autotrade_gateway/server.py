@@ -239,8 +239,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
         value = json.loads(self.rfile.read(size))
         if not isinstance(value, dict):
             raise ValueError("intent body must be an object")
+        source = Source(value["source"])
+        # Browser-originated traffic is a manual audit ingress only.  A
+        # client must never be able to impersonate Strategy or System Trigger
+        # and thereby bypass the runtime identity boundary when a future gate
+        # is armed.  Those sources call the shared coordinator in-process.
+        if source is not Source.MANUAL_UI:
+            raise ValueError("browser intent source must be MANUAL_UI")
         return Intent(
-            source=Source(value["source"]),
+            source=source,
             account_id=str(value["account_id"]),
             symbol=str(value["symbol"]),
             side=str(value["side"]),

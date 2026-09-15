@@ -244,6 +244,17 @@ class GatewayServerTest(unittest.TestCase):
         store = getattr(self.server, "order_store")
         self.assertEqual(store.outbox_state(receipt["intent_id"]), None)
 
+    def test_browser_cannot_impersonate_a_strategy_at_the_common_intent_ingress(self) -> None:
+        body = json.dumps({
+            "source": "STRATEGY", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+            "strategy_id": "reference-fixture", "run_id": "spoofed-run",
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+
     def test_read_proxy_preserves_path_but_never_forwards_browser_credentials(self) -> None:
         request = Request(
             f"{self.base}/api/v1/data/contracts?code=2330",

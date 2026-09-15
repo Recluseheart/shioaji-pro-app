@@ -170,6 +170,7 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.recover(), 1)
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
+        self.assertEqual(self.store.observation_reconciliation_cases()[0]["reason"], "restart_recovery")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
 
@@ -190,6 +191,7 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(dispatcher.calls, 1)
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
+        self.assertEqual(self.store.observation_reconciliation_cases()[0]["reason"], "dispatch_uncertain:TimeoutError")
 
     def test_corrupt_durable_payload_becomes_unknown_without_dispatch(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

@@ -54,6 +54,10 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reconciliation_cases (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                state TEXT NOT NULL, reason TEXT NOT NULL, opened_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
             CREATE TABLE IF NOT EXISTS strategy_signals (
                 signal_id TEXT PRIMARY KEY,
@@ -169,6 +173,11 @@ class PostgresIntentStore:
         uncertain = tuple(status.value for status in _UNCERTAIN)
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                SELECT intent_id,'OPEN','restart_recovery',%s,%s FROM order_intents WHERE status = ANY(%s)
+                ON CONFLICT DO NOTHING""", (timestamp, timestamp, list(uncertain)),
+            )
             cursor = self.connection.execute(
                 "UPDATE order_intents SET status=%s, updated_at=%s WHERE status = ANY(%s)",
                 (Status.UNKNOWN.value, timestamp, list(uncertain)),
@@ -192,6 +201,11 @@ class PostgresIntentStore:
     def mark_delivery_unknown(self, intent_id: str, reason: str) -> None:
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                VALUES (%s,'OPEN',%s,%s,%s) ON CONFLICT DO NOTHING""",
+                (intent_id, reason, timestamp, timestamp),
+            )
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.UNKNOWN.value, timestamp, intent_id))
 
@@ -345,5 +359,12 @@ class PostgresIntentStore:
                 """SELECT run_id, strategy_id, version, config_checksum, state, last_intent_id,
                     last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
                     FROM strategy_runs ORDER BY updated_at DESC, run_id DESC""",
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def observation_reconciliation_cases(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id,state,reason,opened_at,updated_at FROM reconciliation_cases ORDER BY opened_at DESC, intent_id DESC",
             ).fetchall()
         return [dict(row) for row in rows]

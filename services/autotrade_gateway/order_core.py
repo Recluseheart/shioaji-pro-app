@@ -257,6 +257,7 @@ class IntentStore(Protocol):
     def record_strategy_run(self, run: StrategyRun) -> None: ...
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None: ...
     def observation_strategy_runs(self) -> list[dict[str, object]]: ...
+    def observation_reconciliation_cases(self) -> list[dict[str, object]]: ...
     def close(self) -> None: ...
 
 
@@ -431,6 +432,10 @@ class SQLiteIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reconciliation_cases (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                state TEXT NOT NULL, reason TEXT NOT NULL, opened_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS strategy_signals (
                 signal_id TEXT PRIMARY KEY,
                 strategy_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL,
@@ -561,6 +566,11 @@ class SQLiteIntentStore:
         marks = ",".join("?" for _ in uncertain)
         timestamp = now().isoformat()
         with self._lock, self.connection:
+            self.connection.execute(
+                f"""INSERT OR IGNORE INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                SELECT intent_id,'OPEN','restart_recovery',?,? FROM order_intents WHERE status IN ({marks})""",
+                (timestamp, timestamp, *uncertain),
+            )
             cursor = self.connection.execute(
                 f"UPDATE order_intents SET status=?, updated_at=? WHERE status IN ({marks})",
                 (Status.UNKNOWN.value, timestamp, *uncertain),
@@ -584,6 +594,10 @@ class SQLiteIntentStore:
     def mark_delivery_unknown(self, intent_id: str, reason: str) -> None:
         with self._lock, self.connection:
             timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT OR IGNORE INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                VALUES (?,'OPEN',?,?,?)""", (intent_id, reason, timestamp, timestamp),
+            )
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.UNKNOWN.value, timestamp, intent_id))
 
@@ -748,6 +762,13 @@ class SQLiteIntentStore:
                 """SELECT run_id, strategy_id, version, config_checksum, state, last_intent_id,
                     last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
                     FROM strategy_runs ORDER BY updated_at DESC, run_id DESC""",
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def observation_reconciliation_cases(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id,state,reason,opened_at,updated_at FROM reconciliation_cases ORDER BY opened_at DESC, intent_id DESC",
             ).fetchall()
         return [dict(row) for row in rows]
 

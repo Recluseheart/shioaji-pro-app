@@ -124,6 +124,13 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(dict(decision), {
             "allowed": 0, "reasons_json": '["trading_gate_not_armed"]',
         })
+        event = self.store.observation_audit_events()[0]
+        self.assertEqual(event["intent_id"], intent.intent_id)
+        self.assertEqual(event["event_type"], "INTENT_EVALUATED")
+        self.assertEqual(event["details"], {
+            "allowed": False, "risk_reasons": ["trading_gate_not_armed"],
+            "status": "RISK_REJECTED",
+        })
 
     def test_observations_have_a_stable_secondary_order_when_timestamps_tie(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000", intent_id="intent-a")
@@ -276,6 +283,10 @@ class OrderCoreTest(unittest.TestCase):
         self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.FILLED)
         self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "BROKER_TERMINAL_CALLBACK")
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "broker_order_id": "MOCK-ORDER-1", "status": "FILLED",
+        })
         with self.assertRaisesRegex(ValueError, "current intent status"):
             self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.CANCELLED)
 

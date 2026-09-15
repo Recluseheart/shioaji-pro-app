@@ -265,6 +265,7 @@ class IntentStore(Protocol):
     ) -> None: ...
     def observation_orders(self) -> list[dict[str, object]]: ...
     def observation_risk_decisions(self) -> list[dict[str, object]]: ...
+    def observation_audit_events(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
@@ -447,6 +448,12 @@ class SQLiteIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 allowed INTEGER NOT NULL, reasons_json TEXT NOT NULL, decided_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                event_id TEXT PRIMARY KEY, intent_id TEXT REFERENCES order_intents(intent_id),
+                event_type TEXT NOT NULL, details_json TEXT NOT NULL, occurred_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS audit_events_occurred_idx
+                ON audit_events(occurred_at DESC, event_id DESC);
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -541,6 +548,18 @@ class SQLiteIntentStore:
             self.connection.execute(
                 "INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at) VALUES (?, ?, ?, ?)",
                 (intent.intent_id, int(verdict.allowed), json.dumps(verdict.reasons), timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'INTENT_EVALUATED', ?, ?)""",
+                (
+                    str(uuid4()), intent.intent_id,
+                    json.dumps({
+                        "allowed": verdict.allowed, "risk_reasons": list(verdict.reasons),
+                        "status": status.value,
+                    }, separators=(",", ":")),
+                    timestamp,
+                ),
             )
             if verdict.allowed:
                 self.connection.execute(
@@ -688,6 +707,15 @@ class SQLiteIntentStore:
                 "UPDATE execution_outbox SET state='TERMINAL', updated_at=? WHERE intent_id=?",
                 (timestamp, intent_id),
             )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'BROKER_TERMINAL_CALLBACK', ?, ?)""",
+                (
+                    str(uuid4()), intent_id,
+                    json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
@@ -736,6 +764,24 @@ class SQLiteIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def observation_audit_events(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT event_id, intent_id, event_type, details_json, occurred_at FROM audit_events "
+                "ORDER BY occurred_at DESC, event_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_details = observation.pop("details_json", "{}")
+            try:
+                details = json.loads(str(raw_details))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            observation["details"] = details if isinstance(details, dict) else {}
             observations.append(observation)
         return observations
 

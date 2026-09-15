@@ -7,6 +7,7 @@ import re
 from dataclasses import asdict
 from datetime import datetime
 from threading import Lock
+from uuid import uuid4
 
 from .order_core import (
     _UNCERTAIN,
@@ -55,6 +56,12 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 allowed BOOLEAN NOT NULL, reasons_json TEXT NOT NULL, decided_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                event_id TEXT PRIMARY KEY, intent_id TEXT REFERENCES order_intents(intent_id),
+                event_type TEXT NOT NULL, details_json TEXT NOT NULL, occurred_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS audit_events_occurred_idx
+                ON audit_events(occurred_at DESC, event_id DESC);
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -139,6 +146,18 @@ class PostgresIntentStore:
             self.connection.execute(
                 "INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at) VALUES (%s,%s,%s,%s)",
                 (intent.intent_id, verdict.allowed, json.dumps(verdict.reasons), timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'INTENT_EVALUATED', %s, %s)""",
+                (
+                    str(uuid4()), intent.intent_id,
+                    json.dumps({
+                        "allowed": verdict.allowed, "risk_reasons": list(verdict.reasons),
+                        "status": status.value,
+                    }, separators=(",", ":")),
+                    timestamp,
+                ),
             )
             if verdict.allowed:
                 self.connection.execute(
@@ -272,6 +291,15 @@ class PostgresIntentStore:
                 "UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (terminal.value, timestamp, intent_id))
             self.connection.execute(
                 "UPDATE execution_outbox SET state='TERMINAL', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'BROKER_TERMINAL_CALLBACK', %s, %s)""",
+                (
+                    str(uuid4()), intent_id,
+                    json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
@@ -320,6 +348,24 @@ class PostgresIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def observation_audit_events(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT event_id, intent_id, event_type, details_json, occurred_at FROM audit_events "
+                "ORDER BY occurred_at DESC, event_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_details = observation.pop("details_json", "{}")
+            try:
+                details = json.loads(str(raw_details))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            observation["details"] = details if isinstance(details, dict) else {}
             observations.append(observation)
         return observations
 

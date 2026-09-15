@@ -290,7 +290,11 @@ class IntentStore(Protocol):
     def record_strategy_control(self, idempotency_key: str, strategy_id: str, action: str, reason: str, receipt: dict[str, object]) -> bool: ...
     def observation_strategy_definitions(self) -> list[dict[str, object]]: ...
     def record_strategy_run(self, run: StrategyRun) -> None: ...
+    def start_strategy_lifecycle(self, run: StrategyRun) -> None: ...
     def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None: ...
+    def transition_strategy_lifecycle(
+        self, run_id: str, strategy_id: str, state: str, enabled: bool, observed_at: datetime,
+    ) -> None: ...
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None: ...
     def record_strategy_intent_result(
         self, run_id: str, intent_id: str, status: Status, observed_at: datetime,
@@ -1071,6 +1075,32 @@ class SQLiteIntentStore:
                     (run.run_id, run.heartbeat_at.isoformat()),
                 )
 
+    def start_strategy_lifecycle(self, run: StrategyRun) -> None:
+        """Atomically create an active run and expose its definition state."""
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state='RUNNING', enabled=1 WHERE strategy_id=?",
+                (run.strategy_id,),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run.strategy_id)
+            self.connection.execute(
+                """INSERT INTO strategy_runs(
+                    run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run.run_id, run.strategy_id, run.version, run.config_checksum, run.state,
+                 run.last_intent_id, run.last_status.value if run.last_status else None,
+                 run.intent_count, run.started_at.isoformat(),
+                 run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+                 run.ended_at.isoformat() if run.ended_at else None, run.updated_at.isoformat()),
+            )
+            if run.heartbeat_at is not None:
+                self.connection.execute(
+                    "INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (?, ?)",
+                    (run.run_id, run.heartbeat_at.isoformat()),
+                )
+
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None:
         """Record a monotonic liveness fact for an existing durable run."""
         timestamp = observed_at.isoformat()
@@ -1129,6 +1159,31 @@ class SQLiteIntentStore:
             )
             if cursor.rowcount != 1:
                 raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (?, ?)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_lifecycle(
+        self, run_id: str, strategy_id: str, state: str, enabled: bool, observed_at: datetime,
+    ) -> None:
+        """Atomically move the run and the user-visible definition state."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=?, heartbeat_at=?,
+                    ended_at=CASE WHEN ?='STOPPED' THEN ? ELSE ended_at END,
+                    updated_at=? WHERE run_id=?""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=?, enabled=? WHERE strategy_id=?",
+                (state, int(enabled), strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
             self.connection.execute(
                 """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (?, ?)
                 ON CONFLICT DO NOTHING""", (run_id, timestamp),

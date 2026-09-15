@@ -156,7 +156,7 @@ class StrategyRuntime:
             if self._active_run_id is not None:
                 raise ValueError("strategy already has an active run")
             run_id = str(uuid4())
-            self._coordinator.store.record_strategy_run(StrategyRun(
+            self._coordinator.store.start_strategy_lifecycle(StrategyRun(
                 run_id=run_id, strategy_id=self.strategy_id, version=self.version,
                 config_checksum=self.config_checksum, state="RUNNING", last_intent_id=None,
                 last_status=None, intent_count=0, started_at=timestamp,
@@ -174,8 +174,9 @@ class StrategyRuntime:
             raise ValueError(f"cannot {action} a {current} strategy")
         state = {"pause": "PAUSED", "resume": "RUNNING", "stop": "STOPPED"}[action]
         enabled = state == "RUNNING"
-        self._coordinator.store.transition_strategy_run(self._active_run_id, state, timestamp)
-        self._coordinator.store.set_strategy_definition_state(self.strategy_id, state, enabled)
+        self._coordinator.store.transition_strategy_lifecycle(
+            self._active_run_id, self.strategy_id, state, enabled, timestamp,
+        )
         result = {"state": state, "enabled": enabled, "run_id": self._active_run_id}
         if action == "stop":
             self._active_run_id = None

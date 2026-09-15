@@ -45,8 +45,8 @@ class PostgresIntentStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         # Each test shares the per-class disposable schema but must not share
         # durable observations. CASCADE is constrained to this UUID schema's
-        # order graph and clears its outbox/signal dependents as well.
-        self.store.connection.execute("TRUNCATE order_intents CASCADE")
+        # order and strategy graphs, including outbox/signal dependents.
+        self.store.connection.execute("TRUNCATE strategy_definitions, order_intents CASCADE")
 
     def test_atomic_outbox_and_unknown_recovery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -251,6 +251,25 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "ended_at": None, "updated_at": heartbeat_at.isoformat(),
         }])
         self.assertEqual(self.store.observation_orders(), [])
+
+    def test_lifecycle_transition_updates_run_and_definition_together(self) -> None:
+        started_at = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        self.store.record_strategy_definition(StrategyDefinition(
+            strategy_id="reference-fixture", version="v1", config_checksum="fixture-checksum",
+            state="DISABLED", enabled=False, allowed_symbols=("2330",),
+        ))
+        self.store.start_strategy_lifecycle(StrategyRun(
+            run_id="atomic-run", strategy_id="reference-fixture", version="v1",
+            config_checksum="fixture-checksum", state="RUNNING", last_intent_id=None,
+            last_status=None, intent_count=0, started_at=started_at, heartbeat_at=started_at,
+            ended_at=None, updated_at=started_at,
+        ))
+        self.store.transition_strategy_lifecycle(
+            "atomic-run", "reference-fixture", "STOPPED", False, started_at,
+        )
+        self.assertEqual(self.store.observation_strategy_definitions()[0]["state"], "STOPPED")
+        self.assertFalse(self.store.observation_strategy_definitions()[0]["enabled"])
+        self.assertEqual(self.store.observation_strategy_runs()[0]["state"], "STOPPED")
 
     def test_strategy_definition_and_version_are_durable_without_enabling_a_runner(self) -> None:
         self.store.record_strategy_definition(StrategyDefinition(

@@ -631,6 +631,32 @@ class PostgresIntentStore:
                     ON CONFLICT DO NOTHING""", (run.run_id, run.heartbeat_at.isoformat()),
                 )
 
+    def start_strategy_lifecycle(self, run: StrategyRun) -> None:
+        """Atomically create an active run and expose its definition state."""
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state='RUNNING', enabled=true WHERE strategy_id=%s",
+                (run.strategy_id,),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run.strategy_id)
+            self.connection.execute(
+                """INSERT INTO strategy_runs(
+                    run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (run.run_id, run.strategy_id, run.version, run.config_checksum, run.state,
+                 run.last_intent_id, run.last_status.value if run.last_status else None,
+                 run.intent_count, run.started_at.isoformat(),
+                 run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+                 run.ended_at.isoformat() if run.ended_at else None, run.updated_at.isoformat()),
+            )
+            if run.heartbeat_at is not None:
+                self.connection.execute(
+                    "INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)",
+                    (run.run_id, run.heartbeat_at.isoformat()),
+                )
+
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None:
         """Record a monotonic liveness fact for an existing durable run."""
         timestamp = observed_at.isoformat()
@@ -688,6 +714,31 @@ class PostgresIntentStore:
             )
             if cursor.rowcount != 1:
                 raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_lifecycle(
+        self, run_id: str, strategy_id: str, state: str, enabled: bool, observed_at: datetime,
+    ) -> None:
+        """Atomically move the run and the user-visible definition state."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=%s, heartbeat_at=%s,
+                    ended_at=CASE WHEN %s='STOPPED' THEN %s ELSE ended_at END,
+                    updated_at=%s WHERE run_id=%s""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=%s, enabled=%s WHERE strategy_id=%s",
+                (state, enabled, strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
             self.connection.execute(
                 """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
                 ON CONFLICT DO NOTHING""", (run_id, timestamp),

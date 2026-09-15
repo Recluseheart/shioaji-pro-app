@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from services.autotrade_gateway.order_core import Gate, OrderCoordinator, RiskContext, SQLiteIntentStore, Status
+from services.autotrade_gateway.order_core import Gate, OrderCoordinator, RiskContext, SQLiteIntentStore, Status, StrategyRun
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 from services.autotrade_gateway.worker import ExecutionWorker
 
@@ -156,6 +156,25 @@ class StrategyRuntimeTest(unittest.TestCase):
             runtime.control("start")
         self.assertEqual(self.store.observation_orders(), [])
         self.assertEqual(self.store.observation_strategy_runs(), [])
+
+    def test_lifecycle_store_transition_keeps_run_and_definition_together(self) -> None:
+        runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))
+        started_at = datetime.now(timezone.utc)
+        run = StrategyRun(
+            run_id="atomic-run", strategy_id=runtime.strategy_id, version=runtime.version,
+            config_checksum=runtime.config_checksum, state="RUNNING", last_intent_id=None,
+            last_status=None, intent_count=0, started_at=started_at, heartbeat_at=started_at,
+            ended_at=None, updated_at=started_at,
+        )
+
+        self.store.start_strategy_lifecycle(run)
+        self.store.transition_strategy_lifecycle(
+            run.run_id, runtime.strategy_id, "STOPPED", False, started_at,
+        )
+
+        self.assertEqual(self.store.observation_strategy_definitions()[0]["state"], "STOPPED")
+        self.assertFalse(self.store.observation_strategy_definitions()[0]["enabled"])
+        self.assertEqual(self.store.observation_strategy_runs()[0]["state"], "STOPPED")
 
     def test_running_lifecycle_is_required_for_opt_in_strategy_ingress(self) -> None:
         runtime = StrategyRuntime(

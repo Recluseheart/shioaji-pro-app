@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
+import socket
 from hmac import compare_digest
 from dataclasses import replace
 from http import HTTPStatus
@@ -787,6 +789,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
         payload = json.dumps(observation, separators=(",", ":"))
         return f"id: {event_id}\nevent: autotrade-order\ndata: {payload}\n\n".encode()
 
+    def _sse_client_disconnected(self) -> bool:
+        """Return promptly when a read-only SSE peer has sent TCP FIN.
+
+        A write-only heartbeat loop can otherwise keep a socket in
+        ``CLOSE_WAIT`` indefinitely: a kernel send buffer may accept several
+        heartbeats after the browser has closed.  Each leaked handler retains
+        an EventHub listener and file descriptor, eventually preventing new
+        observer and Gateway connections.  Peeking only after ``select``
+        makes this a non-blocking FIN check; no browser data is consumed.
+        """
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
     def _autotrade_events(self) -> None:
         """Replay durable observations and stream later local projection writes."""
         store = getattr(self.server, "order_store")
@@ -815,6 +835,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.wfile.write(self._sse_event(observation))
             self.wfile.flush()
             while True:
+                if self._sse_client_disconnected():
+                    return
                 try:
                     observation = listener.get(timeout=1)
                     self.wfile.write(self._sse_event(observation))

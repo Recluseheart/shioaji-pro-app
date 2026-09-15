@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -909,6 +910,21 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.readline().decode(), "event: autotrade-order\n")
             payload = response.readline().decode().removeprefix("data: ")
             self.assertEqual(json.loads(payload)["intent_id"], receipt["intent_id"])
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_autotrade_event_disconnect_releases_its_listener(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/autotrade/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.readline().decode(), "retry: 3000\n")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if not getattr(self.server, "autotrade_event_hub")._listeners:
+                break
+            time.sleep(0.05)
+        self.assertEqual(getattr(self.server, "autotrade_event_hub")._listeners, set())
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_gateway_startup_recovers_persisted_pending_delivery_to_unknown(self) -> None:

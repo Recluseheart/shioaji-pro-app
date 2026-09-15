@@ -52,6 +52,49 @@ test('Panel Library adds and removes every repeatable panel without a broker mut
     expect(mutationRequests).toBe(0);
 });
 
+test('A linked chart can be pinned and returned to linked mode without a broker mutation', async ({ page }) => {
+    const fixtureContract = {
+        region: 'TW', exchange: 'TSE', code: 'PARITY', security_type: 'STK',
+        target_code: null, name: 'Parity fixture', currency: 'TWD',
+        reference: 0, limit_up: 0, limit_down: 0, day_trade: '',
+        update_date: '', category: '', margin_trading_balance: 0,
+        short_selling_balance: 0,
+    };
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/watchlist', async (route) => {
+        await route.fulfill({ json: [{
+            id: 'parity-fixture-list', name: 'Parity fixture',
+            contracts: [{
+                code: fixtureContract.code,
+                security_type: fixtureContract.security_type,
+                exchange: fixtureContract.exchange,
+            }],
+        }] });
+    });
+    await page.route(/\/api\/v1\/data\/contracts\/PARITY(?:\/info)?(?:\?.*)?$/, async (route) => {
+        await route.fulfill({ json: fixtureContract });
+    });
+    await page.route('**/api/v1/data/snapshots', async (route) => {
+        await route.fulfill({ json: [] });
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const linked = chart.getByTitle('跟隨自選清單選擇；點擊鎖定目前商品');
+    await expect(linked).toBeVisible();
+    await linked.click();
+    const pinned = chart.getByTitle('已鎖定；點擊恢復連動');
+    await expect(pinned).toBeVisible();
+    await pinned.click();
+    await expect(linked).toBeVisible();
+    expect(mutationRequests).toBe(0);
+});
+
 test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

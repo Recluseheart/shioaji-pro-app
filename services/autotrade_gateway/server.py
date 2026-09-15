@@ -282,6 +282,25 @@ def orders_document(store: IntentStore) -> list[dict[str, object]]:
     ]
 
 
+def risk_usage_document(
+    orders: list[dict[str, object]], fills: list[dict[str, object]], reconciliation: list[dict[str, object]],
+) -> dict[str, object]:
+    """Report only durable risk-adjacent usage, not an inferred account snapshot."""
+    confirmed_quantities = [
+        quantity for fill in fills for quantity in [fill.get("quantity")]
+        if isinstance(quantity, int) and quantity > 0
+    ]
+    return {
+        "intent_count": len(orders),
+        "confirmed_fill_count": len(confirmed_quantities),
+        "confirmed_filled_quantity": sum(confirmed_quantities),
+        "reconciliation_count": len(reconciliation),
+        # Daily loss, positions, and gross exposure require a broker-backed
+        # account snapshot; this fixed SIM gateway deliberately does not infer it.
+        "authoritative_remaining_available": False,
+    }
+
+
 def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -298,6 +317,7 @@ def overview_document(
     audit_events = store.observation_audit_events() if store is not None else []
     runs = strategy_runs_document(store) if store is not None else []
     decisions = decisions_document(store, orders) if store is not None else []
+    reconciliation = reconciliation_document(store, orders) if store is not None else []
     return {
         "health": health_document(strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
@@ -311,8 +331,9 @@ def overview_document(
             "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
             "limits": coordinator.risk.limits.document() if coordinator else {},
             "last_verdict": latest_risk_verdict(decisions),
+            "usage": risk_usage_document(orders, fills, reconciliation),
         },
-        "reconciliation": reconciliation_document(store, orders) if store is not None else [],
+        "reconciliation": reconciliation,
         "performance": {
             "run_count": len(runs),
             "filled_order_count": len({fill["intent_id"] for fill in fills}),

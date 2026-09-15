@@ -86,6 +86,31 @@ test('Run performance renders durable lifecycle facts without a trading request'
     expect(mutationRequests).toBe(0);
 });
 
+test('Risk limits show durable usage and do not invent remaining exposure', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\//.test(request.url())) mutationRequests += 1;
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY' },
+            risk: {
+                limits: { max_order_quantity: 10000 }, limits_source: 'fixture',
+                usage: {
+                    intent_count: 3, confirmed_fill_count: 2, confirmed_filled_quantity: 5,
+                    reconciliation_count: 1, authoritative_remaining_available: false,
+                },
+            },
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('風控與限額', { exact: true }).click();
+    await expect(page.getByText('Durable usage：3 intents · 已確認成交 5（2 筆） · 待對帳 1')).toBeVisible();
+    await expect(page.getByText('剩餘部位／日損／總曝險：尚無權威帳務快照，不能據此推測。')).toBeVisible();
+    expect(mutationRequests).toBe(0);
+});
+
 test('Reconciliation queue renders its durable case without retry controls', async ({ page }) => {
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {

@@ -8,7 +8,10 @@ const overview = {
         enabled_strategy_count: 0, gateway_status: 'READY',
     },
     strategies: [], signals: [], runs: [], decisions: [], orders: [], audit_events: [],
-    risk: { mode: 'ENFORCING', limits_source: 'test', limits: {}, last_verdict: null },
+    risk: { mode: 'ENFORCING', limits_source: 'test', limits: {}, last_verdict: null, usage: {
+        intent_count: 0, confirmed_fill_count: 0, confirmed_filled_quantity: 0,
+        reconciliation_count: 0, authoritative_remaining_available: false,
+    } },
     reconciliation: [],
     performance: { run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0' },
 } satisfies AutotradeOverview;

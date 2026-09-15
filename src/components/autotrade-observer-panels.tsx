@@ -298,6 +298,12 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     ))}
                 </div>
             )}
+            {kind === 'risk_limits' && overview && (
+                <div style={{ display: 'grid', gap: 4, color: '#aeb7c6' }}>
+                    <div>Durable usage：{overview.risk.usage.intent_count} intents · 已確認成交 {overview.risk.usage.confirmed_filled_quantity}（{overview.risk.usage.confirmed_fill_count} 筆） · 待對帳 {overview.risk.usage.reconciliation_count}</div>
+                    {!overview.risk.usage.authoritative_remaining_available && <div>剩餘部位／日損／總曝險：尚無權威帳務快照，不能據此推測。</div>}
+                </div>
+            )}
             {kind === 'risk_limits' && riskVerdictText(overview?.risk.last_verdict) && (
                 <div role='status' style={{ color: overview?.risk.last_verdict?.allowed ? '#73c991' : '#f0b44d' }}>
                     {riskVerdictText(overview?.risk.last_verdict)}

@@ -394,6 +394,11 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(overview["performance"]["filled_order_count"], 1)
         self.assertEqual(overview["orders"][0]["filled_quantity"], 1)
         self.assertEqual(overview["orders"][0]["fill_count"], 1)
+        self.assertEqual(overview["risk"]["usage"], {
+            "intent_count": 1, "confirmed_fill_count": 1,
+            "confirmed_filled_quantity": 1, "reconciliation_count": 0,
+            "authoritative_remaining_available": False,
+        })
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:

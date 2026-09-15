@@ -21,6 +21,13 @@ export type AutotradeOverview = {
         limits_source: string;
         limits: Record<string, unknown>;
         last_verdict: AutotradeRiskVerdict | null;
+        usage: {
+            intent_count: number;
+            confirmed_fill_count: number;
+            confirmed_filled_quantity: number;
+            reconciliation_count: number;
+            authoritative_remaining_available: boolean;
+        };
     };
     reconciliation: AutotradeReconciliationObservation[];
     performance: {
@@ -223,6 +230,9 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             updated_at: rawVerdict.updated_at,
         }
         : null;
+    const usage = risk.usage && typeof risk.usage === 'object' ? risk.usage as Record<string, unknown> : {};
+    const nonNegativeInteger = (candidate: unknown) => typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0
+        ? candidate : 0;
     const performance = raw.performance && typeof raw.performance === 'object'
         ? raw.performance as Record<string, unknown> : {};
     const runs = Array.isArray(raw.runs) ? raw.runs.flatMap((item): AutotradeRun[] => {
@@ -297,6 +307,13 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             limits: risk.limits && typeof risk.limits === 'object' && !Array.isArray(risk.limits)
                 ? risk.limits as Record<string, unknown> : {},
             last_verdict: lastVerdict,
+            usage: {
+                intent_count: nonNegativeInteger(usage.intent_count),
+                confirmed_fill_count: nonNegativeInteger(usage.confirmed_fill_count),
+                confirmed_filled_quantity: nonNegativeInteger(usage.confirmed_filled_quantity),
+                reconciliation_count: nonNegativeInteger(usage.reconciliation_count),
+                authoritative_remaining_available: usage.authoritative_remaining_available === true,
+            },
         },
         reconciliation,
         performance: {

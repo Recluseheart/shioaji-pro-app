@@ -99,7 +99,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   聚合 read model。沒有持久資料來源時各事件陣列必須為空，不能製造 broker
   activity 來填滿 UI。`risk.last_verdict` 只投影最新 durable ingress 的
   intent、correlation、status 與 reasons，方便 UI 說明最近一次風控結果；它不會
-  自行重新評估、建立 signal 或補造 broker 狀態。
+  自行重新評估、建立 signal 或補造 broker 狀態。`risk.usage` 只列出 durable
+  intent、broker-confirmed fill 與 reconciliation 計數；沒有 broker-backed 帳務快照時
+  `authoritative_remaining_available=false`，UI 不得推測剩餘部位、日損或總曝險額度。
 - `GET /api/v1/autotrade/strategies` 與
   `GET /api/v1/autotrade/strategies/{id}`：唯讀投影目前已註冊的策略 descriptor；
   現階段僅有固定 `DISABLED` 的 `reference-fixture`，未知 id 為 `404`。這些 route

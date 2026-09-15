@@ -74,12 +74,20 @@ async function throwApiError(res: Response): Promise<never> {
         const data = (await res.json()) as {
             message?: string;
             details?: unknown;
+            correlation_id?: unknown;
         };
         detail =
             data.message ??
             (typeof data.details === 'string' ? data.details : '');
         if (data.details && typeof data.details !== 'string') {
             detail += ` ${JSON.stringify(data.details)}`;
+        }
+        // Gateway risk receipts carry a durable correlation id.  Surface a
+        // short, non-sensitive code with the human-readable reason so a user
+        // can find the same rejection in the observer timeline without
+        // exposing a full account, credential, or broker identifier.
+        if (typeof data.correlation_id === 'string' && data.correlation_id) {
+            detail += `${detail ? '' : '拒絕的交易請求'}（追蹤 ${data.correlation_id.slice(0, 8)}）`;
         }
     } catch {
         // non-JSON body — fall back to status text

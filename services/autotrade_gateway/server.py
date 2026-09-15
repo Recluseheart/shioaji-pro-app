@@ -75,6 +75,8 @@ MARKET_STREAM_POST_PATHS = frozenset({
     "/api/v1/stream/unsubscribe",
 })
 TRADE_CALLBACK_SUBSCRIPTION_PATH = "/api/v1/auth/subscribe_trade"
+WATCHLIST_PATH = "/api/v1/watchlist"
+_WATCHLIST_ID = r"[A-Za-z0-9_-]{1,128}"
 MARKET_STREAM_CAPABILITIES = frozenset({
     "calculated_index",
     "index_components",
@@ -147,6 +149,17 @@ def is_allowed_market_stream_post(path: str) -> bool:
         if path.startswith(prefix):
             return path.removeprefix(prefix) in MARKET_STREAM_CAPABILITIES
     return False
+
+
+def is_allowed_watchlist_mutation(path: str, method: str) -> bool:
+    """Allow only the upstream's non-broker watchlist CRUD shapes."""
+    if method == "POST" and path == WATCHLIST_PATH:
+        return True
+    match = re.fullmatch(rf"{WATCHLIST_PATH}/({_WATCHLIST_ID})(/contracts)?", path)
+    if match is None:
+        return False
+    has_contracts = match.group(2) is not None
+    return (method == "PUT" and not has_contracts) or (method == "POST" and has_contracts) or method == "DELETE"
 
 
 def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
@@ -349,6 +362,27 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except URLError:
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
+    def _proxy_watchlist_mutation(self, body: bytes | None) -> None:
+        """Proxy a narrowly-scoped UI preference mutation without credentials."""
+        upstream = getattr(self.server, "upstream_origin")
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() in {"accept", "content-type"}
+        }
+        request = Request(f"{upstream}{self.path}", data=body, headers=headers, method=self.command)
+        try:
+            with urlopen(request, timeout=5) as response:
+                self._bytes(
+                    response.status,
+                    response.read(),
+                    response.headers.get_content_type(),
+                )
+        except HTTPError as error:
+            self._bytes(error.code, error.read(), error.headers.get_content_type())
+        except URLError:
+            self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji watchlist service unavailable"})
+
     def _relay_market_sse(self) -> None:
         """Relay the single upstream market stream without credentials or buffering."""
         upstream = getattr(self.server, "upstream_origin")
@@ -388,6 +422,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
         parsed = json.loads(body)
         if not isinstance(parsed, (dict, list)):
             raise ValueError("read query must be a JSON object or array")
+        return body
+
+    def _watchlist_mutation_body(self) -> bytes | None:
+        size = int(self.headers.get("Content-Length", "0"))
+        if size == 0 and self.command == "DELETE":
+            return None
+        if size <= 0 or size > 65_536:
+            raise ValueError("invalid watchlist mutation body size")
+        if self.headers.get("Content-Type", "").split(";", 1)[0].lower() != "application/json":
+            raise ValueError("watchlist mutation must be JSON")
+        body = self.rfile.read(size)
+        if not isinstance(json.loads(body), dict):
+            raise ValueError("watchlist mutation must be a JSON object")
         return body
 
     def _sse_event(self, observation: dict[str, object]) -> bytes:
@@ -689,6 +736,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid read query"})
                 return
             self._proxy_read_query(body)
+            return
+        if is_allowed_watchlist_mutation(path, self.command):
+            try:
+                watchlist_body = self._watchlist_mutation_body()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid watchlist mutation"})
+                return
+            self._proxy_watchlist_mutation(watchlist_body)
             return
         self._json(HTTPStatus.FORBIDDEN, {"message": "Autotrade mutation is disabled"})
 

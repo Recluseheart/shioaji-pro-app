@@ -115,6 +115,11 @@ subscription：它只把帳戶的 trade-event 訂閱 JSON 轉交本機 sidecar�
 Authorization／Cookie，且不建立 intent、outbox 或 broker order。它不是取消、改價、
 下單或重送的例外通道。
 
+上游 watchlist CRUD（建立清單、同步清單合約、增刪合約、刪除清單）同樣採用狹窄的
+`/api/v1/watchlist` path／method allowlist；這些是 UI 偏好資料，並非 broker order。
+Gateway 只接受 JSON object、限制 list id 字元、移除 browser credentials，且仍拒絕所有
+未列舉的 mutation route。
+
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 
 Web 的 Autotrade overview 與七個 observer panels 共享單一 5 秒唯讀 refresh

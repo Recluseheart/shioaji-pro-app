@@ -39,7 +39,7 @@ class ReadServiceHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def _receive_mutation(self) -> None:
         size = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(size)
         type(self).received.append((self.path, dict(self.headers.items()), body))
@@ -49,6 +49,10 @@ class ReadServiceHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    do_POST = _receive_mutation
+    do_PUT = _receive_mutation
+    do_DELETE = _receive_mutation
 
 
 class GatewayServerTest(unittest.TestCase):
@@ -582,6 +586,47 @@ class GatewayServerTest(unittest.TestCase):
         self.assertNotIn("Cookie", headers)
         self.assertEqual(upstream_body, body)
         self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+
+    def test_watchlist_crud_is_allowlisted_without_order_access(self) -> None:
+        cases = (
+            ("POST", "/api/v1/watchlist", b'{"name":"my-list","contracts":[]}'),
+            ("PUT", "/api/v1/watchlist/list-1", b'{"contracts":[]}'),
+            ("POST", "/api/v1/watchlist/list-1/contracts", b'{"contracts":[]}'),
+            ("DELETE", "/api/v1/watchlist/list-1/contracts", b'{"contracts":[]}'),
+            ("DELETE", "/api/v1/watchlist/list-1", None),
+        )
+        for method, path, body in cases:
+            with self.subTest(method=method, path=path):
+                request = Request(
+                    f"{self.base}{path}",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer browser-secret",
+                        "Cookie": "session=browser-secret",
+                    },
+                    method=method,
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                received_path, headers, received_body = ReadServiceHandler.received[-1]
+                self.assertEqual(received_path, path)
+                self.assertNotIn("Authorization", headers)
+                self.assertNotIn("Cookie", headers)
+                self.assertEqual(received_body, body or b"")
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+
+    def test_malformed_watchlist_route_is_not_forwarded(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/watchlist/not%2Fa-valid-id/contracts",
+            data=b'{"contracts":[]}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request)
+        self.assertEqual(raised.exception.code, 403)
+        self.assertEqual(ReadServiceHandler.received, [])
 
     def test_market_sse_is_relayed_without_browser_credentials(self) -> None:
         request = Request(

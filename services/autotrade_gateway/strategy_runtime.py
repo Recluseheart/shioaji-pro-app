@@ -64,6 +64,30 @@ class StrategyRuntime:
         self._last_event_id: str | None = None
         self._last_intent_id: str | None = None
         self._last_status: Status | None = None
+        self._restore_latest_durable_signal()
+
+    def _restore_latest_durable_signal(self) -> None:
+        """Restore read-only operator context after a process restart.
+
+        The signal journal is the durable source of truth.  Hydration must
+        never call a strategy, Risk Engine, outbox, or broker: it only keeps
+        the disabled strategy panel from claiming there was no recent event.
+        """
+        signal = next((
+            item for item in self._coordinator.store.observation_signals()
+            if item.get("strategy_id") == self.strategy_id
+        ), None)
+        if signal is None:
+            return
+        event_id = signal.get("event_id")
+        intent_id = signal.get("intent_id")
+        status = signal.get("status")
+        self._last_event_id = event_id if isinstance(event_id, str) else None
+        self._last_intent_id = intent_id if isinstance(intent_id, str) else None
+        try:
+            self._last_status = Status(status) if isinstance(status, str) else None
+        except ValueError:
+            self._last_status = None
 
     def observations(self) -> list[dict[str, object]]:
         return [

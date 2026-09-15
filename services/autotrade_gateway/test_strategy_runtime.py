@@ -71,6 +71,9 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(first_runtime.process_fixture_event(event))
 
         restarted_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertEqual(restarted_runtime.observations()[0]["last_event_id"], "event-after-restart")
+        self.assertEqual(restarted_runtime.observations()[0]["last_intent_id"], self.store.observation_orders()[0]["intent_id"])
+        self.assertEqual(restarted_runtime.observations()[0]["last_status"], "RISK_REJECTED")
         self.assertIsNone(restarted_runtime.process_fixture_event(event))
         self.assertEqual(len(self.store.observation_orders()), 1)
         self.assertEqual(restarted_runtime.observations()[0], {

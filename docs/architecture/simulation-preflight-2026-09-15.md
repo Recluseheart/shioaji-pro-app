@@ -36,6 +36,12 @@ Gateway overview 在預檢時顯示：durable orders 為空、`UNKNOWN`／`RECON
 `gateway_static_simulation_v1`。目前 overview 尚未能保存 broker 的權威剩餘
 額度，故 `authoritative_remaining_available` 不宣稱為 true。
 
+同日以暫時、in-memory、`DISARMED` Gateway 實例完成真實 sidecar 的 read
+proxy probe。透過 Gateway 取得 `info`、accounts，以及 `trades`、
+`position_unit`、`account_balance`、`settlements`、`trading_limits` 與 `2330`
+snapshot，全部為 HTTP 200 且 JSON shape 與 sidecar 相符。該實例在 probe 後
+立即關閉；沒有建立 intent、outbox、broker mutation 或 background worker。
+
 三種 local database connection setting 均已配置，但本文件不保存 DSN、資料庫
 名稱、帳戶或密碼。任何 canary 前必須在專用 schema 再執行 DB health、outbox
 empty、fresh quote、position、loss 與應用程式 risk limit 的即時檢查；任何一項

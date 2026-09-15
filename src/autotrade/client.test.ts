@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeAutotradeHealth, normalizeAutotradeOverview } from './client';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+vi.mock('../lib/api', () => ({ apiGet: mocks.get, apiPost: mocks.post }));
+
+import {
+    fetchAutotradeIntent,
+    fetchAutotradeOrder,
+    normalizeAutotradeHealth,
+    normalizeAutotradeOverview,
+} from './client';
+
+beforeEach(() => {
+    mocks.get.mockReset();
+    mocks.post.mockReset();
+});
 
 describe('Autotrade Gateway health contract', () => {
     it('fails closed for malformed or production-shaped values', () => {
@@ -111,5 +125,34 @@ describe('normalizeAutotradeOverview', () => {
             operation: 'UPDATE_PRICE', target_order_id: 'broker-order-1',
             operation_payload: { price: 1000 },
         })]);
+    });
+});
+
+describe('durable observation detail clients', () => {
+    it('reads an intent from its encoded Gateway resource and normalizes it', async () => {
+        mocks.get.mockResolvedValue({
+            intent_id: 'intent/with space', correlation_id: 'correlation-1',
+            source: 'MANUAL_UI', status: 'RISK_REJECTED',
+            symbol: '2330', side: 'BUY', quantity: 1,
+            limit_price: '1000', order_price_type: 'LMT',
+        });
+
+        await expect(fetchAutotradeIntent('intent/with space')).resolves.toEqual(expect.objectContaining({
+            intent_id: 'intent/with space', status: 'RISK_REJECTED',
+        }));
+        expect(mocks.get).toHaveBeenCalledWith('/api/v1/autotrade/intents/intent%2Fwith%20space');
+    });
+
+    it('keeps order details fail-closed when the Gateway response lacks a durable identity', async () => {
+        mocks.get.mockResolvedValue({ status: 'PENDING_SUBMIT', broker_order_id: 'untrusted' });
+
+        await expect(fetchAutotradeOrder('intent-2')).resolves.toBeNull();
+        expect(mocks.get).toHaveBeenCalledWith('/api/v1/autotrade/orders/intent-2');
+    });
+
+    it('does not turn a failed Gateway read into a synthetic order observation', async () => {
+        mocks.get.mockRejectedValue(new Error('Gateway unavailable'));
+
+        await expect(fetchAutotradeOrder('intent-3')).rejects.toThrow('Gateway unavailable');
     });
 });

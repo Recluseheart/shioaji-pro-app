@@ -179,6 +179,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
     const lifecycleEnabled = overview?.strategies.some((item) =>
         Boolean(item && typeof item === 'object' && (item as { lifecycle_enabled?: unknown }).lifecycle_enabled === true),
     ) ?? false;
+    const observerOnly = overview?.health.capability_mode === 'OBSERVER';
     const runPreview = (action: 'validate' | 'dry-run') => {
         void previewReferenceStrategy(action)
             .then((result) => setStrategyPreview(result.message))
@@ -219,6 +220,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Badge label='環境' value={overview?.health.environment ?? 'UNKNOWN'} tone='#4aa3ff' />
                 <Badge label='閘門' value={overview?.health.trading_gate ?? 'UNKNOWN'} tone='#f0b44d' />
+                <Badge label='模式' value={overview?.health.capability_mode ?? 'OBSERVER'} tone='#8892a6' />
                 <Badge label='項目' value={String(count)} tone='#8892a6' />
             </div>
             <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{panelSummary(kind, overview, overview ? null : error)}</div>
@@ -298,15 +300,17 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                         </div>;
                     })}
                     {strategyPreview && <div style={{ color: '#aeb7c6' }}>{strategyPreview}</div>}
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
-                        <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
-                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('start')} title={lifecycleEnabled ? '只建立 durable strategy run；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>開始</button>
-                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('pause')} title={lifecycleEnabled ? '暫停新策略訊號；既有委託不變' : 'Gateway 未啟用 SIM lifecycle'}>暫停</button>
-                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('resume')} title={lifecycleEnabled ? '恢復策略 lifecycle；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>恢復</button>
-                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('stop')} title={lifecycleEnabled ? '停止策略；既有委託與持倉不變' : 'Gateway 未啟用 SIM lifecycle'}>停止</button>
-                        <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
-                    </div>
+                    {observerOnly ? <div role='status' style={{ color: '#8892a6' }}>遠端 observer mode：不提供策略、Kill Switch 或下單控制。</div> : (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
+                            <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
+                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('start')} title={lifecycleEnabled ? '只建立 durable strategy run；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>開始</button>
+                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('pause')} title={lifecycleEnabled ? '暫停新策略訊號；既有委託不變' : 'Gateway 未啟用 SIM lifecycle'}>暫停</button>
+                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('resume')} title={lifecycleEnabled ? '恢復策略 lifecycle；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>恢復</button>
+                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('stop')} title={lifecycleEnabled ? '停止策略；既有委託與持倉不變' : 'Gateway 未啟用 SIM lifecycle'}>停止</button>
+                            <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
+                        </div>
+                    )}
                     {killSwitchMessage && <div role='status' style={{ color: '#ef4444' }}>{killSwitchMessage}</div>}
                 </>
             )}

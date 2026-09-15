@@ -98,6 +98,11 @@ intent、order、watchlist 或 internal broker callback 的 mutation 都在 rout
 或 reference strategy signal。local operator 另以預設 `OPERATOR` mode 執行，不得將
 Tailscale Serve 指到 operator process。
 
+`GET /api/v1/autotrade/health` 與 overview 的 `health` 都會帶
+`capability_mode`（`OPERATOR` 或 `OBSERVER`）。Web 在 `OBSERVER` 時顯示模式，
+並隱藏策略 preview／lifecycle 與 Kill Switch controls；這只是避免誤操作的第二層，
+不可取代 Gateway 的 `403` router boundary。
+
 目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
 這些限制透過 overview 的 `risk.limits` 唯讀顯示。若未來 gate 進入 `ARMED`，每筆

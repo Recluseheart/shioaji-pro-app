@@ -10,6 +10,7 @@ import {
     automatedOrderObservations,
     CopyableIdentity,
     DurableOrderDetail,
+    AutotradeObserverPanels,
     filterTimeline,
     orderObservationText,
     panelSummary,
@@ -166,6 +167,29 @@ describe('DurableOrderDetail', () => {
         });
         expect(JSON.stringify(renderer.toJSON())).toContain('Gateway 未提供此 durable 記錄');
         expect(JSON.stringify(renderer.toJSON())).not.toContain('intent intent-2');
+        await act(async () => renderer.unmount());
+    });
+});
+
+describe('Autotrade observer capability presentation', () => {
+    it('hides every strategy control in observer mode while retaining the mode explanation', async () => {
+        api.get.mockResolvedValue({
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OBSERVER',
+            },
+        });
+        let renderer!: ReturnType<typeof create>;
+        await act(async () => {
+            renderer = create(createElement(AutotradeObserverPanels, { kind: 'strategy_control' }));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(JSON.stringify(renderer.toJSON())).toContain('遠端 observer mode'));
+        const output = JSON.stringify(renderer.toJSON());
+        expect(output).not.toContain('啟用 Kill Switch');
+        expect(output).not.toContain('驗證策略');
+        expect(output).not.toContain('開始');
         await act(async () => renderer.unmount());
     });
 });

@@ -204,6 +204,10 @@ class GatewayServerTest(unittest.TestCase):
         thread.start()
         try:
             base = f"http://127.0.0.1:{server.server_port}"
+            with urlopen(f"{base}/api/v1/autotrade/health") as response:
+                self.assertEqual(json.load(response)["capability_mode"], "OBSERVER")
+            with urlopen(f"{base}/api/v1/autotrade/overview") as response:
+                self.assertEqual(json.load(response)["health"]["capability_mode"], "OBSERVER")
             for path in (
                 "/api/v1/autotrade/intents",
                 "/api/v1/autotrade/kill-switch",
@@ -442,7 +446,7 @@ class GatewayServerTest(unittest.TestCase):
 
         self.assertEqual(health_document(Runtime()), {
             "environment": "SIM", "trading_gate": "DISARMED", "strategy_count": 3,
-            "enabled_strategy_count": 1, "gateway_status": "READY",
+            "enabled_strategy_count": 1, "gateway_status": "READY", "capability_mode": "OPERATOR",
         })
 
     def test_read_proxy_fixed_paths_cannot_match_longer_unlisted_routes(self) -> None:

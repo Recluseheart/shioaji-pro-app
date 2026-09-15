@@ -6,6 +6,7 @@ export type AutotradeHealth = {
     strategy_count: number;
     enabled_strategy_count: number;
     gateway_status: 'READY' | 'DEGRADED' | 'UNAVAILABLE';
+    capability_mode: 'OPERATOR' | 'OBSERVER';
 };
 
 export type AutotradeOverview = {
@@ -150,6 +151,7 @@ const fallback: AutotradeHealth = {
     strategy_count: 0,
     enabled_strategy_count: 0,
     gateway_status: 'UNAVAILABLE',
+    capability_mode: 'OBSERVER',
 };
 
 export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
@@ -166,6 +168,7 @@ export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
         enabled_strategy_count: typeof raw.enabled_strategy_count === 'number' ? raw.enabled_strategy_count : 0,
         gateway_status: raw.gateway_status === 'READY' || raw.gateway_status === 'DEGRADED'
             ? raw.gateway_status : 'UNAVAILABLE',
+        capability_mode: raw.capability_mode === 'OPERATOR' ? 'OPERATOR' : 'OBSERVER',
     };
 }
 

@@ -26,9 +26,14 @@ describe('Autotrade Gateway health contract', () => {
     });
 
     it('accepts the versioned read-only shape', () => {
-        expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY' })).toEqual({
-            environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY',
+        expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' })).toEqual({
+            environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
         });
+    });
+
+    it('fails closed to observer capability when the mode is absent or malformed', () => {
+        expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', capability_mode: 'LIVE_OPERATOR' }))
+            .toMatchObject({ capability_mode: 'OBSERVER' });
     });
 
     it('submits the one-way kill switch with a caller-supplied idempotency key', async () => {

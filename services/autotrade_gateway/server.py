@@ -317,6 +317,7 @@ def is_valid_combo_contract_query(value: object) -> bool:
 def health_document(
     strategy_runtime: StrategyRuntime | None = None,
     gate: Gate = Gate.DISARMED,
+    capability_mode: str = "OPERATOR",
 ) -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
     observations = strategy_runtime.observations() if strategy_runtime else []
@@ -326,6 +327,7 @@ def health_document(
         "strategy_count": len(observations),
         "enabled_strategy_count": sum(item.get("enabled") is True for item in observations),
         "gateway_status": "READY",
+        "capability_mode": capability_mode if capability_mode in {"OPERATOR", "OBSERVER"} else "OBSERVER",
     }
 
 
@@ -422,6 +424,7 @@ def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
     coordinator: OrderCoordinator | None = None,
+    capability_mode: str = "OPERATOR",
 ) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
@@ -436,7 +439,9 @@ def overview_document(
     decisions = decisions_document(store, orders) if store is not None else []
     reconciliation = reconciliation_document(store, orders) if store is not None else []
     return {
-        "health": health_document(strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED),
+        "health": health_document(
+            strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED, capability_mode,
+        ),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": store.observation_signals() if store is not None else [],
         "runs": runs,
@@ -973,7 +978,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             coordinator = getattr(self.server, "order_coordinator")
             self._json(
                 HTTPStatus.OK,
-                health_document(getattr(self.server, "strategy_runtime", None), coordinator.gate),
+                health_document(
+                    getattr(self.server, "strategy_runtime", None), coordinator.gate,
+                    "OBSERVER" if getattr(self.server, "observer_mode", False) else "OPERATOR",
+                ),
             )
             return
         if path == "/api/v1/autotrade/overview":
@@ -983,6 +991,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     getattr(self.server, "order_store"),
                     getattr(self.server, "strategy_runtime", None),
                     getattr(self.server, "order_coordinator", None),
+                    "OBSERVER" if getattr(self.server, "observer_mode", False) else "OPERATOR",
                 ),
             )
             return

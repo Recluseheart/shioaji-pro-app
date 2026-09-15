@@ -5,7 +5,7 @@ import type { AutotradeOverview } from './client';
 const overview = {
     health: {
         environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
-        enabled_strategy_count: 0, gateway_status: 'READY',
+        enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
     },
     strategies: [], signals: [], runs: [], decisions: [], orders: [], audit_events: [],
     risk: { mode: 'ENFORCING', limits_source: 'test', limits: {}, last_verdict: null, usage: {

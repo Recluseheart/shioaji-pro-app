@@ -109,6 +109,11 @@ relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證）；它們只改變�
 
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 
+Web 的 Autotrade overview 與七個 observer panels 共享單一 5 秒唯讀 refresh
+loop。暫時讀取失敗時，面板會保留最後一次成功的 durable projection，明確標為 stale，
+而不是把資料顯示成空白、觸發 mutation 或嘗試重送 UNKNOWN。最後一個 observer
+panel 卸載後 refresh loop 會停止。
+
 ## 訂單安全邊界
 
 `services/autotrade_gateway/order_core.py` 是尚未連接 broker 的共用訂單

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
-    fetchAutotradeOverview,
     previewReferenceStrategy,
     type AutotradeOverview,
 } from '../autotrade/client';
+import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
 
 export type AutotradeObserverPanel =
     | 'strategy_control'
@@ -86,20 +86,19 @@ export function panelSummary(
 }
 
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
-    const [overview, setOverview] = useState<AutotradeOverview | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     useEffect(() => {
-        void fetchAutotradeOverview().then(setOverview).catch(() => setError('Gateway 尚未連線'));
+        return autotradeObserverStore.subscribe(setObserver);
     }, []);
+    const { overview, error } = observer;
     const copy = PANEL_COPY[kind];
     const count = overview ? countFor(kind, overview) : 0;
     const displayedOrders = kind === 'reconciliation' ? overview?.reconciliation : overview?.orders;
     const runPreview = (action: 'validate' | 'dry-run') => {
-        setError(null);
         void previewReferenceStrategy(action)
             .then((result) => setStrategyPreview(result.message))
-            .catch(() => setError('策略預覽目前無法連線到 Gateway'));
+            .catch(() => setStrategyPreview('策略預覽目前無法連線到 Gateway'));
     };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
@@ -109,7 +108,12 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <Badge label='閘門' value={overview?.health.trading_gate ?? 'UNKNOWN'} tone='#f0b44d' />
                 <Badge label='項目' value={String(count)} tone='#8892a6' />
             </div>
-            <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{panelSummary(kind, overview, error)}</div>
+            <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{panelSummary(kind, overview, overview ? null : error)}</div>
+            {observer.stale && (
+                <div role='status' style={{ color: '#f0b44d' }}>
+                    Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。
+                </div>
+            )}
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {

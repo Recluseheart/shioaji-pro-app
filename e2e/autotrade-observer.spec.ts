@@ -19,6 +19,30 @@ test('Panel Library exposes every public and Autotrade catalogue category', asyn
     }
 });
 
+test('Panel Library adds representative panels and removes the selected panel without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.goto('/');
+    const blocks = page.locator('[data-block-id]');
+    await expect(blocks).toHaveCount(7);
+    const initialCount = await blocks.count();
+    for (const label of ['當日走勢', '閃電下單', '損益分析', '選擇權 T 字', '通知中心', '自動交易總覽']) {
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(initialCount + ['當日走勢', '閃電下單', '損益分析', '選擇權 T 字', '通知中心', '自動交易總覽'].indexOf(label) + 1);
+    }
+    await expect(page.getByText('自動交易總覽', { exact: true }).last()).toBeVisible();
+    await blocks.last().getByTitle('移除此面板').click();
+    await expect(blocks).toHaveCount(initialCount + 5);
+    expect(mutationRequests).toBe(0);
+});
+
 test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

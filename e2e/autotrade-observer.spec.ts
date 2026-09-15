@@ -95,6 +95,54 @@ test('A linked chart can be pinned and returned to linked mode without a broker 
     expect(mutationRequests).toBe(0);
 });
 
+test('A workspace panel can be repositioned without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const before = await chart.boundingBox();
+    expect(before).not.toBeNull();
+    const handle = chart.locator('.drag-handle');
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(handleBox!.x + 20, handleBox!.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(handleBox!.x + 80, handleBox!.y + 90, { steps: 8 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await chart.boundingBox())?.y).not.toBe(before!.y);
+    expect(mutationRequests).toBe(0);
+});
+
+test('A workspace panel can be resized without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const before = await chart.boundingBox();
+    expect(before).not.toBeNull();
+    const resizeHandle = chart.locator('.react-resizable-handle');
+    const handleBox = await resizeHandle.boundingBox();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(handleBox!.x + 3, handleBox!.y + 3);
+    await page.mouse.down();
+    await page.mouse.move(handleBox!.x - 70, handleBox!.y + 30, { steps: 8 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await chart.boundingBox())?.width).not.toBe(before!.width);
+    expect(mutationRequests).toBe(0);
+});
+
 test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

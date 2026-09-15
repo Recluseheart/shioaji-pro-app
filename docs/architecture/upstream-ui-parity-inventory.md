@@ -28,8 +28,9 @@ human UAT completion.
   exposed by the panel library; it adds/removes every repeatable BlockType,
   proves an existing singleton is located rather than duplicated, proves a
   linked chart can enter and leave its pinned state using a non-real contract
-  fixture, proves the seven Autotrade panels can be added, and confirms these
-  observer presentations do not emit broker mutation requests.
+  fixture, proves a workspace panel can be moved and resized in both layouts,
+  proves the seven Autotrade panels can be added, and confirms these observer
+  presentations do not emit broker mutation requests.
 - `playwright.config.ts` starts the Gateway with `uv run python`, matching the
   Python 3.11+ project runtime. It deliberately runs with the default
   `SIM`/`DISARMED` Gateway configuration.
@@ -41,9 +42,9 @@ converted to checkmarks without the named evidence:
 
 - `PARITY-CATALOG-01`: every `BlockType` can be added, moved, resized, pinned
   where allowed, and removed in desktop and mobile layouts. Catalogue presence,
-  every repeatable panel's add/remove coverage, and one representative
-  link → pin → link transition are now present; drag/resize and
-  all-pinnable-panel coverage remain open.
+  every repeatable panel's add/remove coverage, and representative
+  link → pin → link, move, and resize transitions in both layouts are now
+  present; all-pinnable-panel coverage remains open.
 - `PARITY-FIXTURE-01`: each public block has loading, empty, data, error and
   stale fixtures without contacting a broker.
 - `PARITY-VISUAL-01`: 1440p, 1080p and narrow-screen dark/black/light visual

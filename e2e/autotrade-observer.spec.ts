@@ -1,5 +1,24 @@
 import { expect, test } from '@playwright/test';
 
+test('Panel Library exposes every public and Autotrade catalogue category', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+
+    for (const [category, count] of [
+        ['行情', 11], ['交易', 5], ['帳務分析', 3],
+        ['選擇權/衍生品', 6], ['工具', 4], ['自動交易', 7],
+    ] as const) {
+        await expect(library.getByRole('button', { name: new RegExp(`${category} ${count}`) })).toBeVisible();
+    }
+    for (const label of [
+        '自選清單', '下單面板', '持倉/委託/帳務', '選擇權 T 字', '通知中心',
+        '自動交易總覽', '策略控制', '訊號與決策', '自動委託與持倉', '風控與限額', '對帳佇列', '執行績效',
+    ]) {
+        await expect(library.getByText(label, { exact: true }).first()).toBeVisible();
+    }
+});
+
 test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

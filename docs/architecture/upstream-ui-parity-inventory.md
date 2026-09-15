@@ -24,8 +24,10 @@ human UAT completion.
 ## Current browser evidence
 
 - `e2e/autotrade-observer.spec.ts` runs on desktop and mobile. It proves the
-  seven Autotrade panels can be added from the panel library and that observer
-  presentations do not emit broker mutation requests.
+  six catalogue categories and their current public/Autotrade counts are
+  exposed by the panel library; it also proves the seven Autotrade panels can
+  be added and that observer presentations do not emit broker mutation
+  requests.
 - `playwright.config.ts` starts the Gateway with `uv run python`, matching the
   Python 3.11+ project runtime. It deliberately runs with the default
   `SIM`/`DISARMED` Gateway configuration.
@@ -36,7 +38,8 @@ The following IDs are deliberately retained as open work and must not be
 converted to checkmarks without the named evidence:
 
 - `PARITY-CATALOG-01`: every `BlockType` can be added, moved, resized, pinned
-  where allowed, and removed in desktop and mobile layouts.
+  where allowed, and removed in desktop and mobile layouts. Catalogue presence
+  is now covered; interaction coverage remains open.
 - `PARITY-FIXTURE-01`: each public block has loading, empty, data, error and
   stale fixtures without contacting a broker.
 - `PARITY-VISUAL-01`: 1440p, 1080p and narrow-screen dark/black/light visual

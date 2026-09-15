@@ -51,6 +51,40 @@ function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): nu
     }
 }
 
+export function panelSummary(
+    kind: AutotradeObserverPanel,
+    overview: AutotradeOverview | null,
+    error: string | null,
+): string {
+    if (error) return error;
+    if (!overview) return PANEL_COPY[kind].empty;
+
+    switch (kind) {
+        case 'risk_limits':
+            return Object.keys(overview.risk.limits).length > 0
+                ? '已載入固定 simulation 風控限額；所有新 mutation 仍由 DISARMED Gateway 拒絕。'
+                : PANEL_COPY[kind].empty;
+        case 'signal_timeline':
+            return overview.decisions.length > 0
+                ? '以下為 durable intent 與 Risk Engine verdict；不以示範資料取代真實事件。'
+                : PANEL_COPY[kind].empty;
+        case 'auto_orders':
+            return overview.orders.length > 0
+                ? '以下為可對帳的自動委託與策略歸屬持倉觀察資料。'
+                : PANEL_COPY[kind].empty;
+        case 'reconciliation':
+            return overview.reconciliation.length > 0
+                ? '以下委託需要人工對帳；系統不會自動重送。'
+                : PANEL_COPY[kind].empty;
+        case 'run_performance':
+            return overview.performance.run_count > 0
+                ? '以下只呈現 durable 策略執行績效，不以估算資料補齊。'
+                : PANEL_COPY[kind].empty;
+        case 'strategy_control':
+            return PANEL_COPY[kind].empty;
+    }
+}
+
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
     const [overview, setOverview] = useState<AutotradeOverview | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -75,7 +109,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <Badge label='閘門' value={overview?.health.trading_gate ?? 'UNKNOWN'} tone='#f0b44d' />
                 <Badge label='項目' value={String(count)} tone='#8892a6' />
             </div>
-            <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{error ?? copy.empty}</div>
+            <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>{panelSummary(kind, overview, error)}</div>
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {

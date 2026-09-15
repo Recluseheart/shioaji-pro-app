@@ -64,7 +64,7 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 程序 restart 時，`APPROVED`、`SENDING`、`PENDING_SUBMIT`、`SUBMITTED`
 等可能已送達 broker 的狀態都必須變為 `UNKNOWN`。`UNKNOWN` 只能進入
 `RECONCILING`，不得直接建立新的 outbox 或重送。這項限制同時適用手動與策略
-單。
+單。Gateway 建立持久化 store 後立即執行此 recovery，再開始接受 HTTP request。
 
 worker 只有在 adapter 回傳不可空的 broker order identity 後，才可把 leased
 outbox 標為 `DISPATCHED` 並將 intent 前進為 `PENDING_SUBMIT`；identity 會和

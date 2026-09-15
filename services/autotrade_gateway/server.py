@@ -376,6 +376,10 @@ def create_server(
         )
     else:
         store = SQLiteIntentStore(os.getenv("AUTOTRADE_GATEWAY_DB", ":memory:"))
+    # A process crash or restart cannot prove that a leased/pending broker
+    # delivery did not reach the broker.  Recover before serving any route so
+    # no worker could ever treat the stale outbox record as retryable.
+    store.recover()
     server.order_store = store  # type: ignore[attr-defined]
     server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
     return server

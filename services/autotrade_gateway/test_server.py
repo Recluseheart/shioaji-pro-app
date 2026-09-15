@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source, Status
 from services.autotrade_gateway.server import create_server
 
 
@@ -94,6 +99,28 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["source"], "MANUAL_UI")
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
+
+    def test_gateway_startup_recovers_persisted_pending_delivery_to_unknown(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "restart-recovery.db"
+            previous_store = SQLiteIntentStore(database_path)
+            intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+            OrderCoordinator(previous_store, Gate.ARMED).accept(intent)
+            self.assertEqual(previous_store.outbox_state(intent.intent_id), "PENDING")
+            previous_store.close()
+
+            with patch.dict(os.environ, {
+                "AUTOTRADE_GATEWAY_DB": str(database_path),
+                "AUTOTRADE_GATEWAY_DATABASE_URL": "",
+            }):
+                restarted = create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+            try:
+                recovered_store = getattr(restarted, "order_store")
+                self.assertEqual(recovered_store.status(intent.intent_id), Status.UNKNOWN)
+                self.assertEqual(recovered_store.outbox_state(intent.intent_id), "UNKNOWN")
+            finally:
+                restarted.server_close()
+                getattr(restarted, "order_store").close()
 
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:

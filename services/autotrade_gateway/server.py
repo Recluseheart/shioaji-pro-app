@@ -68,6 +68,16 @@ MARKET_STREAM_CAPABILITIES = frozenset({
     "industry_contribution",
     "scanner",
 })
+RISK_REASON_LABELS = {
+    "trading_gate_not_armed": "交易閘門尚未啟用",
+    "target_order_account_unverified": "目標委託的帳戶尚未驗證",
+    "target_order_id_required": "缺少目標委託識別碼",
+    "simulation_account_required": "僅允許 simulation 帳戶",
+    "simulation_account_not_allowed": "此 simulation 帳戶不在 allowlist",
+    "symbol_not_allowed": "商品不在 allowlist",
+    "quantity_limit_exceeded": "數量超過單筆限額",
+    "notional_limit_exceeded": "名目金額超過單筆限額",
+}
 
 
 def is_allowed_read_path(path: str) -> bool:
@@ -139,6 +149,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return
 
     def _json(self, status: HTTPStatus, document: dict[str, Any]) -> None:
+        reasons = document.get("risk_reasons")
+        if "message" not in document and isinstance(reasons, list) and reasons:
+            labels = [RISK_REASON_LABELS.get(reason, str(reason)) for reason in reasons]
+            document = {**document, "message": f"風控拒絕：{'；'.join(labels)}"}
         payload = json.dumps(document, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

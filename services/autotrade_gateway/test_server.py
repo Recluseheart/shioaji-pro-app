@@ -218,6 +218,7 @@ class GatewayServerTest(unittest.TestCase):
         receipt = json.load(raised.exception)
         self.assertEqual(receipt["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        self.assertIn("交易閘門尚未啟用", receipt["message"])
         store = getattr(self.server, "order_store")
         self.assertEqual(store.outbox_state(receipt["intent_id"]), None)
         self.assertEqual(store.observation_orders()[0]["source"], "MANUAL_UI")

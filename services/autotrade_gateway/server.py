@@ -277,6 +277,7 @@ def overview_document(
     a dashboard appear busy.
     """
     orders = store.observation_orders() if store is not None else []
+    fills = store.observation_fills() if store is not None else []
     runs = strategy_runs_document(store) if store is not None else []
     decisions = decisions_document(store, orders) if store is not None else []
     return {
@@ -295,7 +296,7 @@ def overview_document(
         "reconciliation": reconciliation_document(store, orders) if store is not None else [],
         "performance": {
             "run_count": len(runs),
-            "filled_order_count": 0,
+            "filled_order_count": len({fill["intent_id"] for fill in fills}),
             "realized_pnl": "0",
             "unrealized_pnl": "0",
         },
@@ -773,6 +774,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 {"items": getattr(self.server, "order_store").observation_orders()},
+            )
+            return
+        if path == "/api/v1/autotrade/fills":
+            self._json(
+                HTTPStatus.OK,
+                {"items": getattr(self.server, "order_store").observation_fills()},
             )
             return
         if path.startswith("/api/v1/autotrade/orders/"):

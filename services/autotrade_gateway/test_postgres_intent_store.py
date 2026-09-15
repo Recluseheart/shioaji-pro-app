@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
+from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -154,6 +154,27 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertEqual(self.store.observation_audit_events()[0]["details"], {
             "broker_order_id": "POSTGRES-MOCK-ORDER-1",
         })
+
+    def test_bound_broker_order_accepts_a_valid_immutable_fill(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "POSTGRES-FILL-ORDER-1"
+
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        self.store.record_fill(Fill(
+            fill_id="postgres-fill-1", intent_id=intent.intent_id,
+            broker_order_id="POSTGRES-FILL-ORDER-1", quantity=1, price="1001",
+            filled_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+        ))
+        self.assertEqual(self.store.observation_fills(), [{
+            "fill_id": "postgres-fill-1", "intent_id": intent.intent_id,
+            "broker_order_id": "POSTGRES-FILL-ORDER-1", "quantity": 1, "price": "1001",
+            "filled_at": "2026-09-15T00:00:00+00:00",
+        }])
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "FILL_RECORDED")
 
     def test_reused_broker_identity_becomes_unknown_without_a_second_binding(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

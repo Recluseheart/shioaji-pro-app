@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status, StrategyRun
+from services.autotrade_gateway.order_core import Fill, Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status, StrategyRun
 from services.autotrade_gateway.server import create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
@@ -367,6 +367,31 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["side"], "BUY")
         self.assertEqual(document["items"][0]["quantity"], 1)
         self.assertEqual(document["items"][0]["limit_price"], "1000")
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_fills_endpoint_and_performance_use_only_durable_broker_facts(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(store).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "MOCK-FILL-READ-1"
+
+        from services.autotrade_gateway.worker import ExecutionWorker
+        self.assertTrue(ExecutionWorker(store, AcceptedDispatcher()).dispatch_once())
+        store.record_fill(Fill(
+            fill_id="mock-fill-read-1", intent_id=intent.intent_id,
+            broker_order_id="MOCK-FILL-READ-1", quantity=1, price="1001",
+            filled_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+        ))
+        with urlopen(f"{self.base}/api/v1/autotrade/fills") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["fill_id"], "mock-fill-read-1")
+        self.assertEqual(document["items"][0]["broker_order_id"], "MOCK-FILL-READ-1")
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertEqual(overview["performance"]["filled_order_count"], 1)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:

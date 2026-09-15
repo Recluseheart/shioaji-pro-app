@@ -218,6 +218,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             )}
             {kind === 'run_performance' && overview && (
                 <div style={{ display: 'grid', gap: 5, color: '#8892a6' }}>
+                    <div>已確認成交委託：{overview.performance.filled_order_count}</div>
                     <div>已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}</div>
                     {overview.runs.map((run) => (
                         <div key={run.run_id} style={{ borderLeft: '3px solid #8892a6', paddingLeft: 7 }}>

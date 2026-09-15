@@ -11,6 +11,7 @@ import unittest
 from services.autotrade_gateway.order_core import (
     Gate,
     DuplicateIntentError,
+    Fill,
     Intent,
     OrderCoordinator,
     RiskContext,
@@ -271,6 +272,27 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.observation_audit_events()[0]["details"], {
             "broker_order_id": "MOCK-ORDER-1",
         })
+
+    def test_bound_broker_order_accepts_a_valid_immutable_fill(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "MOCK-FILL-ORDER-1"
+
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        self.store.record_fill(Fill(
+            fill_id="mock-fill-1", intent_id=intent.intent_id,
+            broker_order_id="MOCK-FILL-ORDER-1", quantity=1, price="1001",
+            filled_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+        ))
+        self.assertEqual(self.store.observation_fills(), [{
+            "fill_id": "mock-fill-1", "intent_id": intent.intent_id,
+            "broker_order_id": "MOCK-FILL-ORDER-1", "quantity": 1, "price": "1001",
+            "filled_at": "2026-09-15T00:00:00+00:00",
+        }])
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "FILL_RECORDED")
 
     def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

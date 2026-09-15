@@ -57,7 +57,7 @@ test('Run performance renders durable lifecycle facts without a trading request'
                 environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
                 enabled_strategy_count: 0, gateway_status: 'READY',
             },
-            performance: { realized_pnl: '0', unrealized_pnl: '0' },
+            performance: { filled_order_count: 1, realized_pnl: '0', unrealized_pnl: '0' },
             runs: [{
                 run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
                 config_checksum: 'fixture-checksum', state: 'FIXTURE_COMPLETED',
@@ -70,6 +70,7 @@ test('Run performance renders durable lifecycle facts without a trading request'
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('執行績效', { exact: true }).click();
+    await expect(page.getByText('已確認成交委託：1')).toBeVisible();
     await expect(page.getByText('狀態：FIXTURE_COMPLETED · 最近結果：RISK_REJECTED · 1 intents')).toBeVisible();
     await expect(page.getByText('Heartbeat：2026-09-15T00:00:01+00:00 · 結束：2026-09-15T00:00:02+00:00')).toBeVisible();
     expect(mutationRequests).toBe(0);

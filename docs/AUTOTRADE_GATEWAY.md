@@ -115,6 +115,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 - `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
   projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，
   不會呼叫 sidecar、重送或偽造 broker status。
+- `GET /api/v1/autotrade/fills`：只列出已通過 intent/broker identity 綁定與正數
+  quantity/price validation 的 durable fill facts。terminal status 本身不會被當成 fill
+  來補造；目前僅 mock／未來 callback seam 可寫入，Gateway production runtime 不會
+  自行產生成交資料。
 - `GET /api/v1/autotrade/runs`：從獨立的 durable `strategy_runs` journal 回報策略
   lifecycle、heartbeat、intent count 與最近 intent/status；不會從 order 猜測一個 run。
   目前 production runner 仍 disabled，只有隔離 fixture harness 會寫入 `FIXTURE_COMPLETED` 記錄。
@@ -226,6 +230,11 @@ mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持
 identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
 或 `BROKER_REJECTED`。相同 terminal callback 可冪等重放；identity 不符、衝突終態
 或 `UNKNOWN` callback 一律拒絕，必須走明確 reconciliation，不能藉 callback 重開派送。
+
+若未來 callback 提供 broker-confirmed fill identity、數量、價格與時間，必須先以
+`record_fill` 驗證其 order identity 再寫入 `fills` journal，並留下 `FILL_RECORDED`
+audit event；partial fill 可在 terminal callback 前存在，但沒有 callback data 時不得
+從 `FILLED` status 推斷數量或價格。
 
 每筆 observation 同時帶有持久化的 `risk_reasons`。Auto Orders／對帳面板只讀
 顯示它們，讓使用者可辨認為何某筆 intent 被拒絕；原因不是可由 UI 修改、重送或

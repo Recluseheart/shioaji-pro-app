@@ -139,6 +139,18 @@ class StrategyDefinition:
     allowed_symbols: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class Fill:
+    """One immutable broker-confirmed execution fact for a bound order."""
+
+    fill_id: str
+    intent_id: str
+    broker_order_id: str
+    quantity: int
+    price: str
+    filled_at: datetime
+
+
 def intent_from_persisted_payload(payload_json: str) -> Intent:
     """Reconstruct the exact durable request for the execution owner.
 
@@ -268,6 +280,8 @@ class IntentStore(Protocol):
     def observation_audit_events(self) -> list[dict[str, object]]: ...
     def trading_gate(self) -> Gate: ...
     def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]: ...
+    def record_fill(self, fill: Fill) -> None: ...
+    def observation_fills(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
@@ -460,6 +474,12 @@ class SQLiteIntentStore:
                 control_name TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL UNIQUE, applied_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS fills (
+                fill_id TEXT PRIMARY KEY, intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
+                broker_order_id TEXT NOT NULL, quantity INTEGER NOT NULL, price TEXT NOT NULL,
+                filled_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS fills_intent_idx ON fills(intent_id, filled_at DESC, fill_id DESC);
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -833,6 +853,57 @@ class SQLiteIntentStore:
                 (str(uuid4()), json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
             )
             return Gate.KILLED, reason, True
+
+    def record_fill(self, fill: Fill) -> None:
+        """Record a broker-confirmed fill only for its already-bound identity."""
+        if not fill.fill_id or fill.quantity <= 0:
+            raise ValueError("fill identity and quantity are required")
+        try:
+            if Decimal(fill.price) <= 0:
+                raise ValueError("fill price must be positive")
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError("fill price must be positive") from error
+        with self._lock, self.connection:
+            order = self.connection.execute(
+                "SELECT status, broker_order_id FROM order_intents WHERE intent_id=?", (fill.intent_id,),
+            ).fetchone()
+            if order is None or order["broker_order_id"] != fill.broker_order_id:
+                raise ValueError("fill broker identity does not match intent")
+            existing = self.connection.execute(
+                "SELECT intent_id, broker_order_id, quantity, price, filled_at FROM fills WHERE fill_id=?",
+                (fill.fill_id,),
+            ).fetchone()
+            if existing is not None:
+                if dict(existing) == {
+                    "intent_id": fill.intent_id, "broker_order_id": fill.broker_order_id,
+                    "quantity": fill.quantity, "price": fill.price, "filled_at": fill.filled_at.isoformat(),
+                }:
+                    return
+                raise ValueError("fill identity conflicts with an existing fill")
+            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.FILLED}:
+                raise ValueError("fill is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                "INSERT INTO fills(fill_id,intent_id,broker_order_id,quantity,price,filled_at) VALUES (?,?,?,?,?,?)",
+                (fill.fill_id, fill.intent_id, fill.broker_order_id, fill.quantity, fill.price, fill.filled_at.isoformat()),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'FILL_RECORDED', ?, ?)""",
+                (
+                    str(uuid4()), fill.intent_id,
+                    json.dumps({"fill_id": fill.fill_id, "broker_order_id": fill.broker_order_id}, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+
+    def observation_fills(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT fill_id,intent_id,broker_order_id,quantity,price,filled_at FROM fills "
+                "ORDER BY filled_at DESC, fill_id DESC",
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def record_signal(self, signal: StrategySignal) -> None:
         """Persist a signal once; it never changes a broker delivery state."""

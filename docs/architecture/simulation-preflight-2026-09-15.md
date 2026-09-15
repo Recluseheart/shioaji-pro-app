@@ -48,6 +48,12 @@ allowlist 與 fresh `2330` RiskContext 啟動 reference strategy lifecycle，並
 `RISK_REJECTED` intent，outbox 為空；沒有 broker dispatch、callback 或交易。
 這確認 strategy source 不會繞過共同 Risk Engine／gate。
 
+同日完成 reconciliation refresher 的實際 sidecar 唯讀 probe：以 verified
+simulation risk context 建構 in-memory Gateway 與 account-scoped trade provider，
+再執行一次 terminal-fact refresh。Gateway 仍為 `DISARMED`，refresher 成功建構；
+觀測 terminal facts 與 resolved intents 均為 0。probe 未建立 intent、claim outbox、
+ARM gate、dispatch 或 mutation，完成後立即關閉暫存 Gateway。
+
 三種 local database connection setting 均已配置，但本文件不保存 DSN、資料庫
 名稱、帳戶或密碼。任何 canary 前必須在專用 schema 再執行 DB health、outbox
 empty、fresh quote、position、loss 與應用程式 risk limit 的即時檢查；任何一項

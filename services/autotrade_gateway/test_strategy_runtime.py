@@ -157,6 +157,19 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(self.store.observation_orders(), [])
         self.assertEqual(self.store.observation_strategy_runs(), [])
 
+    def test_running_lifecycle_is_required_for_opt_in_strategy_ingress(self) -> None:
+        runtime = StrategyRuntime(
+            OrderCoordinator(self.store, Gate.DISARMED),
+            allow_reference_fixture=True,
+            allow_lifecycle=True,
+            require_running_for_fixture=True,
+        )
+        self.assertIsNone(runtime.process_fixture_event({"reference_signal": True, "event_id": "before-start"}))
+        runtime.control("start")
+        self.assertIsNotNone(runtime.process_fixture_event({"reference_signal": True, "event_id": "after-start"}))
+        self.assertEqual(self.store.observation_orders()[0]["source"], "STRATEGY")
+        self.assertIsNone(self.store.outbox_state(str(self.store.observation_orders()[0]["intent_id"])))
+
     def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
         runtime = StrategyRuntime(armed_coordinator(self.store), allow_reference_fixture=True)
         result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})

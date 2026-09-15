@@ -1106,6 +1106,11 @@ def create_server(
         and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
     ):
         raise RuntimeError("strategy lifecycle is SIM only")
+    if (
+        os.getenv("AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS") == "1"
+        and os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1"
+    ):
+        raise RuntimeError("reference strategy signals require verified simulation risk context")
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
@@ -1128,6 +1133,9 @@ def create_server(
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
     risk_configuration = configured_simulation_risk_context(resolved_upstream_origin)
+    reference_signals_enabled = os.getenv("AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS") == "1"
+    if reference_signals_enabled and risk_configuration is None:
+        raise RuntimeError("reference strategy signals require verified simulation risk context")
     server.order_coordinator = OrderCoordinator(  # type: ignore[attr-defined]
         store,
         gate=store.trading_gate(),
@@ -1144,10 +1152,15 @@ def create_server(
     )
     server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]
         getattr(server, "order_coordinator"),
+        allow_reference_fixture=reference_signals_enabled,
         allow_lifecycle=os.getenv("AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE") == "1",
+        require_running_for_fixture=reference_signals_enabled,
         reference_account_id=risk_configuration[2].account_id if risk_configuration else "SIM-001",
         reference_broker_id=risk_configuration[2].broker_id if risk_configuration else "SIM-BROKER",
     )
+    # This is an in-process runner boundary, not an HTTP handler.  A browser
+    # must never be able to submit a source=STRATEGY event or bypass lifecycle.
+    server.process_reference_strategy_event = getattr(server, "strategy_runtime").process_fixture_event  # type: ignore[attr-defined]
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server
 

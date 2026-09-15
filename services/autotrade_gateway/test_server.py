@@ -156,6 +156,13 @@ class GatewayServerTest(unittest.TestCase):
                 upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
             )
 
+    def test_reference_strategy_signals_require_verified_risk_context(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "risk context"):
+            create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+
     def test_explicit_strategy_lifecycle_control_is_idempotent_and_broker_free(self) -> None:
         with patch.dict(os.environ, {
             "AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE": "1",

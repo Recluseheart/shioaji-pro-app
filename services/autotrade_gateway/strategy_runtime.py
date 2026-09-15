@@ -38,12 +38,14 @@ class StrategyRuntime:
         *,
         allow_reference_fixture: bool = False,
         allow_lifecycle: bool = False,
+        require_running_for_fixture: bool = False,
         reference_account_id: str = "SIM-001",
         reference_broker_id: str = "SIM-BROKER",
     ) -> None:
         self._coordinator = coordinator
         self._allow_reference_fixture = allow_reference_fixture
         self._allow_lifecycle = allow_lifecycle
+        self._require_running_for_fixture = require_running_for_fixture
         self.reference_account_id = reference_account_id
         self.reference_broker_id = reference_broker_id
         self._active_run_id: str | None = None
@@ -188,6 +190,10 @@ class StrategyRuntime:
         """
         if not self._allow_reference_fixture or event.get("reference_signal") is not True:
             return None
+        if self._require_running_for_fixture:
+            definitions = self.observations()
+            if not definitions or definitions[0].get("state") != "RUNNING":
+                return None
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id or event_id in self._processed_event_ids:
             return None

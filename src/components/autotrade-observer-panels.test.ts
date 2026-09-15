@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeAutotradeOverview } from '../autotrade/client';
-import { automatedOrderObservations, panelSummary, riskVerdictText } from './autotrade-observer-panels';
+import { automatedOrderObservations, orderObservationText, panelSummary, riskVerdictText } from './autotrade-observer-panels';
 
 describe('Autotrade observer panel summaries', () => {
     it('does not describe populated simulation limits as unavailable', () => {
@@ -45,5 +45,13 @@ describe('Autotrade observer panel summaries', () => {
         });
         expect(automatedOrderObservations(overview.orders).map((order) => order.intent_id)).toEqual(['strategy', 'system']);
         expect(panelSummary('auto_orders', overview, null)).toContain('自動委託');
+    });
+
+    it('renders durable product and strategy attribution without pretending a target mutation has a price', () => {
+        expect(orderObservationText({
+            operation: 'PLACE', symbol: '2330', side: 'BUY', quantity: 2,
+            limit_price: '1000', order_price_type: 'LMT', strategy_id: 'reference', run_id: 'run-1',
+        })).toBe('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1');
+        expect(orderObservationText({ operation: 'UPDATE_PRICE', symbol: '2330', side: 'BUY', quantity: 2 })).toBeNull();
     });
 });

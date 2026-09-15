@@ -135,9 +135,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {
-                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string; broker_order_id?: string | null; operation?: string; target_order_id?: string | null; operation_payload?: Record<string, unknown> | null; instrument?: Record<string, unknown> | null; risk_reasons?: string[] };
+                        const order = item as Partial<AutotradeOrderObservation>;
                         return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
                             {order.source} · {operationLabel(order.operation)} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}{order.target_order_id ? ` · 目標 ${order.target_order_id}` : ''}
+                            {orderObservationText(order) && <div style={{ color: '#aeb7c6' }}>{orderObservationText(order)}</div>}
                             {order.operation_payload && <div style={{ color: '#aeb7c6' }}>請求：{formatPayload(order.operation_payload)}</div>}
                             {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
@@ -202,6 +203,16 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
 
 function operationLabel(operation: string | undefined): string {
     return ({ PLACE: '下單', CANCEL: '取消', UPDATE_PRICE: '改價', UPDATE_QUANTITY: '改量' } as Record<string, string>)[operation ?? 'PLACE'] ?? operation ?? '下單';
+}
+
+export function orderObservationText(order: Partial<AutotradeOrderObservation>): string | null {
+    if (order.operation !== undefined && order.operation !== 'PLACE') return null;
+    if (!order.symbol || !order.side || !Number.isInteger(order.quantity) || order.quantity <= 0) return null;
+    const direction = order.side === 'BUY' ? '買' : order.side === 'SELL' ? '賣' : order.side;
+    const price = order.limit_price ? ` · ${order.order_price_type ?? 'LMT'} ${order.limit_price}` : '';
+    const attribution = order.strategy_id ? ` · 策略 ${order.strategy_id}` : '';
+    const run = order.run_id ? ` · run ${order.run_id}` : '';
+    return `商品：${order.symbol} · ${direction} ${order.quantity}${price}${attribution}${run}`;
 }
 
 function formatPayload(value: Record<string, unknown>): string {

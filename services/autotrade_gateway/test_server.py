@@ -84,6 +84,23 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
 
+    def test_read_proxy_fixed_paths_cannot_match_longer_unlisted_routes(self) -> None:
+        for path in (
+            "/api/v1/auth/accounts-extra",
+            "/api/v1/auth/ca_expiretime-extra",
+            "/api/v1/auth/usage-extra",
+            "/api/v1/order/trades-extra",
+            "/api/v1/order/combotrades-extra",
+            "/api/v1/order/stock_reserve_summary-extra",
+            "/api/v1/order/stock_reserve_detail-extra",
+            "/api/v1/order/earmarking_detail-extra",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(f"{self.base}{path}")
+                self.assertEqual(raised.exception.code, 404)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_overview_never_invents_broker_activity(self) -> None:
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)

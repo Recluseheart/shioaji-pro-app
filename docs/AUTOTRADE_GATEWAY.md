@@ -99,7 +99,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   保留庫存 read model、watchlist）：僅轉送至本機 Shioaji HTTP sidecar（預設
   `http://127.0.0.1:21322`，可用 `SHIOAJI_HTTP_ORIGIN` 指定）。只保留
   `Accept` 與 cache validators；不轉送瀏覽器的 Authorization 或 Cookie。未列入
-  的 route 一律 `404`，不會被通用 proxy 放行。
+  的 route 一律 `404`，不會被通用 proxy 放行。accounts、usage、trade 與 reserve
+  read model 等固定路徑一律 exact match；只有 `data/`、`monitor/` 這類明確的
+  read-only namespace 可用 segment-safe 前綴。
 
 第一批上游以 `POST` 表示的 read query 使用各自的 compatibility allowlist，而
 不是擴大 generic proxy 或例外放行 mutation namespace：已支援 snapshots、K 線、

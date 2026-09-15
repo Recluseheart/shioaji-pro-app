@@ -34,19 +34,16 @@ READ_PROXY_EXACT_PATHS = frozenset({
     "/api/v1/health",
     "/api/v1/info",
     "/api/v1/watchlist",
-})
-READ_PROXY_PREFIXES = (
     "/api/v1/auth/accounts",
     "/api/v1/auth/ca_expiretime",
     "/api/v1/auth/usage",
-    "/api/v1/data/",
-    "/api/v1/monitor/",
     "/api/v1/order/trades",
     "/api/v1/order/combotrades",
     "/api/v1/order/stock_reserve_summary",
     "/api/v1/order/stock_reserve_detail",
     "/api/v1/order/earmarking_detail",
-)
+})
+READ_PROXY_PREFIXES = ("/api/v1/data/", "/api/v1/monitor/")
 READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/auth/usage",
     "/api/v1/data/credit_enquire",

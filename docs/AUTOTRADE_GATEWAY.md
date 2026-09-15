@@ -99,6 +99,20 @@ PATH=/opt/homebrew/opt/node@22/bin:$PATH PORT=4174 \
 「自動交易」類別，或套用「完整交易終端」、「自動交易控制」、「自動交易觀察」。
 Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 
+## 受控 canary 前的唯讀檢查
+
+在已另外取得 simulation mutation 授權、且尚未建立任何 intent 前，可執行：
+
+```sh
+AUTOTRADE_ENV=SIM uv run python scripts/simulation_canary_preflight.py
+```
+
+它只驗證 verified SIM stock account 與 fresh `2330` RiskContext；不包含
+order payload、dispatcher、worker、outbox claim 或任何 mutation 能力。通過結果
+不是 ARM、下單或 canary 完成證據。後續受控流程仍必須確認 durable outbox 為空、
+operator capability/idempotency、broker callback/reconciliation 與 finally
+`DISARMED`，不得把本檢查當作可直接送單的捷徑。
+
 ## 已提供的 read contract
 
 - `GET /api/v1/autotrade/health`：環境、交易閘門與 Gateway 狀態。

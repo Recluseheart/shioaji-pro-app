@@ -2,9 +2,10 @@
 
 目前 Gateway 是 Shioaji Pro Web UI 的唯一 Autotrade API 入口雛形。它固定
 在 loopback 上運行，沒有 Shioaji session、API key、CA 或任何正式交易權限。
-所有 HTTP mutation（POST、PUT、PATCH、DELETE）都回應 `403`；這是預期行為，
-不是可繞過的暫時限制。唯一例外是 `POST /api/v1/autotrade/intents`：它是
-broker-free 的稽核 ingress，在目前固定 `DISARMED` 的設定下只會持久化
+所有未明確列舉的 HTTP mutation（POST、PUT、PATCH、DELETE）都回應 `403`；這是
+預期行為，不是可繞過的暫時限制。唯一和 order 無關的例外是後文列出的行情／trade
+event subscription 與 watchlist 偏好 CRUD。`POST /api/v1/autotrade/intents` 則是
+broker-free 的稽核 ingress：在目前固定 `DISARMED` 的設定下只會持久化
 `RISK_REJECTED` receipt，絕不建立 outbox 或觸碰 broker。
 
 `POST /api/v1/order/place_order` 的 stock／futures `LMT`、`MKT`、`MKP` 形狀也已

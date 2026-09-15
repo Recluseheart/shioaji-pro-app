@@ -17,6 +17,10 @@ compatibility 的完成宣告：cancel、update、close 與實際 broker worker 
 broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，會 fail closed
 為 `RISK_REJECTED`，絕不轉送 sidecar。這是稽核入口，不是可用的取消功能。
 
+`POST /api/v1/order/cancel_comboorder` 使用同一個 `CANCEL` intent 與 target
+broker order identity 入口，因此不會另開一條未對帳的組合單 mutation 路徑；目標帳戶
+尚未驗證時同樣 fail closed，絕不轉送 sidecar。
+
 `POST /api/v1/order/update_price` 與 `update_qty` 使用相同 target-order audit
 模型，並持久化 requested price／quantity；同樣因目標帳戶尚未驗證而 fail closed。
 

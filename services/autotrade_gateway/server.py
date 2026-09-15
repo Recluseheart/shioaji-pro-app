@@ -420,7 +420,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/autotrade/strategies/reference-fixture/dry-run":
             self._json(HTTPStatus.OK, strategy_runtime.dry_run_document())
             return
-        if path == "/api/v1/order/cancel_order":
+        if path in {"/api/v1/order/cancel_order", "/api/v1/order/cancel_comboorder"}:
             try:
                 intent = self._manual_cancel_intent()
             except (TypeError, ValueError, json.JSONDecodeError):

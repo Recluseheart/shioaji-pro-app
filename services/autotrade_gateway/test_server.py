@@ -171,6 +171,20 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_cancel_combo_order_uses_the_same_durable_cancel_ingress(self) -> None:
+        body = json.dumps({"trade_id": "COMBO-BROKER-ORDER-1"}).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/order/cancel_comboorder", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 409)
+        receipt = json.load(raised.exception)
+        self.assertEqual(receipt["status"], "RISK_REJECTED")
+        self.assertIn("target_order_account_unverified", receipt["risk_reasons"])
+        observation = getattr(self.server, "order_store").observation_orders()[0]
+        self.assertEqual(observation["operation"], "CANCEL")
+        self.assertEqual(observation["target_order_id"], "COMBO-BROKER-ORDER-1")
+        self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_update_order_mutations_are_audited_but_fail_closed(self) -> None:
         for path, body, operation in (
             ("update_price", {"trade_id": "BROKER-ORDER-1", "price": 1000}, "UPDATE_PRICE"),

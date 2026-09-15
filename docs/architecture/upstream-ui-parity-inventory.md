@@ -33,7 +33,9 @@ human UAT completion.
   layouts. Every pinnable entry also completes link → pin → link using a
   non-real contract fixture. These observer presentations do not emit broker
   mutation requests. The Option Chain has a fixture-backed contract-read
-  failure → manual retry → recovery E2E case.
+  failure → manual retry → recovery E2E case. The Autotrade observer also has
+  desktop/mobile evidence that a transient overview failure retains the last
+  durable projection, labels it stale, and emits no order mutation.
 - `playwright.config.ts` starts the Gateway with `uv run python`, matching the
   Python 3.11+ project runtime. It deliberately runs with the default
   `SIM`/`DISARMED` Gateway configuration.

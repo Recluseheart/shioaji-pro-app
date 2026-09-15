@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
     applyAutotradeKillSwitch,
+    applyReferenceStrategyControl,
     fetchAutotradeOrder,
     previewReferenceStrategy,
     type AutotradeOverview,
@@ -8,6 +9,7 @@ import {
     type AutotradeReconciliationObservation,
     type AutotradeRiskVerdict,
     type AutotradeSignal,
+    type StrategyControlAction,
 } from '../autotrade/client';
 import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
 
@@ -22,7 +24,7 @@ export type AutotradeObserverPanel =
 const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string }> = {
     strategy_control: {
         title: '策略控制',
-        empty: '策略 runtime 預設停用。啟動功能需要另外授權，且不會由此面板啟動。',
+        empty: '策略 runtime 尚未啟用。控制只改變策略 lifecycle；不會 ARM 或送出委託。',
     },
     signal_timeline: {
         title: '訊號與決策時間線',
@@ -195,6 +197,19 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             ))
             .catch(() => setKillSwitchMessage('Kill Switch 請求失敗；請確認 Gateway 連線與原因。'));
     };
+    const runStrategyControl = (action: StrategyControlAction) => {
+        const labels: Record<StrategyControlAction, string> = {
+            start: '啟動', pause: '暫停', resume: '恢復', stop: '停止',
+        };
+        const reason = globalThis.prompt(`請輸入${labels[action]}策略的原因；此操作不會 ARM 或送單。`);
+        if (!reason?.trim()) return;
+        void applyReferenceStrategyControl(action, reason.trim(), globalThis.crypto.randomUUID())
+            .then((receipt) => {
+                setStrategyPreview(`${labels[action]}${receipt.applied ? '完成' : '已重播'}：${receipt.state} · run ${receipt.run_id.slice(0, 8)}`);
+                return autotradeObserverStore.refresh();
+            })
+            .catch(() => setStrategyPreview(`${labels[action]}策略失敗；請確認 Gateway 是否已啟用 SIM lifecycle。`));
+    };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>{copy.title}</strong>
@@ -283,8 +298,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
                         <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
-                        <button disabled title='需要獨立策略 runtime 授權'>開始</button>
-                        <button disabled title='Gateway 目前固定 DISARMED'>暫停</button>
+                        <button onClick={() => runStrategyControl('start')} title='只建立 durable strategy run；不會 ARM 或送單'>開始</button>
+                        <button onClick={() => runStrategyControl('pause')} title='暫停新策略訊號；既有委託不變'>暫停</button>
+                        <button onClick={() => runStrategyControl('resume')} title='恢復策略 lifecycle；不會 ARM 或送單'>恢復</button>
+                        <button onClick={() => runStrategyControl('stop')} title='停止策略；既有委託與持倉不變'>停止</button>
                         <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
                     </div>
                     {killSwitchMessage && <div role='status' style={{ color: '#ef4444' }}>{killSwitchMessage}</div>}

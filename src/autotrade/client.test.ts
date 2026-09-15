@@ -7,6 +7,7 @@ import {
     fetchAutotradeIntent,
     fetchAutotradeOrder,
     applyAutotradeKillSwitch,
+    applyReferenceStrategyControl,
     normalizeAutotradeHealth,
     normalizeAutotradeOverview,
 } from './client';
@@ -39,6 +40,21 @@ describe('Autotrade Gateway health contract', () => {
             '/api/v1/autotrade/kill-switch',
             { reason: 'operator test' },
             { headers: { 'Idempotency-Key': 'kill-test-1' } },
+        );
+    });
+
+    it('submits strategy control with an explicit reason and idempotency key', async () => {
+        mocks.post.mockResolvedValue({
+            strategy_id: 'reference-fixture', action: 'start', reason: 'operator test',
+            state: 'RUNNING', enabled: true, run_id: 'run-1', applied: true,
+        });
+        await expect(applyReferenceStrategyControl('start', 'operator test', 'strategy-start-1')).resolves.toEqual({
+            strategy_id: 'reference-fixture', action: 'start', reason: 'operator test',
+            state: 'RUNNING', enabled: true, run_id: 'run-1', applied: true,
+        });
+        expect(mocks.post).toHaveBeenCalledWith(
+            '/api/v1/autotrade/strategies/reference-fixture/start', { reason: 'operator test' },
+            { headers: { 'Idempotency-Key': 'strategy-start-1' } },
         );
     });
 });

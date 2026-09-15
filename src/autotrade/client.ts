@@ -132,6 +132,18 @@ export type AutotradeKillSwitchReceipt = {
     applied: boolean;
 };
 
+export type StrategyControlAction = 'start' | 'pause' | 'resume' | 'stop';
+
+export type StrategyControlReceipt = {
+    strategy_id: 'reference-fixture';
+    action: StrategyControlAction;
+    reason: string;
+    state: 'RUNNING' | 'PAUSED' | 'STOPPED';
+    enabled: boolean;
+    run_id: string;
+    applied: boolean;
+};
+
 const fallback: AutotradeHealth = {
     environment: 'UNKNOWN',
     trading_gate: 'UNKNOWN',
@@ -376,5 +388,27 @@ export async function applyAutotradeKillSwitch(
     }
     return {
         trading_gate: 'KILLED', reason: document.reason, applied: document.applied,
+    };
+}
+
+export async function applyReferenceStrategyControl(
+    action: StrategyControlAction,
+    reason: string,
+    idempotencyKey: string,
+): Promise<StrategyControlReceipt> {
+    const document = await apiPost<Record<string, unknown>>(
+        `/api/v1/autotrade/strategies/reference-fixture/${action}`,
+        { reason }, { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+    const validState = document.state === 'RUNNING' || document.state === 'PAUSED' || document.state === 'STOPPED';
+    if (document.strategy_id !== 'reference-fixture' || document.action !== action
+        || typeof document.reason !== 'string' || !validState || typeof document.enabled !== 'boolean'
+        || typeof document.run_id !== 'string' || typeof document.applied !== 'boolean') {
+        throw new Error('Gateway returned an invalid strategy control receipt');
+    }
+    return {
+        strategy_id: 'reference-fixture', action, reason: document.reason,
+        state: document.state as StrategyControlReceipt['state'], enabled: document.enabled, run_id: document.run_id,
+        applied: document.applied,
     };
 }

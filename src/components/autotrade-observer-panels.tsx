@@ -62,7 +62,7 @@ export function panelSummary(
     switch (kind) {
         case 'risk_limits':
             return Object.keys(overview.risk.limits).length > 0
-                ? '已載入固定 simulation 風控限額；所有新 mutation 仍由 DISARMED Gateway 拒絕。'
+                ? '已載入 simulation 風控限額；ARMED 前必須有權威市場與帳務快照，缺少時會拒絕。所有新 mutation 目前仍由 DISARMED Gateway 拒絕。'
                 : PANEL_COPY[kind].empty;
         case 'signal_timeline':
             return overview.decisions.length > 0

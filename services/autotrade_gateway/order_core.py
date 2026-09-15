@@ -285,8 +285,10 @@ class IntentStore(Protocol):
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
+    def set_strategy_definition_state(self, strategy_id: str, state: str, enabled: bool) -> None: ...
     def observation_strategy_definitions(self) -> list[dict[str, object]]: ...
     def record_strategy_run(self, run: StrategyRun) -> None: ...
+    def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None: ...
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None: ...
     def observation_strategy_runs(self) -> list[dict[str, object]]: ...
     def observation_reconciliation_cases(self) -> list[dict[str, object]]: ...
@@ -959,6 +961,16 @@ class SQLiteIntentStore:
                 (definition.strategy_id, definition.version, definition.config_checksum),
             )
 
+    def set_strategy_definition_state(self, strategy_id: str, state: str, enabled: bool) -> None:
+        """Persist an operator lifecycle state without touching any intent."""
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=?, enabled=? WHERE strategy_id=?",
+                (state, int(enabled), strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
+
     def observation_strategy_definitions(self) -> list[dict[str, object]]:
         with self._lock:
             rows = self.connection.execute(
@@ -1017,6 +1029,23 @@ class SQLiteIntentStore:
                     updated_at=CASE WHEN updated_at < ? THEN ? ELSE updated_at END
                     WHERE run_id=?""",
                 (timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (?, ?)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None:
+        """Move a durable run without creating, changing, or dispatching orders."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=?, heartbeat_at=?,
+                    ended_at=CASE WHEN ?='STOPPED' THEN ? ELSE ended_at END,
+                    updated_at=? WHERE run_id=?""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(run_id)

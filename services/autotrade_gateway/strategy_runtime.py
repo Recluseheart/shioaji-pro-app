@@ -8,7 +8,7 @@ strategy lifecycle before a separately-authorized execution worker is added.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .order_core import Intent, OrderCoordinator, Source, Status, StrategyDefinition, StrategyRun, StrategySignal, Verdict
 
@@ -30,9 +30,17 @@ class StrategyRuntime:
     config_checksum = "reference-fixture-v1"
     allowed_symbols = ("2330",)
 
-    def __init__(self, coordinator: OrderCoordinator, *, allow_reference_fixture: bool = False) -> None:
+    def __init__(
+        self,
+        coordinator: OrderCoordinator,
+        *,
+        allow_reference_fixture: bool = False,
+        allow_lifecycle: bool = False,
+    ) -> None:
         self._coordinator = coordinator
         self._allow_reference_fixture = allow_reference_fixture
+        self._allow_lifecycle = allow_lifecycle
+        self._active_run_id: str | None = None
         self._processed_event_ids: set[str] = set()
         self._last_event_id: str | None = None
         self._last_intent_id: str | None = None
@@ -43,6 +51,17 @@ class StrategyRuntime:
             allowed_symbols=self.allowed_symbols,
         ))
         self._restore_latest_durable_signal()
+        self._restore_active_run()
+
+    def _restore_active_run(self) -> None:
+        """Recover lifecycle context only; never revive mutation authority."""
+        run = next((
+            item for item in self._coordinator.store.observation_strategy_runs()
+            if item.get("strategy_id") == self.strategy_id
+            and item.get("state") in {"RUNNING", "PAUSED"}
+        ), None)
+        run_id = run.get("run_id") if isinstance(run, dict) else None
+        self._active_run_id = run_id if isinstance(run_id, str) else None
 
     def _restore_latest_durable_signal(self) -> None:
         """Restore read-only operator context after a process restart.
@@ -109,6 +128,44 @@ class StrategyRuntime:
             },
             "risk": {"allowed": verdict.allowed, "reasons": list(verdict.reasons)},
         }
+
+    def control(self, action: str) -> dict[str, object]:
+        """Apply an explicitly enabled, broker-free lifecycle transition.
+
+        Controls only persist strategy/run state and a heartbeat.  They never
+        arm the Gateway, create an intent, claim outbox work, or call a broker.
+        """
+        if not self._allow_lifecycle:
+            raise RuntimeError("strategy lifecycle is not explicitly enabled")
+        timestamp = utc_now()
+        if action == "start":
+            if self._active_run_id is not None:
+                raise ValueError("strategy already has an active run")
+            run_id = str(uuid4())
+            self._coordinator.store.record_strategy_run(StrategyRun(
+                run_id=run_id, strategy_id=self.strategy_id, version=self.version,
+                config_checksum=self.config_checksum, state="RUNNING", last_intent_id=None,
+                last_status=None, intent_count=0, started_at=timestamp,
+                heartbeat_at=timestamp, ended_at=None, updated_at=timestamp,
+            ))
+            self._coordinator.store.set_strategy_definition_state(self.strategy_id, "RUNNING", True)
+            self._active_run_id = run_id
+            return {"state": "RUNNING", "enabled": True, "run_id": run_id}
+        if action not in {"pause", "resume", "stop"} or self._active_run_id is None:
+            raise ValueError("strategy has no active run")
+        definitions = self.observations()
+        current = definitions[0].get("state") if definitions else None
+        expected = {"pause": "RUNNING", "resume": "PAUSED", "stop": {"RUNNING", "PAUSED"}}[action]
+        if current != expected and not (isinstance(expected, set) and current in expected):
+            raise ValueError(f"cannot {action} a {current} strategy")
+        state = {"pause": "PAUSED", "resume": "RUNNING", "stop": "STOPPED"}[action]
+        enabled = state == "RUNNING"
+        self._coordinator.store.transition_strategy_run(self._active_run_id, state, timestamp)
+        self._coordinator.store.set_strategy_definition_state(self.strategy_id, state, enabled)
+        result = {"state": state, "enabled": enabled, "run_id": self._active_run_id}
+        if action == "stop":
+            self._active_run_id = None
+        return result
 
     def process_fixture_event(self, event: dict[str, object]) -> tuple[Status, Verdict] | None:
         """Submit one deterministic fixture intent only in an isolated harness.

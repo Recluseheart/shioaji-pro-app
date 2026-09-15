@@ -127,6 +127,35 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(document["risk"], {"allowed": False, "reasons": ["trading_gate_not_armed"]})
         self.assertEqual(self.store.observation_orders(), [])
 
+    def test_explicit_lifecycle_is_durable_and_never_emits_an_intent(self) -> None:
+        runtime = StrategyRuntime(
+            OrderCoordinator(self.store, Gate.DISARMED), allow_lifecycle=True,
+        )
+        started = runtime.control("start")
+        self.assertEqual(started["state"], "RUNNING")
+        self.assertTrue(started["enabled"])
+        run_id = started["run_id"]
+        self.assertIsInstance(run_id, str)
+        self.assertEqual(runtime.control("pause")["state"], "PAUSED")
+        self.assertEqual(runtime.control("resume")["state"], "RUNNING")
+        stopped = runtime.control("stop")
+        self.assertEqual(stopped["state"], "STOPPED")
+        self.assertFalse(stopped["enabled"])
+        self.assertEqual(self.store.observation_orders(), [])
+        self.assertEqual(self.store.observation_strategy_definitions()[0]["state"], "STOPPED")
+        run = self.store.observation_strategy_runs()[0]
+        self.assertEqual(run["run_id"], run_id)
+        self.assertEqual(run["state"], "STOPPED")
+        self.assertIsNotNone(run["heartbeat_at"])
+        self.assertIsNotNone(run["ended_at"])
+
+    def test_default_runtime_rejects_lifecycle_control_without_writing(self) -> None:
+        runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))
+        with self.assertRaisesRegex(RuntimeError, "explicitly enabled"):
+            runtime.control("start")
+        self.assertEqual(self.store.observation_orders(), [])
+        self.assertEqual(self.store.observation_strategy_runs(), [])
+
     def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
         runtime = StrategyRuntime(armed_coordinator(self.store), allow_reference_fixture=True)
         result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})

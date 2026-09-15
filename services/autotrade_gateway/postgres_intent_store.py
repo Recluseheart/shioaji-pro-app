@@ -529,6 +529,16 @@ class PostgresIntentStore:
                 (definition.strategy_id, definition.version, definition.config_checksum),
             )
 
+    def set_strategy_definition_state(self, strategy_id: str, state: str, enabled: bool) -> None:
+        """Persist an operator lifecycle state without touching any intent."""
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=%s, enabled=%s WHERE strategy_id=%s",
+                (state, enabled, strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
+
     def observation_strategy_definitions(self) -> list[dict[str, object]]:
         with self._lock:
             rows = self.connection.execute(
@@ -586,6 +596,23 @@ class PostgresIntentStore:
                     updated_at=CASE WHEN updated_at < %s THEN %s ELSE updated_at END
                     WHERE run_id=%s""",
                 (timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None:
+        """Move a durable run without creating, changing, or dispatching orders."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=%s, heartbeat_at=%s,
+                    ended_at=CASE WHEN %s='STOPPED' THEN %s ELSE ended_at END,
+                    updated_at=%s WHERE run_id=%s""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(run_id)

@@ -53,3 +53,17 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     await page.getByLabel('顯示全部委託（含手動）').check();
     await expect(page.getByText(/MANUAL_UI · 下單 · RISK_REJECTED · manual-c/)).toBeVisible();
 });
+
+test('Auto Observe preset only renders observer panels and no strategy start control', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: '版面' }).click();
+    await page.getByTitle('套用預設版面「自動交易觀察」').click();
+
+    await expect(page.getByText('自動交易總覽', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('訊號與決策時間線', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('自動委託與持倉', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('對帳佇列', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('執行績效', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
+    await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。').first()).toBeVisible();
+});

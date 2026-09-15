@@ -71,9 +71,11 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {
-                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string; broker_order_id?: string | null; risk_reasons?: string[] };
+                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string; broker_order_id?: string | null; operation?: string; target_order_id?: string | null; operation_payload?: Record<string, unknown> | null; instrument?: Record<string, unknown> | null; risk_reasons?: string[] };
                         return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
-                            {order.source} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}
+                            {order.source} · {operationLabel(order.operation)} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}{order.target_order_id ? ` · 目標 ${order.target_order_id}` : ''}
+                            {order.operation_payload && <div style={{ color: '#aeb7c6' }}>請求：{formatPayload(order.operation_payload)}</div>}
+                            {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
                         </div>;
                     })}
@@ -95,6 +97,14 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             <small style={{ color: '#6f7888' }}>唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。</small>
         </section>
     );
+}
+
+function operationLabel(operation: string | undefined): string {
+    return ({ PLACE: '下單', CANCEL: '取消', UPDATE_PRICE: '改價', UPDATE_QUANTITY: '改量' } as Record<string, string>)[operation ?? 'PLACE'] ?? operation ?? '下單';
+}
+
+function formatPayload(value: Record<string, unknown>): string {
+    return Object.entries(value).map(([key, item]) => `${key}=${typeof item === 'string' ? item : JSON.stringify(item)}`).join(' · ');
 }
 
 function Badge({ label, value, tone }: { label: string; value: string; tone: string }) {

@@ -40,4 +40,20 @@ describe('normalizeAutotradeOverview', () => {
             risk_reasons: ['trading_gate_not_armed'],
         })]);
     });
+
+    it('preserves a target-order change as immutable observation data', () => {
+        const overview = normalizeAutotradeOverview({
+            health: { environment: 'SIM', trading_gate: 'DISARMED' },
+            orders: [{
+                intent_id: 'intent-change', correlation_id: 'correlation-change',
+                source: 'MANUAL_UI', status: 'RISK_REJECTED',
+                operation: 'UPDATE_PRICE', target_order_id: 'broker-order-1',
+                operation_payload: { price: 1000 },
+            }],
+        });
+        expect(overview.orders).toEqual([expect.objectContaining({
+            operation: 'UPDATE_PRICE', target_order_id: 'broker-order-1',
+            operation_payload: { price: 1000 },
+        })]);
+    });
 });

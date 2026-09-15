@@ -31,6 +31,10 @@ export type AutotradeOrderObservation = {
     strategy_id: string | null;
     run_id: string | null;
     broker_order_id: string | null;
+    operation: 'PLACE' | 'CANCEL' | 'UPDATE_PRICE' | 'UPDATE_QUANTITY';
+    target_order_id: string | null;
+    operation_payload: Record<string, unknown> | null;
+    instrument: Record<string, unknown> | null;
     risk_reasons: string[];
     updated_at: string;
 };
@@ -78,7 +82,26 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             if (!item || typeof item !== 'object') return [];
             const order = item as Record<string, unknown>;
             if (typeof order.intent_id !== 'string' || typeof order.correlation_id !== 'string' || typeof order.source !== 'string' || typeof order.status !== 'string') return [];
-            return [{ intent_id: order.intent_id, correlation_id: order.correlation_id, source: order.source, status: order.status, strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null, run_id: typeof order.run_id === 'string' ? order.run_id : null, broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null, risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [], updated_at: typeof order.updated_at === 'string' ? order.updated_at : '' }];
+            const operation = order.operation === 'CANCEL' || order.operation === 'UPDATE_PRICE' || order.operation === 'UPDATE_QUANTITY'
+                ? order.operation : 'PLACE';
+            const objectOrNull = (candidate: unknown): Record<string, unknown> | null =>
+                candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+                    ? candidate as Record<string, unknown> : null;
+            return [{
+                intent_id: order.intent_id,
+                correlation_id: order.correlation_id,
+                source: order.source,
+                status: order.status,
+                strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null,
+                run_id: typeof order.run_id === 'string' ? order.run_id : null,
+                broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null,
+                operation,
+                target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
+                operation_payload: objectOrNull(order.operation_payload),
+                instrument: objectOrNull(order.instrument),
+                risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
+                updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
+            }];
         }),
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',

@@ -392,6 +392,14 @@ class GatewayServerTest(unittest.TestCase):
         observation = getattr(self.server, "order_store").observation_orders()[0]
         self.assertEqual(observation["operation"], "CANCEL")
         self.assertEqual(observation["target_order_id"], "COMBO-BROKER-ORDER-1")
+        intent = getattr(self.server, "order_store").load_intent(receipt["intent_id"])
+        self.assertEqual(
+            intent.broker_request,
+            {
+                "path": "/api/v1/order/cancel_comboorder",
+                "body": {"trade_id": "COMBO-BROKER-ORDER-1"},
+            },
+        )
         self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
         self.assertEqual(ReadServiceHandler.received, [])
 

@@ -592,6 +592,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             quantity=int(order["quantity"]),
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
+            broker_request={
+                "path": "/api/v1/order/place_order",
+                "body": {"contract": contract, "stock_order" if stock_order else "futures_order": order},
+            },
         ))
 
     def _manual_combo_order_intent(self) -> Intent:
@@ -623,12 +627,26 @@ class GatewayHandler(BaseHTTPRequestHandler):
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
             instrument={"kind": "COMBO", "legs": legs},
+            broker_request={
+                "path": "/api/v1/order/place_comboorder",
+                "body": {"combo_contract": combo_contract, "order": order},
+            },
         ))
 
-    def _manual_cancel_intent(self) -> Intent:
-        return self._manual_target_order_intent("CANCEL", ())
+    def _manual_cancel_intent(self, *, combo: bool) -> Intent:
+        return self._manual_target_order_intent(
+            "CANCEL",
+            (),
+            broker_path="/api/v1/order/cancel_comboorder" if combo else "/api/v1/order/cancel_order",
+        )
 
-    def _manual_target_order_intent(self, operation: str, change_fields: tuple[str, ...]) -> Intent:
+    def _manual_target_order_intent(
+        self,
+        operation: str,
+        change_fields: tuple[str, ...],
+        *,
+        broker_path: str | None = None,
+    ) -> Intent:
         size = int(self.headers.get("Content-Length", "0"))
         if size <= 0 or size > 8_192:
             raise ValueError("invalid target order body size")
@@ -653,6 +671,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
             operation=operation,
             target_order_id=target_order_id,
             operation_payload=changes or None,
+            broker_request={
+                "path": broker_path or {
+                    "CANCEL": "/api/v1/order/cancel_order",
+                    "UPDATE_PRICE": "/api/v1/order/update_price",
+                    "UPDATE_QUANTITY": "/api/v1/order/update_qty",
+                }[operation],
+                "body": value,
+            },
         ))
 
     def do_GET(self) -> None:  # noqa: N802
@@ -737,7 +763,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         if path in {"/api/v1/order/cancel_order", "/api/v1/order/cancel_comboorder"}:
             try:
-                intent = self._manual_cancel_intent()
+                intent = self._manual_cancel_intent(combo=path == "/api/v1/order/cancel_comboorder")
             except (TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid cancel order"})
                 return

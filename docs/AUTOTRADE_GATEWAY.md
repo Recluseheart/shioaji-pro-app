@@ -177,6 +177,14 @@ Risk Engine 接受的 immutable intent，而不是使用瀏覽器重送的 paylo
 新 request。若 journal payload 無法嚴格重建，該 leased outbox 直接進入 `UNKNOWN`，
 adapter 不會被呼叫；這與 network timeout 相同，必須經 reconciliation 才能處理。
 
+`services/autotrade_gateway/broker_http.py` 現有一個只允許 credential-free loopback
+origin 的 HTTP dispatch seam。它只接受 intent 內持久化且與操作相符的 request，並且
+只有回應含有非空 `order.id` 時才回傳 broker identity；缺少 identity、無效回應或
+timeout 一律由 worker 標為 `UNKNOWN`。Gateway server 現在**不會構造或啟用**這個
+adapter；測試僅連接本機 mock HTTP server，沒有 Shioaji session、API key、CA 或任何
+simulation broker mutation。未來若要啟用，仍須另行完成唯一 session owner、target
+account lookup、callback/reconciliation 與明確 simulation 授權。
+
 mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持久化的 broker
 identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
 或 `BROKER_REJECTED`。相同 terminal callback 可冪等重放；identity 不符、衝突終態
@@ -199,7 +207,8 @@ market intent 都不會被畫成價格線，以避免把觀察資料誤解為可
 
 ## 現在尚未具備的能力
 
-- Shioaji 1.7.4/1.7.5 HTTP adapter 與唯一 session owner worker。
+- 唯一 Shioaji HTTP session owner、實際 adapter wiring 與 1.7.4/1.7.5 end-to-end
+  compatibility（目前僅有未啟用的 loopback adapter seam）。
 - 任何實際或 simulation broker mutation、策略啟動、取消、平倉或自動平倉。
 - callback、SSE、reconciliation snapshot 與完整 UI event chain。
 

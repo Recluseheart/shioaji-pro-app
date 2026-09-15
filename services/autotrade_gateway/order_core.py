@@ -78,6 +78,9 @@ class Intent:
     operation: str = "PLACE"
     target_order_id: str | None = None
     operation_payload: dict[str, object] | None = None
+    # The normalized sidecar request is durable execution evidence, never a
+    # browser read-model field. It is only read by the future worker owner.
+    broker_request: dict[str, object] | None = None
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
@@ -144,6 +147,7 @@ def intent_from_persisted_payload(payload_json: str) -> Intent:
         operation=text("operation"),
         target_order_id=optional_text("target_order_id"),
         operation_payload=optional_object("operation_payload"),
+        broker_request=optional_object("broker_request"),
         intent_id=text("intent_id"),
         correlation_id=text("correlation_id"),
         created_at=created_at,

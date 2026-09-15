@@ -295,6 +295,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 {"items": getattr(self.server, "order_store").observation_orders()},
             )
             return
+        if path == "/api/v1/autotrade/reconciliation":
+            observations = getattr(self.server, "order_store").observation_orders()
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "items": [
+                        item for item in observations
+                        if item.get("status") in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}
+                    ],
+                },
+            )
+            return
         if path == MARKET_SSE_PATH:
             self._relay_market_sse()
             return

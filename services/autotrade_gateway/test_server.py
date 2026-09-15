@@ -100,6 +100,17 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
 
+    def test_reconciliation_endpoint_exposes_unknown_without_a_resend(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(store, Gate.ARMED).accept(intent)
+        store.recover()
+        with urlopen(f"{self.base}/api/v1/autotrade/reconciliation") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["intent_id"], intent.intent_id)
+        self.assertEqual(document["items"][0]["status"], "UNKNOWN")
+        self.assertEqual(store.outbox_state(intent.intent_id), "UNKNOWN")
+
     def test_gateway_startup_recovers_persisted_pending_delivery_to_unknown(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "restart-recovery.db"

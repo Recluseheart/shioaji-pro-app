@@ -252,6 +252,15 @@ timeout 一律由 worker 標為 `UNKNOWN`。只有顯式
 未來受控 execution window 仍須完成 target account lookup、callback/reconciliation 與明確
 simulation 授權。
 
+受控 bridge 可在 `AUTOTRADE_ENV=SIM` 下設定非空的
+`AUTOTRADE_BROKER_CALLBACK_SECRET`，以
+`POST /api/v1/autotrade/internal/broker-terminal` 回報已持久化 identity 的
+`FILLED`、`CANCELLED` 或 `BROKER_REJECTED` 終態。此 internal route 必須帶
+`X-Autotrade-Callback-Secret`，不接受其他欄位或任何非 terminal status；未設定
+secret、秘密不符、intent／broker identity 不符或 `UNKNOWN` 均拒絕。它不是 browser
+API、不能建立 intent、bind identity、dispatch 或讓 UNKNOWN 重送。尚未設定 bridge 時
+route 固定拒絕，且本機開發不設定此 secret。
+
 mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持久化的 broker
 identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
 或 `BROKER_REJECTED`。相同 terminal callback 可冪等重放；identity 不符、衝突終態
@@ -292,7 +301,8 @@ market intent 都不會被畫成價格線，以避免把觀察資料誤解為可
 
 - 自動 market feed runner、實際 strategy signal scheduler 與任何 background dispatch loop。
 - 任何實際或 simulation broker mutation、取消、平倉或自動平倉。
-- broker callback／reconciliation snapshot 與完整 broker-to-UI event chain。
+- broker reconciliation snapshot 與完整 broker-to-UI event chain；目前 internal terminal
+  callback 僅提供受控 bridge 的持久化終態寫入，未接入真實 sidecar callback stream。
 
 因此本階段的 UI 是可操作的安全觀察介面，而不是交易啟動器。狀態固定為
 `SIM`、`DISARMED`、CA disabled。

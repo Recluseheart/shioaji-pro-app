@@ -467,6 +467,43 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["limit_price"], "1000")
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_internal_terminal_callback_requires_secret_and_only_advances_bound_order(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(
+            Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000",
+            strategy_id="callback-fixture", run_id="callback-run",
+        )
+        status, verdict = armed_coordinator(store).accept(intent)
+        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+
+        class MockDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "MOCK-CALLBACK-1"
+
+        from services.autotrade_gateway.worker import ExecutionWorker
+        self.assertTrue(ExecutionWorker(store, MockDispatcher()).dispatch_once())
+        self.server.broker_callback_secret = "test-callback-secret"  # type: ignore[attr-defined]
+        body = json.dumps({
+            "intent_id": intent.intent_id,
+            "broker_order_id": "MOCK-CALLBACK-1",
+            "status": "FILLED",
+        }).encode()
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(Request(
+                f"{self.base}/api/v1/autotrade/internal/broker-terminal", data=body,
+                headers={"Content-Type": "application/json", "X-Autotrade-Callback-Secret": "wrong"},
+                method="POST",
+            ))
+        self.assertEqual(denied.exception.code, 403)
+        with urlopen(Request(
+            f"{self.base}/api/v1/autotrade/internal/broker-terminal", data=body,
+            headers={"Content-Type": "application/json", "X-Autotrade-Callback-Secret": "test-callback-secret"},
+            method="POST",
+        )) as response:
+            self.assertEqual(json.load(response), {"intent_id": intent.intent_id, "status": "FILLED"})
+        self.assertEqual(store.status(intent.intent_id), Status.FILLED)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_fills_endpoint_and_performance_use_only_durable_broker_facts(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

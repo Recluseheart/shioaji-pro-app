@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from hmac import compare_digest
 from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,7 @@ from .order_core import (
     RiskLimits,
     SQLiteIntentStore,
     Source,
+    Status,
 )
 from .simulation_snapshot import SimulationSnapshotProvider
 from .strategy_runtime import StrategyRuntime
@@ -462,6 +464,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def _strategy_control_request(self) -> tuple[str, str]:
         """Read an operator lifecycle request; it is never forwarded upstream."""
         return self._kill_switch_request()
+
+    def _record_internal_terminal_callback(self) -> None:
+        """Accept a terminal fact only from the explicitly configured broker bridge.
+
+        This route cannot create an intent, bind a broker identity, dispatch an
+        outbox, or reconcile UNKNOWN.  It only advances an already-bound order
+        through the store's terminal-callback state machine.
+        """
+        secret = getattr(self.server, "broker_callback_secret", None)
+        supplied = self.headers.get("X-Autotrade-Callback-Secret")
+        if not isinstance(secret, str) or not secret or not isinstance(supplied, str) or not compare_digest(supplied, secret):
+            self._json(HTTPStatus.FORBIDDEN, {"message": "broker callback is not authorized"})
+            return
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 8_192:
+            raise ValueError("invalid broker callback body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict) or set(value) != {"intent_id", "broker_order_id", "status"}:
+            raise ValueError("broker callback has an invalid shape")
+        intent_id = value["intent_id"]
+        broker_order_id = value["broker_order_id"]
+        status = value["status"]
+        if not all(isinstance(item, str) and 1 <= len(item) <= 256 for item in (intent_id, broker_order_id, status)):
+            raise ValueError("broker callback fields are invalid")
+        terminal = Status(status)
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+            raise ValueError("broker callback is not terminal")
+        store = getattr(self.server, "order_store")
+        store.record_terminal_callback(intent_id, broker_order_id, terminal)
+        observation = next(item for item in store.observation_orders() if item.get("intent_id") == intent_id)
+        getattr(self.server, "autotrade_event_hub").publish(observation)
+        self._json(HTTPStatus.OK, {"intent_id": intent_id, "status": terminal.value})
 
     def _accept_or_reuse_intent(self, intent: Intent) -> None:
         store = getattr(self.server, "order_store")
@@ -962,6 +996,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         strategy_runtime = getattr(self.server, "strategy_runtime")
+        if path == "/api/v1/autotrade/internal/broker-terminal":
+            try:
+                self._record_internal_terminal_callback()
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.CONFLICT, {"message": "broker callback was not applicable"})
+            return
         if path == "/api/v1/autotrade/kill-switch":
             try:
                 reason, idempotency_key = self._kill_switch_request()
@@ -1111,6 +1151,8 @@ def create_server(
         and os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1"
     ):
         raise RuntimeError("reference strategy signals require verified simulation risk context")
+    if os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET") and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
+        raise RuntimeError("broker callback is SIM only")
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
@@ -1150,6 +1192,7 @@ def create_server(
         store,
         resolved_upstream_origin,
     )
+    server.broker_callback_secret = os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET")  # type: ignore[attr-defined]
     server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]
         getattr(server, "order_coordinator"),
         allow_reference_fixture=reference_signals_enabled,

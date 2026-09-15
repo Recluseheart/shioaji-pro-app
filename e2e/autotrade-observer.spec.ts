@@ -19,7 +19,7 @@ test('Panel Library exposes every public and Autotrade catalogue category', asyn
     }
 });
 
-test('Panel Library adds representative panels and removes the selected panel without a broker mutation', async ({ page }) => {
+test('Panel Library adds and removes every repeatable panel without a broker mutation', async ({ page }) => {
     let mutationRequests = 0;
     page.on('request', (request) => {
         if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
@@ -30,16 +30,25 @@ test('Panel Library adds representative panels and removes the selected panel wi
     const blocks = page.locator('[data-block-id]');
     await expect(blocks).toHaveCount(7);
     const initialCount = await blocks.count();
-    for (const label of ['當日走勢', '閃電下單', '損益分析', '選擇權 T 字', '通知中心', '自動交易總覽']) {
+    for (const label of [
+        'K 線圖', '當日走勢', '當日走勢牆', '五檔', '下單面板', '成交明細',
+        '閃電下單', '籌碼資訊', '分價量表', '行情回放', '委託簿熱圖', '鋪單', '市場脈動',
+    ]) {
         await page.getByRole('button', { name: /新增面板/ }).click();
         const library = page.getByRole('dialog', { name: '新增面板' });
         await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
         await library.getByText(label, { exact: true }).first().click();
-        await expect(blocks).toHaveCount(initialCount + ['當日走勢', '閃電下單', '損益分析', '選擇權 T 字', '通知中心', '自動交易總覽'].indexOf(label) + 1);
+        await expect(blocks).toHaveCount(initialCount + 1);
+        await blocks.last().getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(initialCount);
     }
-    await expect(page.getByText('自動交易總覽', { exact: true }).last()).toBeVisible();
-    await blocks.last().getByTitle('移除此面板').click();
-    await expect(blocks).toHaveCount(initialCount + 5);
+
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+    await library.getByPlaceholder('搜尋面板（名稱或用途）').fill('自選清單');
+    await expect(library.getByRole('button', { name: /自選清單 已在版面中/ })).toBeVisible();
+    await library.getByRole('button', { name: /自選清單 已在版面中/ }).click();
+    await expect(blocks).toHaveCount(initialCount);
     expect(mutationRequests).toBe(0);
 });
 

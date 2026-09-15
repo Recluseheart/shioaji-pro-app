@@ -192,4 +192,33 @@ describe('Autotrade observer capability presentation', () => {
         expect(output).not.toContain('開始');
         await act(async () => renderer.unmount());
     });
+
+    it('offers a targeted refresh only for an operator-visible reconciliation case', async () => {
+        api.get.mockResolvedValue({
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            },
+            reconciliation: [{
+                intent_id: 'unknown-1', correlation_id: 'correlation-1', source: 'MANUAL_UI',
+                status: 'UNKNOWN', symbol: '2330', side: 'BUY', quantity: 1, limit_price: '1000',
+                order_price_type: 'LMT', strategy_id: null, run_id: null, broker_order_id: 'bound-id',
+                operation: 'PLACE', target_order_id: null, operation_payload: null, instrument: null,
+                risk_reasons: [], updated_at: '2026-09-15T00:00:00+00:00',
+                reconciliation_case: {
+                    state: 'OPEN', reason: 'timeout', opened_at: '2026-09-15T00:00:00+00:00',
+                    updated_at: '2026-09-15T00:00:00+00:00',
+                },
+            }],
+        });
+        let renderer!: ReturnType<typeof create>;
+        await act(async () => {
+            renderer = create(createElement(AutotradeObserverPanels, { kind: 'reconciliation' }));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(JSON.stringify(renderer.toJSON())).toContain('重新查詢對帳'));
+        expect(JSON.stringify(renderer.toJSON())).toContain('不會重送或建立委託');
+        await act(async () => renderer.unmount());
+    });
 });

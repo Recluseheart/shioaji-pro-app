@@ -89,6 +89,9 @@ intent、啟動 worker 或聯絡 sidecar。
 reservation 後中斷，該 key 保留 `PENDING`，Gateway 回 `503` 而不是猜測 read
 是否已發生；operator 必須先檢查 durable case，再以新 key 建立另一筆稽核 refresh。
 此 route 在預設設定、LIVE，或未驗證 SIM account 時一律 `403`。
+對帳佇列的 OPERATOR Web UI 會針對單一 durable case 提供「重新查詢對帳」；它先要求
+reason，再產生 idempotency key，成功後只 reload durable projection。OBSERVER mode 不顯示
+此控制，且仍由 server-side `403` 保護。
 
 供 Tailscale Serve 使用的 remote process 必須設定
 `AUTOTRADE_GATEWAY_MODE=OBSERVER`。這是 server-side capability boundary：只保留

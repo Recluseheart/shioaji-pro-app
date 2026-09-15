@@ -133,6 +133,15 @@ export type AutotradeKillSwitchReceipt = {
     applied: boolean;
 };
 
+export type ReconciliationRefreshReceipt = {
+    intent_id: string;
+    reason: string;
+    status: string;
+    observed_terminal_facts: number;
+    resolved_intents: number;
+    applied: boolean;
+};
+
 export type StrategyControlAction = 'start' | 'pause' | 'resume' | 'stop';
 
 export type StrategyControlReceipt = {
@@ -355,6 +364,27 @@ export function fetchAutotradeIntent(intentId: string) {
 
 export function fetchAutotradeOrder(intentId: string) {
     return fetchAutotradeObservation('orders', intentId);
+}
+
+export async function refreshAutotradeReconciliation(
+    intentId: string,
+    reason: string,
+    idempotencyKey: string,
+): Promise<ReconciliationRefreshReceipt> {
+    const document = await apiPost<Record<string, unknown>>(
+        `/api/v1/autotrade/reconciliation/${encodeURIComponent(intentId)}/refresh`,
+        { reason }, { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+    if (document.intent_id !== intentId || typeof document.reason !== 'string'
+        || typeof document.status !== 'string' || typeof document.observed_terminal_facts !== 'number'
+        || typeof document.resolved_intents !== 'number' || typeof document.applied !== 'boolean') {
+        throw new Error('Gateway returned an invalid reconciliation refresh receipt');
+    }
+    return {
+        intent_id: intentId, reason: document.reason, status: document.status,
+        observed_terminal_facts: document.observed_terminal_facts,
+        resolved_intents: document.resolved_intents, applied: document.applied,
+    };
 }
 
 export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): Promise<StrategyPreview> {

@@ -4,6 +4,7 @@ import {
     applyReferenceStrategyControl,
     fetchAutotradeOrder,
     previewReferenceStrategy,
+    refreshAutotradeReconciliation,
     type AutotradeOverview,
     type AutotradeOrderObservation,
     type AutotradeReconciliationObservation,
@@ -157,6 +158,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
     const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     const [killSwitchMessage, setKillSwitchMessage] = useState<string | null>(null);
+    const [reconciliationMessage, setReconciliationMessage] = useState<string | null>(null);
     const [showAllOrders, setShowAllOrders] = useState(false);
     const [timelineFilters, setTimelineFilters] = useState<TimelineFilters>(EMPTY_TIMELINE_FILTERS);
     useEffect(() => {
@@ -214,6 +216,19 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             })
             .catch(() => setStrategyPreview(`${labels[action]}策略失敗；請確認 Gateway 是否已啟用 SIM lifecycle。`));
     };
+    const runReconciliationRefresh = (intentId: string) => {
+        const reason = globalThis.prompt('請輸入重新查詢此筆委託的原因；不會重送或建立新委託。');
+        if (!reason?.trim()) return;
+        void refreshAutotradeReconciliation(intentId, reason.trim(), globalThis.crypto.randomUUID())
+            .then((receipt) => {
+                setReconciliationMessage(
+                    `對帳查詢${receipt.applied ? '完成' : '已重播'}：${receipt.status} · `
+                    + `${receipt.resolved_intents} 筆結案／${receipt.observed_terminal_facts} 個 terminal facts`,
+                );
+                return autotradeObserverStore.refresh();
+            })
+            .catch(() => setReconciliationMessage('對帳查詢未完成；請檢查 SIM reconciliation 設定與 durable case。'));
+    };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>{copy.title}</strong>
@@ -262,6 +277,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
                             {reconciliation?.reconciliation_case && <div style={{ color: '#ef4444' }}>對帳：{reconciliation.reconciliation_case.reason} · 開案 {reconciliation.reconciliation_case.opened_at}</div>}
+                            {reconciliation && !observerOnly && order.intent_id && <button
+                                onClick={() => runReconciliationRefresh(order.intent_id!)}
+                                title='只查詢已驗證的 SIM broker trade；不會重送或建立委託'
+                            >重新查詢對帳</button>}
                             {order.intent_id && <DurableOrderDetail intentId={order.intent_id} />}
                         </div>;
                     })}
@@ -286,6 +305,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     ))}
                 </div>
             ) : null}
+            {kind === 'reconciliation' && reconciliationMessage && <div role='status' style={{ color: '#aeb7c6' }}>{reconciliationMessage}</div>}
             {kind === 'signal_timeline' && overview && timeline
                 && overview.signals.length + overview.decisions.length + overview.audit_events.length > 0
                 && timeline.signals.length + timeline.decisions.length + timeline.auditEvents.length === 0 && (

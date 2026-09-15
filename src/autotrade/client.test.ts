@@ -8,6 +8,7 @@ import {
     fetchAutotradeOrder,
     applyAutotradeKillSwitch,
     applyReferenceStrategyControl,
+    refreshAutotradeReconciliation,
     normalizeAutotradeHealth,
     normalizeAutotradeOverview,
 } from './client';
@@ -60,6 +61,21 @@ describe('Autotrade Gateway health contract', () => {
         expect(mocks.post).toHaveBeenCalledWith(
             '/api/v1/autotrade/strategies/reference-fixture/start', { reason: 'operator test' },
             { headers: { 'Idempotency-Key': 'strategy-start-1' } },
+        );
+    });
+
+    it('submits a single durable reconciliation refresh with an idempotency key', async () => {
+        mocks.post.mockResolvedValue({
+            intent_id: 'unknown-1', reason: 'operator check', status: 'RECONCILING',
+            observed_terminal_facts: 0, resolved_intents: 0, applied: true,
+        });
+        await expect(refreshAutotradeReconciliation('unknown-1', 'operator check', 'refresh-1')).resolves.toEqual({
+            intent_id: 'unknown-1', reason: 'operator check', status: 'RECONCILING',
+            observed_terminal_facts: 0, resolved_intents: 0, applied: true,
+        });
+        expect(mocks.post).toHaveBeenCalledWith(
+            '/api/v1/autotrade/reconciliation/unknown-1/refresh', { reason: 'operator check' },
+            { headers: { 'Idempotency-Key': 'refresh-1' } },
         );
     });
 });

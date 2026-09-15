@@ -165,6 +165,10 @@ SSE；event 只觸發同一份 overview 的唯讀 reload，SSE 中斷時仍使�
 按鈕不會呼叫 sidecar 或 broker；`404`、格式不符與網路失敗都明確顯示為沒有可用
 durable 詳情，不能用 overview 快取或瀏覽器資料補造委託。
 
+「執行與績效」面板只顯示 `strategy_runs` journal 所提供的 strategy/version、lifecycle
+state、最近結果、heartbeat 與結束時間；缺少 heartbeat 時會明確顯示尚無持久化事實，
+不會以瀏覽器時間或 order 資料推測策略正在執行。
+
 ## 訂單安全邊界
 
 `services/autotrade_gateway/order_core.py` 是尚未連接 broker 的共用訂單

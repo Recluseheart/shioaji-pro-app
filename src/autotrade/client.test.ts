@@ -102,12 +102,20 @@ describe('normalizeAutotradeOverview', () => {
         expect(overview.orders).toEqual([]);
     });
 
-    it('normalizes a durable strategy run without inventing a heartbeat', () => {
+    it('normalizes durable strategy lifecycle and heartbeat facts', () => {
         const overview = normalizeAutotradeOverview({
-            runs: [{ run_id: 'run-1', strategy_id: 'reference-fixture', last_status: 'RISK_REJECTED', intent_count: 1 }],
+            runs: [{
+                run_id: 'run-1', strategy_id: 'reference-fixture', version: 'v1',
+                config_checksum: 'fixture-checksum', state: 'FIXTURE_COMPLETED',
+                last_status: 'RISK_REJECTED', intent_count: 1,
+                started_at: '2026-09-15T00:00:00+00:00',
+                heartbeat_at: '2026-09-15T00:00:01+00:00',
+                ended_at: '2026-09-15T00:00:02+00:00', updated_at: '2026-09-15T00:00:02+00:00',
+            }],
         });
         expect(overview.runs).toEqual([expect.objectContaining({
-            run_id: 'run-1', strategy_id: 'reference-fixture', intent_count: 1,
+            run_id: 'run-1', strategy_id: 'reference-fixture', version: 'v1',
+            state: 'FIXTURE_COMPLETED', heartbeat_at: '2026-09-15T00:00:01+00:00', intent_count: 1,
         })]);
     });
 

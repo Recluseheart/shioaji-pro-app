@@ -195,7 +195,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     <div>已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}</div>
                     {overview.runs.map((run) => (
                         <div key={run.run_id} style={{ borderLeft: '3px solid #8892a6', paddingLeft: 7 }}>
-                            {run.strategy_id ?? '未命名策略'} · {run.run_id} · {run.last_status ?? 'UNKNOWN'} · {run.intent_count} intents
+                            {run.strategy_id ?? '未命名策略'}{run.version ? ` ${run.version}` : ''} · {run.run_id}
+                            <div>狀態：{run.state ?? 'UNKNOWN'} · 最近結果：{run.last_status ?? '無 intent'} · {run.intent_count} intents</div>
+                            <div>Heartbeat：{run.heartbeat_at ?? '尚無持久化 heartbeat'}{run.ended_at ? ` · 結束：${run.ended_at}` : ''}</div>
                         </div>
                     ))}
                 </div>

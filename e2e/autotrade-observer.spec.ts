@@ -550,6 +550,43 @@ test('Autotrade control panel is visible but cannot start a strategy while disar
     await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。')).toBeVisible();
 });
 
+test('Strategy control runs validate and dry-run through Gateway without an order mutation', async ({ page }) => {
+    const gatewayRequests: string[] = [];
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' },
+            strategies: [{ strategy_id: 'reference-fixture', version: 'v1', state: 'DISABLED', enabled: false, lifecycle_enabled: false }],
+        } });
+    });
+    await page.route('**/api/v1/autotrade/strategies/reference-fixture/*', async (route) => {
+        gatewayRequests.push(new URL(route.request().url()).pathname);
+        expect(route.request().method()).toBe('POST');
+        if (route.request().url().endsWith('/validate')) {
+            await route.fulfill({ json: { mode: 'VALIDATE', warnings: ['fixture warning'] } });
+        } else {
+            await route.fulfill({ json: { mode: 'DRY_RUN', risk: { allowed: false, reasons: ['trading_gate_not_armed'] } } });
+        }
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('策略控制', { exact: true }).click();
+    await page.getByRole('button', { name: '驗證策略' }).click();
+    await expect(page.getByText('驗證完成：fixture warning')).toBeVisible();
+    await page.getByRole('button', { name: 'Dry Run' }).click();
+    await expect(page.getByText('Dry Run：不建立 intent／outbox、不送 broker；風控 拒絕（交易閘門尚未啟用）')).toBeVisible();
+    expect(gatewayRequests).toEqual([
+        '/api/v1/autotrade/strategies/reference-fixture/validate',
+        '/api/v1/autotrade/strategies/reference-fixture/dry-run',
+    ]);
+    expect(orderMutations).toBe(0);
+});
+
 test('Signal Timeline renders a durable signal linked to its risk-rejected intent', async ({ page }) => {
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {

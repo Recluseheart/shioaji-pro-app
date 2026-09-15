@@ -154,6 +154,18 @@ export type StrategyControlReceipt = {
     applied: boolean;
 };
 
+function riskReasonLabel(reason: string): string {
+    return ({
+        trading_gate_not_armed: '交易閘門尚未啟用',
+        risk_context_unavailable: '缺少權威市場與帳務風控快照',
+        stale_quote: '行情已過期或不可用',
+        price_deviation_exceeded: '委託價格偏離最新行情過大',
+        position_limit_exceeded: '預估商品部位超過限額',
+        gross_exposure_limit_exceeded: '預估總曝險超過限額',
+        daily_loss_limit_exceeded: '每日損失已達限額',
+    } as Record<string, string>)[reason] ?? reason;
+}
+
 const fallback: AutotradeHealth = {
     environment: 'UNKNOWN',
     trading_gate: 'UNKNOWN',
@@ -402,7 +414,7 @@ export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): 
         ? risk.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
     return {
         mode: 'DRY_RUN',
-        message: `Dry Run：不建立 intent／outbox、不送 broker；風控 ${risk.allowed === true ? '允許' : '拒絕'}${reasons.length ? `（${reasons.join('、')}）` : ''}`,
+        message: `Dry Run：不建立 intent／outbox、不送 broker；風控 ${risk.allowed === true ? '允許' : '拒絕'}${reasons.length ? `（${reasons.map(riskReasonLabel).join('、')}）` : ''}`,
     };
 }
 

@@ -118,6 +118,11 @@ intent 一起持久化並出現在唯讀 observation。任何 timeout、例外�
 journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
 內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。
 
+mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持久化的 broker
+identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
+或 `BROKER_REJECTED`。相同 terminal callback 可冪等重放；identity 不符、衝突終態
+或 `UNKNOWN` callback 一律拒絕，必須走明確 reconciliation，不能藉 callback 重開派送。
+
 每筆 observation 同時帶有持久化的 `risk_reasons`。Auto Orders／對帳面板只讀
 顯示它們，讓使用者可辨認為何某筆 intent 被拒絕；原因不是可由 UI 修改、重送或
 繞過 Gate 的控制項。

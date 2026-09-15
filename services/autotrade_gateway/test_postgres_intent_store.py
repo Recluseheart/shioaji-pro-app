@@ -64,3 +64,19 @@ class PostgresIntentStoreTest(unittest.TestCase):
             self.store.observation_orders()[0]["broker_order_id"],
             "POSTGRES-MOCK-ORDER-1",
         )
+
+    def test_terminal_callback_requires_the_persisted_broker_identity(self) -> None:
+        intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent_id: str) -> str:
+                return "POSTGRES-MOCK-TERMINAL-1"
+
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.store.record_terminal_callback(intent.intent_id, "OTHER", Status.FILLED)
+        self.store.record_terminal_callback(intent.intent_id, "POSTGRES-MOCK-TERMINAL-1", Status.FILLED)
+        self.store.record_terminal_callback(intent.intent_id, "POSTGRES-MOCK-TERMINAL-1", Status.FILLED)
+        self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")

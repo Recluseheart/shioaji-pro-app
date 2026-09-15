@@ -105,6 +105,23 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
         self.assertEqual(self.store.observation_orders()[0]["broker_order_id"], "MOCK-ORDER-1")
 
+    def test_terminal_callback_is_identity_bound_idempotent_and_never_reopens_delivery(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+
+        class AcceptedDispatcher:
+            def dispatch(self, _intent_id: str) -> str: return "MOCK-ORDER-1"
+
+        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.store.record_terminal_callback(intent.intent_id, "OTHER-ORDER", Status.FILLED)
+        self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.FILLED)
+        self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.FILLED)
+        self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")
+        with self.assertRaisesRegex(ValueError, "current intent status"):
+            self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.CANCELLED)
+
     def test_existing_sqlite_journal_gains_broker_identity_without_rebuild(self) -> None:
         self.store.close()
         journal = Path(self.temp_dir.name) / "gateway-test.db"

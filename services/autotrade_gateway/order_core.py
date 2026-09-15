@@ -42,6 +42,9 @@ class Status(str, Enum):
     SENDING = "SENDING"
     PENDING_SUBMIT = "PENDING_SUBMIT"
     SUBMITTED = "SUBMITTED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    BROKER_REJECTED = "BROKER_REJECTED"
     UNKNOWN = "UNKNOWN"
     RECONCILING = "RECONCILING"
     MANUAL_REVIEW = "MANUAL_REVIEW"
@@ -278,6 +281,38 @@ class SQLiteIntentStore:
             timestamp = now().isoformat()
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, broker_order_id=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
+
+    def record_terminal_callback(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
+        """Persist an idempotent terminal callback only after identity binding.
+
+        A callback cannot turn an UNKNOWN order into a terminal result: that
+        path belongs to explicit reconciliation and must never silently assert
+        which broker order the ambiguous delivery referred to.
+        """
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+            raise ValueError("callback status must be terminal")
+        with self._lock, self.connection:
+            row = self.connection.execute(
+                "SELECT status, broker_order_id FROM order_intents WHERE intent_id=?", (intent_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(intent_id)
+            if row["broker_order_id"] != broker_order_id:
+                raise ValueError("callback broker identity does not match intent")
+            current = Status(row["status"])
+            if current is terminal:
+                return
+            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED}:
+                raise ValueError("callback is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                "UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?",
+                (terminal.value, timestamp, intent_id),
+            )
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='TERMINAL', updated_at=? WHERE intent_id=?",
+                (timestamp, intent_id),
+            )
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:

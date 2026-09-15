@@ -6,6 +6,7 @@ import unittest
 
 from services.autotrade_gateway.order_core import Gate, OrderCoordinator, SQLiteIntentStore, Status
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
+from services.autotrade_gateway.worker import ExecutionWorker
 
 
 class StrategyRuntimeTest(unittest.TestCase):
@@ -54,6 +55,27 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertFalse(document["would_dispatch_broker"])
         self.assertEqual(document["risk"], {"allowed": False, "reasons": ["trading_gate_not_armed"]})
         self.assertEqual(self.store.observation_orders(), [])
+
+    def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
+        runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.ARMED), allow_reference_fixture=True)
+        result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})
+        self.assertIsNotNone(result)
+        status, verdict = result or (None, None)
+        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+        observation = self.store.observation_orders()[0]
+
+        class MockDispatcher:
+            def dispatch(self, intent_id: str) -> str:
+                if intent_id != observation["intent_id"]:
+                    raise AssertionError("worker claimed a different strategy intent")
+                return "MOCK-STRATEGY-ORDER-1"
+
+        self.assertTrue(ExecutionWorker(self.store, MockDispatcher()).dispatch_once())
+        self.store.record_terminal_callback(
+            str(observation["intent_id"]), "MOCK-STRATEGY-ORDER-1", Status.FILLED,
+        )
+        self.assertEqual(self.store.status(str(observation["intent_id"])), Status.FILLED)
+        self.assertEqual(self.store.outbox_state(str(observation["intent_id"])), "TERMINAL")
 
 
 if __name__ == "__main__":

@@ -130,6 +130,28 @@ class PostgresIntentStore:
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=%s, broker_order_id=%s, updated_at=%s WHERE intent_id=%s", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 
+    def record_terminal_callback(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+            raise ValueError("callback status must be terminal")
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT status, broker_order_id FROM order_intents WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(intent_id)
+            if row["broker_order_id"] != broker_order_id:
+                raise ValueError("callback broker identity does not match intent")
+            current = Status(row["status"])
+            if current is terminal:
+                return
+            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED}:
+                raise ValueError("callback is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                "UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (terminal.value, timestamp, intent_id))
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='TERMINAL', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
+
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
             rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, payload_json, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()

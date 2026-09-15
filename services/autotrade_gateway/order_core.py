@@ -228,10 +228,20 @@ class SQLiteIntentStore:
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, broker_order_id=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 
-    def observation_orders(self) -> list[dict[str, str | None]]:
+    def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
-            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
-        return [dict(row) for row in rows]
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("risk_reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
 
 
 class OrderCoordinator:

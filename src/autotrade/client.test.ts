@@ -32,10 +32,12 @@ describe('normalizeAutotradeOverview', () => {
                 intent_id: 'intent-1', correlation_id: 'correlation-1',
                 source: 'MANUAL_UI', status: 'PENDING_SUBMIT',
                 broker_order_id: 'MOCK-ORDER-1',
+                risk_reasons: ['trading_gate_not_armed'],
             }],
         });
         expect(overview.orders).toEqual([expect.objectContaining({
             intent_id: 'intent-1', broker_order_id: 'MOCK-ORDER-1',
+            risk_reasons: ['trading_gate_not_armed'],
         })]);
     });
 });

@@ -71,9 +71,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {
-                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string; broker_order_id?: string | null };
+                        const order = item as { intent_id?: string; correlation_id?: string; source?: string; status?: string; broker_order_id?: string | null; risk_reasons?: string[] };
                         return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
                             {order.source} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}
+                            {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
                         </div>;
                     })}
                 </div>

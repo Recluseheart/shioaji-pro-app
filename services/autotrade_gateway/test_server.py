@@ -104,6 +104,9 @@ class GatewayServerTest(unittest.TestCase):
         store = getattr(self.server, "order_store")
         self.assertEqual(store.outbox_state(receipt["intent_id"]), None)
         self.assertEqual(store.observation_orders()[0]["source"], "MANUAL_UI")
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertIn("trading_gate_not_armed", overview["orders"][0]["risk_reasons"])
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_intent_ingress_records_a_disarmed_risk_rejection_without_outbox(self) -> None:

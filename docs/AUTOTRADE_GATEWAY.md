@@ -70,6 +70,10 @@ intent 一起持久化並出現在唯讀 observation。任何 timeout、例外�
 journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
 內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。
 
+每筆 observation 同時帶有持久化的 `risk_reasons`。Auto Orders／對帳面板只讀
+顯示它們，讓使用者可辨認為何某筆 intent 被拒絕；原因不是可由 UI 修改、重送或
+繞過 Gate 的控制項。
+
 開發時 ingress 預設使用 process-local SQLite memory store；如需保留隔離測試
 資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。設定
 `AUTOTRADE_GATEWAY_DATABASE_URL` 與受限格式的 `AUTOTRADE_GATEWAY_PG_SCHEMA`

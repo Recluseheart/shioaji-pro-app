@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
-from services.autotrade_gateway.reconciliation import apply_reconciled_terminals, SimulationTradeProvider, terminal_callback_from_trade
+from services.autotrade_gateway.reconciliation import (
+    ReconciliationRefresher,
+    SimulationTradeProvider,
+    apply_reconciled_terminals,
+    terminal_callback_from_trade,
+)
 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
 
 
@@ -91,6 +96,40 @@ class ReconciliationParserTest(unittest.TestCase):
         self.assertEqual(facts, (("broker-1", Status.FILLED),))
         self.assertEqual(received[0][0], "http://127.0.0.1:21322/api/v1/order/trades")
         self.assertIn(b'"account_type":"S"', received[0][1])
+
+    def test_refresher_reads_one_verified_account_and_never_dispatches(self) -> None:
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        store = SQLiteIntentStore(":memory:")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(
+            store,
+            Gate.ARMED,
+            risk_context_provider=lambda _i: RiskContext(
+                Decimal("1000"), datetime.now(timezone.utc)
+            ),
+        ).accept(intent)
+        store.mark_pending_submit(intent.intent_id, "broker-refresh-1")
+        store.mark_delivery_unknown(intent.intent_id, "timeout")
+
+        class Provider:
+            received: list[SimulationStockAccount] = []
+
+            def terminal_facts(self, account: SimulationStockAccount):
+                self.received.append(account)
+                return (("broker-refresh-1", Status.CANCELLED),)
+
+        account = SimulationStockAccount("broker", "verified-paper-account")
+        provider = Provider()
+        result = ReconciliationRefresher(store, provider, account).refresh()
+
+        self.assertEqual(provider.received, [account])
+        self.assertEqual(result.observed_terminal_facts, 1)
+        self.assertEqual(result.resolved_intents, 1)
+        self.assertEqual(store.status(intent.intent_id), Status.CANCELLED)
+        self.assertEqual(store.outbox_state(intent.intent_id), "TERMINAL")
+        store.close()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Protocol
+
 from .broker_http import HttpOpener
 from .order_core import IntentStore, Status
 from .simulation_snapshot import SimulationSnapshotProvider, SimulationStockAccount
@@ -12,6 +15,20 @@ _TERMINAL_STATUSES = {
     "Cancelled": Status.CANCELLED,
     "Failed": Status.BROKER_REJECTED,
 }
+
+
+class TerminalFactProvider(Protocol):
+    """Read-only account-scoped source used by reconciliation refresh."""
+
+    def terminal_facts(self, account: SimulationStockAccount) -> tuple[tuple[str, Status], ...]: ...
+
+
+@dataclass(frozen=True)
+class ReconciliationRefresh:
+    """Durable changes caused by one broker read; never a dispatch receipt."""
+
+    observed_terminal_facts: int
+    resolved_intents: int
 
 
 def terminal_callback_from_trade(trade: object) -> tuple[str, Status] | None:
@@ -91,3 +108,24 @@ def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Statu
             store.record_reconciled_terminal(intent_id, broker_order_id, terminal)
             resolved += 1
     return resolved
+
+
+class ReconciliationRefresher:
+    """Perform one account-scoped broker read and apply only safe terminals."""
+
+    def __init__(
+        self,
+        store: IntentStore,
+        provider: TerminalFactProvider,
+        account: SimulationStockAccount,
+    ) -> None:
+        self.store = store
+        self.provider = provider
+        self.account = account
+
+    def refresh(self) -> ReconciliationRefresh:
+        facts = self.provider.terminal_facts(self.account)
+        return ReconciliationRefresh(
+            observed_terminal_facts=len(facts),
+            resolved_intents=apply_reconciled_terminals(self.store, facts),
+        )

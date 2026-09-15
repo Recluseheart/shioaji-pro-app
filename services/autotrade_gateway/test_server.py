@@ -673,6 +673,51 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertNotIn("Authorization", headers)
 
+    def test_all_web_post_read_contracts_are_forwarded_without_browser_credentials(self) -> None:
+        # This is deliberately a UI-facing inventory rather than a copy of
+        # READ_QUERY_POST_PATHS. A newly-added frontend contract must be
+        # represented here with the corresponding compatibility coverage.
+        paths = (
+            "/api/v1/auth/usage",
+            "/api/v1/data/credit_enquire",
+            "/api/v1/data/index_components",
+            "/api/v1/data/kbars",
+            "/api/v1/data/scanner",
+            "/api/v1/data/short_stock_sources",
+            "/api/v1/data/snapshots",
+            "/api/v1/data/ticks",
+            "/api/v1/order/combotrades",
+            "/api/v1/order/earmarking_detail",
+            "/api/v1/order/stock_reserve_detail",
+            "/api/v1/order/stock_reserve_summary",
+            "/api/v1/order/trades",
+            "/api/v1/portfolio/account_balance",
+            "/api/v1/portfolio/margin",
+            "/api/v1/portfolio/position_unit",
+            "/api/v1/portfolio/profit_loss",
+            "/api/v1/portfolio/profitloss_sum",
+            "/api/v1/portfolio/settlements",
+            "/api/v1/portfolio/trading_limits",
+        )
+        body = b'{"fixture":true}'
+        for path in paths:
+            with self.subTest(path=path):
+                request = Request(
+                    f"{self.base}{path}", data=body, method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer browser-secret",
+                        "Cookie": "session=browser-secret",
+                    },
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                received_path, headers, received_body = ReadServiceHandler.received[-1]
+                self.assertEqual(received_path, path)
+                self.assertEqual(received_body, body)
+                self.assertNotIn("Authorization", headers)
+                self.assertNotIn("Cookie", headers)
+
     def test_trade_callback_subscription_is_allowlisted_without_broker_mutation(self) -> None:
         body = b'{"broker_id":"9A95","account_id":"SIM-001","account_type":"S"}'
         request = Request(

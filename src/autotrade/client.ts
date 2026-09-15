@@ -54,6 +54,11 @@ export type AutotradeOrderObservation = {
     correlation_id: string;
     source: string;
     status: string;
+    symbol: string;
+    side: string;
+    quantity: number;
+    limit_price: string;
+    order_price_type: string;
     strategy_id: string | null;
     run_id: string | null;
     broker_order_id: string | null;
@@ -115,6 +120,11 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             intent_id: order.intent_id, correlation_id: order.correlation_id, source: order.source,
             status: order.status, strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null,
             run_id: typeof order.run_id === 'string' ? order.run_id : null,
+            symbol: typeof order.symbol === 'string' ? order.symbol : '',
+            side: typeof order.side === 'string' ? order.side : '',
+            quantity: typeof order.quantity === 'number' && Number.isFinite(order.quantity) ? order.quantity : 0,
+            limit_price: typeof order.limit_price === 'string' ? order.limit_price : '',
+            order_price_type: typeof order.order_price_type === 'string' ? order.order_price_type : 'LMT',
             broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null,
             operation, target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
             operation_payload: objectOrNull(order.operation_payload), instrument: objectOrNull(order.instrument),

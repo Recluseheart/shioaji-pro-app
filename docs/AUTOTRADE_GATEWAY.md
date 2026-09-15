@@ -85,7 +85,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   自行重新評估、建立 signal 或補造 broker 狀態。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
-  是唯讀資料。複合商品會同時帶回其持久化的 `instrument.legs` identity。
+  是唯讀資料。每筆也投影已持久化的 `symbol`、`side`、`quantity`、`limit_price`
+  與 `order_price_type`，讓相同商品的 K 線可建立不可操作的觀察標記；複合商品會
+  同時帶回其持久化的 `instrument.legs` identity。
 - `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
   projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，
   不會呼叫 sidecar、重送或偽造 broker status。
@@ -169,6 +171,11 @@ identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CAN
 每筆 observation 同時帶有持久化的 `risk_reasons`。Auto Orders／對帳面板只讀
 顯示它們，讓使用者可辨認為何某筆 intent 被拒絕；原因不是可由 UI 修改、重送或
 繞過 Gate 的控制項。
+
+K 線只將同商品、具有有效限價的 `STRATEGY`／`SYSTEM_TRIGGER` `PLACE` intent
+畫成虛線觀察標記，並顯示其方向、數量與 durable status。這些線不是 upstream
+活動委託線：不能拖曳、取消或改價；`MANUAL_UI`、取消／改價／改量及無價格的
+market intent 都不會被畫成價格線，以避免把觀察資料誤解為可操作的 broker 委託。
 
 開發時 ingress 預設使用 process-local SQLite memory store；如需保留隔離測試
 資料，才可設定新的 `AUTOTRADE_GATEWAY_DB` 路徑。設定

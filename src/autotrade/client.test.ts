@@ -33,11 +33,15 @@ describe('normalizeAutotradeOverview', () => {
                 source: 'MANUAL_UI', status: 'PENDING_SUBMIT',
                 broker_order_id: 'MOCK-ORDER-1',
                 risk_reasons: ['trading_gate_not_armed'],
+                symbol: '2330', side: 'BUY', quantity: 1,
+                limit_price: '1000', order_price_type: 'LMT',
             }],
         });
         expect(overview.orders).toEqual([expect.objectContaining({
             intent_id: 'intent-1', broker_order_id: 'MOCK-ORDER-1',
             risk_reasons: ['trading_gate_not_armed'],
+            symbol: '2330', side: 'BUY', quantity: 1,
+            limit_price: '1000', order_price_type: 'LMT',
         })]);
     });
 

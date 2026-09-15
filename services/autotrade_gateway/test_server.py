@@ -187,6 +187,10 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["intent_id"], intent.intent_id)
         self.assertEqual(document["items"][0]["broker_order_id"], "MOCK-ORDER-READ-1")
         self.assertEqual(document["items"][0]["source"], "STRATEGY")
+        self.assertEqual(document["items"][0]["symbol"], "2330")
+        self.assertEqual(document["items"][0]["side"], "BUY")
+        self.assertEqual(document["items"][0]["quantity"], 1)
+        self.assertEqual(document["items"][0]["limit_price"], "1000")
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:

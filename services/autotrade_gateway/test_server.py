@@ -393,6 +393,11 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "UNKNOWN")
         self.assertEqual(document["items"][0]["reconciliation_case"]["reason"], "restart_recovery")
         self.assertEqual(store.outbox_state(intent.intent_id), "UNKNOWN")
+        store.transition(intent.intent_id, Status.RECONCILING)
+        with urlopen(f"{self.base}/api/v1/autotrade/reconciliation") as response:
+            reconciling = json.load(response)
+        self.assertEqual(reconciling["items"][0]["status"], "RECONCILING")
+        self.assertEqual(reconciling["items"][0]["reconciliation_case"]["state"], "RECONCILING")
 
     def test_autotrade_events_replay_durable_observations_without_sidecar_access(self) -> None:
         store = getattr(self.server, "order_store")

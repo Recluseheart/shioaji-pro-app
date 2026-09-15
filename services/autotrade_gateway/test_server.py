@@ -107,6 +107,20 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
 
+    def test_decision_timeline_projects_durable_risk_verdict_without_a_sidecar_call(self) -> None:
+        body = json.dumps({
+            "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+        }).encode()
+        with self.assertRaises(HTTPError):
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        with urlopen(f"{self.base}/api/v1/autotrade/decisions") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["source"], "MANUAL_UI")
+        self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_reconciliation_endpoint_exposes_unknown_without_a_resend(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

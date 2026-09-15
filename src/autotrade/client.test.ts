@@ -54,6 +54,20 @@ describe('normalizeAutotradeOverview', () => {
         });
     });
 
+    it('normalizes the durable decision timeline separately from orders', () => {
+        const overview = normalizeAutotradeOverview({
+            decisions: [{
+                intent_id: 'decision-1', correlation_id: 'correlation-1',
+                source: 'MANUAL_UI', status: 'RISK_REJECTED',
+                risk_reasons: ['trading_gate_not_armed'],
+            }],
+        });
+        expect(overview.decisions).toEqual([expect.objectContaining({
+            intent_id: 'decision-1', risk_reasons: ['trading_gate_not_armed'],
+        })]);
+        expect(overview.orders).toEqual([]);
+    });
+
     it('preserves a target-order change as immutable observation data', () => {
         const overview = normalizeAutotradeOverview({
             health: { environment: 'SIM', trading_gate: 'DISARMED' },

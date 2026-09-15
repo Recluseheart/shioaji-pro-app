@@ -43,7 +43,7 @@ const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string 
 function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): number {
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
-        case 'signal_timeline': return overview.signals.length;
+        case 'signal_timeline': return overview.decisions.length;
         case 'auto_orders': return overview.orders.length;
         case 'risk_limits': return overview.risk.last_verdict === null ? 0 : 1;
         case 'reconciliation': return overview.reconciliation.length;
@@ -89,6 +89,16 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     })}
                 </div>
             )}
+            {kind === 'signal_timeline' && overview?.decisions.length ? (
+                <div style={{ display: 'grid', gap: 5 }}>
+                    {overview.decisions.map((decision) => (
+                        <div key={decision.intent_id} style={{ borderLeft: '3px solid #f0b44d', paddingLeft: 7 }}>
+                            {decision.source} · {operationLabel(decision.operation)} · {decision.status} · {decision.correlation_id.slice(0, 8)}
+                            {decision.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{decision.risk_reasons.join('、')}</div> : null}
+                        </div>
+                    ))}
+                </div>
+            ) : null}
             {kind === 'strategy_control' && (
                 <>
                     {overview?.strategies.map((item, index) => {

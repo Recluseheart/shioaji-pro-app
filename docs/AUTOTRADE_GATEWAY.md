@@ -67,6 +67,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   是唯讀資料。複合商品會同時帶回其持久化的 `instrument.legs` identity。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
   `MANUAL_REVIEW` 的 intent。此 API 用於人工對帳導覽，不提供重送功能。
+- `GET /api/v1/autotrade/decisions`：將 durable intent／risk verdict 投影為
+  Decision Timeline；會顯示 source、correlation、operation、status 與 risk
+  reasons，但不會生成 signal、改寫 verdict 或提供 retry。
 - allowlist 中的上游 `GET`（health、info、帳戶、data、monitor、活動委託／
   保留庫存 read model、watchlist）：僅轉送至本機 Shioaji HTTP sidecar（預設
   `http://127.0.0.1:21322`，可用 `SHIOAJI_HTTP_ORIGIN` 指定）。只保留

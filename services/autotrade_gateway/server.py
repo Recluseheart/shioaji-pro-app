@@ -113,6 +113,7 @@ def overview_document(
         "health": health_document(strategy_runtime),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": [],
+        "decisions": orders,
         "orders": orders,
         "risk": {
             "mode": "ENFORCING",
@@ -373,6 +374,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/v1/autotrade/intents":
+            self._json(
+                HTTPStatus.OK,
+                {"items": getattr(self.server, "order_store").observation_orders()},
+            )
+            return
+        if path == "/api/v1/autotrade/decisions":
+            # Every durable intent is also a durable risk decision.  This
+            # endpoint is intentionally a projection only: it cannot retry,
+            # alter a verdict, or fabricate a signal/callback.
             self._json(
                 HTTPStatus.OK,
                 {"items": getattr(self.server, "order_store").observation_orders()},

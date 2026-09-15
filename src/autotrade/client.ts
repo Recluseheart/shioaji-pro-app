@@ -12,6 +12,7 @@ export type AutotradeOverview = {
     health: AutotradeHealth;
     strategies: unknown[];
     signals: unknown[];
+    decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
     risk: { mode: string; limits_source: string; limits: Record<string, unknown>; last_verdict: unknown };
     reconciliation: unknown[];
@@ -76,6 +77,26 @@ export async function fetchAutotradeHealth(): Promise<AutotradeHealth> {
 export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
     const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
     const list = (field: string) => Array.isArray(raw[field]) ? raw[field] : [];
+    const normalizeOrders = (value: unknown): AutotradeOrderObservation[] => Array.isArray(value) ? value.flatMap((item): AutotradeOrderObservation[] => {
+        if (!item || typeof item !== 'object') return [];
+        const order = item as Record<string, unknown>;
+        if (typeof order.intent_id !== 'string' || typeof order.correlation_id !== 'string' || typeof order.source !== 'string' || typeof order.status !== 'string') return [];
+        const operation = order.operation === 'CANCEL' || order.operation === 'UPDATE_PRICE' || order.operation === 'UPDATE_QUANTITY'
+            ? order.operation : 'PLACE';
+        const objectOrNull = (candidate: unknown): Record<string, unknown> | null =>
+            candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+                ? candidate as Record<string, unknown> : null;
+        return [{
+            intent_id: order.intent_id, correlation_id: order.correlation_id, source: order.source,
+            status: order.status, strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null,
+            run_id: typeof order.run_id === 'string' ? order.run_id : null,
+            broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null,
+            operation, target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
+            operation_payload: objectOrNull(order.operation_payload), instrument: objectOrNull(order.instrument),
+            risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
+            updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
+        }];
+    }) : [];
     const risk = raw.risk && typeof raw.risk === 'object' ? raw.risk as Record<string, unknown> : {};
     const performance = raw.performance && typeof raw.performance === 'object'
         ? raw.performance as Record<string, unknown> : {};
@@ -83,31 +104,8 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
         signals: list('signals'),
-        orders: list('orders').flatMap((item): AutotradeOrderObservation[] => {
-            if (!item || typeof item !== 'object') return [];
-            const order = item as Record<string, unknown>;
-            if (typeof order.intent_id !== 'string' || typeof order.correlation_id !== 'string' || typeof order.source !== 'string' || typeof order.status !== 'string') return [];
-            const operation = order.operation === 'CANCEL' || order.operation === 'UPDATE_PRICE' || order.operation === 'UPDATE_QUANTITY'
-                ? order.operation : 'PLACE';
-            const objectOrNull = (candidate: unknown): Record<string, unknown> | null =>
-                candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-                    ? candidate as Record<string, unknown> : null;
-            return [{
-                intent_id: order.intent_id,
-                correlation_id: order.correlation_id,
-                source: order.source,
-                status: order.status,
-                strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null,
-                run_id: typeof order.run_id === 'string' ? order.run_id : null,
-                broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null,
-                operation,
-                target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
-                operation_payload: objectOrNull(order.operation_payload),
-                instrument: objectOrNull(order.instrument),
-                risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
-                updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
-            }];
-        }),
+        orders: normalizeOrders(raw.orders),
+        decisions: normalizeOrders(raw.decisions),
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',

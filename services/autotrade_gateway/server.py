@@ -30,6 +30,7 @@ from .order_core import (
     Status,
 )
 from .simulation_snapshot import SimulationSnapshotProvider
+from .reconciliation import ReconciliationRefresher, SimulationTradeProvider
 from .strategy_runtime import StrategyRuntime
 from .worker import ExecutionWorker
 
@@ -145,6 +146,25 @@ def configured_simulation_risk_context(
     # A reference fixture is single-account by design.  It receives this
     # verified identity in memory only; it is never sent to an observer API.
     return engine, context_for, next(iter(by_id.values()))
+
+
+def configured_simulation_reconciliation_refresher(
+    store: IntentStore,
+    upstream_origin: str,
+    risk_configuration: tuple[RiskEngine, Any, Any] | None,
+) -> ReconciliationRefresher | None:
+    """Wire a read-only refresher only to an already verified SIM account."""
+    if os.getenv("AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION") != "1":
+        return None
+    if os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
+        raise RuntimeError("simulation reconciliation is SIM only")
+    if risk_configuration is None:
+        raise RuntimeError("simulation reconciliation requires verified risk context")
+    return ReconciliationRefresher(
+        store,
+        SimulationTradeProvider(upstream_origin),
+        risk_configuration[2],
+    )
 
 
 RISK_REASON_LABELS = {
@@ -1151,13 +1171,26 @@ def create_server(
         and os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1"
     ):
         raise RuntimeError("reference strategy signals require verified simulation risk context")
+    if (
+        os.getenv("AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION") == "1"
+        and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
+    ):
+        raise RuntimeError("simulation reconciliation is SIM only")
+    if (
+        os.getenv("AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION") == "1"
+        and os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1"
+    ):
+        raise RuntimeError("simulation reconciliation requires verified risk context")
     if os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET") and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
         raise RuntimeError("broker callback is SIM only")
+    resolved_upstream_origin = upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN") or "http://127.0.0.1:21322"
+    # Account discovery can fail closed. Do it before binding so an invalid
+    # SIM reconciliation configuration never leaks a listener socket.
+    risk_configuration = configured_simulation_risk_context(resolved_upstream_origin)
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
     server.daemon_threads = True
-    resolved_upstream_origin = upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN") or "http://127.0.0.1:21322"
     server.upstream_origin = resolved_upstream_origin.rstrip("/")  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:
@@ -1174,7 +1207,6 @@ def create_server(
     # no worker could ever treat the stale outbox record as retryable.
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
-    risk_configuration = configured_simulation_risk_context(resolved_upstream_origin)
     reference_signals_enabled = os.getenv("AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS") == "1"
     if reference_signals_enabled and risk_configuration is None:
         raise RuntimeError("reference strategy signals require verified simulation risk context")
@@ -1191,6 +1223,11 @@ def create_server(
     server.execution_worker = configured_simulation_execution_worker(  # type: ignore[attr-defined]
         store,
         resolved_upstream_origin,
+    )
+    server.reconciliation_refresher = configured_simulation_reconciliation_refresher(  # type: ignore[attr-defined]
+        store,
+        resolved_upstream_origin,
+        risk_configuration,
     )
     server.broker_callback_secret = os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET")  # type: ignore[attr-defined]
     server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]

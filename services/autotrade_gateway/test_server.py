@@ -146,6 +146,57 @@ class GatewayServerTest(unittest.TestCase):
             server.server_close()
             getattr(server, "order_store").close()
 
+    def test_simulation_reconciliation_requires_verified_sim_account_and_stays_read_only(self) -> None:
+        class SnapshotProvider:
+            def __init__(self, _origin: str) -> None: pass
+
+            def simulation_stock_accounts(self):
+                from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
+
+                return (SimulationStockAccount("B", "paper-account-1"),)
+
+            def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
+                return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
+
+        class TradeProvider:
+            constructed_for: list[str] = []
+
+            def __init__(self, origin: str) -> None:
+                self.constructed_for.append(origin)
+
+            def terminal_facts(self, _account):
+                raise AssertionError("server construction must not query broker trades")
+
+        with patch("services.autotrade_gateway.server.SimulationSnapshotProvider", SnapshotProvider), patch(
+            "services.autotrade_gateway.server.SimulationTradeProvider", TradeProvider
+        ), patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT": "1",
+            "AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(port=0, upstream_origin="http://127.0.0.1:21322")
+        try:
+            self.assertIsNotNone(getattr(server, "reconciliation_refresher"))
+            self.assertEqual(getattr(server, "order_coordinator").gate, Gate.DISARMED)
+            self.assertEqual(TradeProvider.constructed_for, ["http://127.0.0.1:21322"])
+            self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.server_close()
+            getattr(server, "order_store").close()
+
+    def test_simulation_reconciliation_refuses_live_or_unverified_configuration(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION": "1",
+            "AUTOTRADE_ENV": "LIVE",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "SIM only"):
+            create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION": "1",
+            "AUTOTRADE_ENV": "SIM",
+            "AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT": "",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "verified risk context"):
+            create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+
     def test_execution_adapter_refuses_non_simulation_environment(self) -> None:
         with patch.dict(os.environ, {
             "AUTOTRADE_ENABLE_SIMULATION_EXECUTION": "1",

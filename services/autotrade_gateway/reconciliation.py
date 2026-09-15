@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from .broker_http import HttpOpener
 from .order_core import Status
+from .simulation_snapshot import SimulationSnapshotProvider, SimulationStockAccount
 
 
 _TERMINAL_STATUSES = {
@@ -37,3 +39,21 @@ def terminal_callback_from_trade(trade: object) -> tuple[str, Status] | None:
         return None
     terminal = _TERMINAL_STATUSES.get(source_status)
     return (order_id, terminal) if terminal is not None else None
+
+
+class SimulationTradeProvider:
+    """Read only account-scoped trade facts from the loopback SIM sidecar."""
+
+    def __init__(self, origin: str, *, timeout_seconds: float = 5, opener: HttpOpener | None = None) -> None:
+        self._snapshot = SimulationSnapshotProvider(
+            origin, timeout_seconds=timeout_seconds, opener=opener,
+        )
+
+    def terminal_facts(self, account: SimulationStockAccount) -> tuple[tuple[str, Status], ...]:
+        """Return verified terminal facts; malformed/unsettled rows are ignored."""
+        result = self._snapshot._request("/api/v1/order/trades", {
+            "account_type": "S", "broker_id": account.broker_id, "account_id": account.account_id,
+        })
+        if not isinstance(result, list):
+            return ()
+        return tuple(fact for item in result if (fact := terminal_callback_from_trade(item)) is not None)

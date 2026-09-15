@@ -169,6 +169,77 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "UNKNOWN")
         self.assertEqual(store.outbox_state(intent.intent_id), "UNKNOWN")
 
+    def test_autotrade_events_replay_durable_observations_without_sidecar_access(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(store, Gate.DISARMED).accept(intent)
+        request = Request(
+            f"{self.base}/api/v1/autotrade/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            self.assertEqual(response.readline().decode(), "retry: 3000\n")
+            self.assertEqual(response.readline().decode(), "\n")
+            event_id = response.readline().decode().removeprefix("id: ").strip()
+            self.assertEqual(event_id, f"{intent.intent_id}:{store.observation_orders()[0]['updated_at']}")
+            self.assertEqual(response.readline().decode(), "event: autotrade-order\n")
+            payload = response.readline().decode().removeprefix("data: ")
+            self.assertEqual(json.loads(payload)["intent_id"], intent.intent_id)
+            self.assertEqual(response.readline().decode(), "\n")
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_autotrade_events_resume_after_the_last_seen_durable_observation(self) -> None:
+        store = getattr(self.server, "order_store")
+        first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
+        coordinator = OrderCoordinator(store, Gate.DISARMED)
+        coordinator.accept(first)
+        coordinator.accept(second)
+        first_observation = next(
+            item for item in store.observation_orders() if item["intent_id"] == first.intent_id
+        )
+        request = Request(
+            f"{self.base}/api/v1/autotrade/events",
+            headers={
+                "Accept": "text/event-stream",
+                "Last-Event-ID": f"{first.intent_id}:{first_observation['updated_at']}",
+            },
+        )
+        with urlopen(request, timeout=2) as response:
+            response.readline()
+            response.readline()
+            response.readline()
+            response.readline()
+            payload = response.readline().decode().removeprefix("data: ")
+            self.assertEqual(json.loads(payload)["intent_id"], second.intent_id)
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_autotrade_events_notify_connected_observers_after_a_durable_receipt(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/autotrade/events",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.readline().decode(), "retry: 3000\n")
+            self.assertEqual(response.readline().decode(), "\n")
+            body = json.dumps({
+                "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+                "side": "BUY", "quantity": 1, "limit_price": "1000",
+            }).encode()
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(Request(
+                    f"{self.base}/api/v1/autotrade/intents", data=body, method="POST",
+                    headers={"Idempotency-Key": "sse-observer-notification"},
+                ))
+            self.assertEqual(raised.exception.code, 409)
+            receipt = json.load(raised.exception)
+            response.readline()
+            self.assertEqual(response.readline().decode(), "event: autotrade-order\n")
+            payload = response.readline().decode().removeprefix("data: ")
+            self.assertEqual(json.loads(payload)["intent_id"], receipt["intent_id"])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_gateway_startup_recovers_persisted_pending_delivery_to_unknown(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "restart-recovery.db"

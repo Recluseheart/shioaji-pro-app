@@ -87,6 +87,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   run；只回報 intent count、最新 intent/status 與更新時間，沒有活動時回傳空陣列。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
   `MANUAL_REVIEW` 的 intent。此 API 用於人工對帳導覽，不提供重送功能。
+- `GET /api/v1/autotrade/events`：唯讀 SSE。連線時重播 durable observation，
+  以 `Last-Event-ID` 繼續尚未看過的 projection，之後只通知新的本機 durable
+  write；它不會轉送 sidecar、修改 broker subscription 或重送委託。
 - `GET /api/v1/autotrade/decisions`：將 durable intent／risk verdict 投影為
   Decision Timeline；會顯示 source、correlation、operation、status 與 risk
   reasons，但不會生成 signal、改寫 verdict 或提供 retry。

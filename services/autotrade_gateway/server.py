@@ -8,6 +8,8 @@ import re
 from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from queue import Empty, Queue
+from threading import Lock
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -81,6 +83,45 @@ RISK_REASON_LABELS = {
     "quantity_limit_exceeded": "數量超過單筆限額",
     "notional_limit_exceeded": "名目金額超過單筆限額",
 }
+
+
+AUTOTRADE_EVENTS_PATH = "/api/v1/autotrade/events"
+
+
+def autotrade_event_id(observation: dict[str, object]) -> str:
+    """Make the immutable observation version suitable for Last-Event-ID."""
+    return f"{observation['intent_id']}:{observation['updated_at']}"
+
+
+class AutotradeEventHub:
+    """In-process fan-out for durable observation notifications only.
+
+    The durable journal remains the source of truth: every new SSE connection
+    first replays its current projection, so an event lost during a process
+    restart cannot be mistaken for a broker delivery failure.  The hub only
+    wakes connected observers after a durable write; it has no mutation or
+    broker capability.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._listeners: set[Queue[dict[str, object]]] = set()
+
+    def subscribe(self) -> Queue[dict[str, object]]:
+        listener: Queue[dict[str, object]] = Queue()
+        with self._lock:
+            self._listeners.add(listener)
+        return listener
+
+    def unsubscribe(self, listener: Queue[dict[str, object]]) -> None:
+        with self._lock:
+            self._listeners.discard(listener)
+
+    def publish(self, observation: dict[str, object]) -> None:
+        with self._lock:
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            listener.put(observation)
 
 
 def is_allowed_read_path(path: str) -> bool:
@@ -218,6 +259,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
             "intent_id": intent.intent_id, "correlation_id": intent.correlation_id,
             "status": status.value, "risk_reasons": list(verdict.reasons),
         })
+        observation = next(
+            item for item in store.observation_orders()
+            if item["intent_id"] == intent.intent_id
+        )
+        getattr(self.server, "autotrade_event_hub").publish(observation)
 
     def _emit_existing_or_collision(self, intent: Intent) -> None:
         """Return a retry receipt only when it represents this exact request."""
@@ -333,6 +379,50 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(parsed, (dict, list)):
             raise ValueError("read query must be a JSON object or array")
         return body
+
+    def _sse_event(self, observation: dict[str, object]) -> bytes:
+        event_id = autotrade_event_id(observation)
+        payload = json.dumps(observation, separators=(",", ":"))
+        return f"id: {event_id}\nevent: autotrade-order\ndata: {payload}\n\n".encode()
+
+    def _autotrade_events(self) -> None:
+        """Replay durable observations and stream later local projection writes."""
+        store = getattr(self.server, "order_store")
+        observations = list(reversed(store.observation_orders()))
+        last_event_id = self.headers.get("Last-Event-ID")
+        if last_event_id:
+            for index, observation in enumerate(observations):
+                if autotrade_event_id(observation) == last_event_id:
+                    observations = observations[index + 1:]
+                    break
+        hub = getattr(self.server, "autotrade_event_hub")
+        listener = hub.subscribe()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        # This is one long-lived stream, not an HTTP keep-alive connection.
+        # Once the browser leaves it, BaseHTTPRequestHandler must not try to
+        # parse a second request from a reset SSE socket.
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            self.wfile.write(b"retry: 3000\n\n")
+            for observation in observations:
+                self.wfile.write(self._sse_event(observation))
+            self.wfile.flush()
+            while True:
+                try:
+                    observation = listener.get(timeout=1)
+                    self.wfile.write(self._sse_event(observation))
+                except Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            hub.unsubscribe(listener)
 
     def _intent(self) -> Intent:
         size = int(self.headers.get("Content-Length", "0"))
@@ -511,6 +601,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if path == AUTOTRADE_EVENTS_PATH:
+            self._autotrade_events()
+            return
         if path == MARKET_SSE_PATH:
             self._relay_market_sse()
             return
@@ -596,6 +689,9 @@ def create_server(
     upstream_origin: Optional[str] = None,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), GatewayHandler)
+    # An observer disconnect must never keep the Gateway alive during a
+    # restart.  Each SSE request has its own cleanup path and is read-only.
+    server.daemon_threads = True
     server.upstream_origin = (upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN", "http://127.0.0.1:21322")).rstrip("/")  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:
@@ -614,6 +710,7 @@ def create_server(
     server.order_store = store  # type: ignore[attr-defined]
     server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
     server.strategy_runtime = StrategyRuntime(server.order_coordinator)  # type: ignore[attr-defined]
+    server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server
 
 

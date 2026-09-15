@@ -227,6 +227,18 @@ def latest_risk_verdict(orders: list[dict[str, object]]) -> dict[str, object] | 
     }
 
 
+def reconciliation_document(store: IntentStore, orders: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Join open reconciliation evidence to immutable order observations."""
+    cases = {
+        case["intent_id"]: case for case in store.observation_reconciliation_cases()
+        if isinstance(case.get("intent_id"), str)
+    }
+    return [
+        {**item, "reconciliation_case": cases.get(item.get("intent_id"))}
+        for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}
+    ]
+
+
 def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -253,7 +265,7 @@ def overview_document(
             "limits": coordinator.risk.limits.document() if coordinator else {},
             "last_verdict": latest_risk_verdict(orders),
         },
-        "reconciliation": [item for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}],
+        "reconciliation": reconciliation_document(store, orders) if store is not None else [],
         "performance": {
             "run_count": len(runs),
             "filled_order_count": 0,
@@ -735,13 +747,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/v1/autotrade/reconciliation":
-            observations = getattr(self.server, "order_store").observation_orders()
+            store = getattr(self.server, "order_store")
+            observations = store.observation_orders()
             self._json(
                 HTTPStatus.OK,
                 {
                     "items": [
-                        item for item in observations
-                        if item.get("status") in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}
+                        *reconciliation_document(store, observations),
                     ],
                 },
             )

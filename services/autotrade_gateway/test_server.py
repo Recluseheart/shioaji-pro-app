@@ -391,6 +391,7 @@ class GatewayServerTest(unittest.TestCase):
             document = json.load(response)
         self.assertEqual(document["items"][0]["intent_id"], intent.intent_id)
         self.assertEqual(document["items"][0]["status"], "UNKNOWN")
+        self.assertEqual(document["items"][0]["reconciliation_case"]["reason"], "restart_recovery")
         self.assertEqual(store.outbox_state(intent.intent_id), "UNKNOWN")
 
     def test_autotrade_events_replay_durable_observations_without_sidecar_access(self) -> None:

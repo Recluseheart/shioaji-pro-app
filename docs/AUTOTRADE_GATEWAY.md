@@ -107,7 +107,8 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   lifecycle、heartbeat、intent count 與最近 intent/status；不會從 order 猜測一個 run。
   目前 production runner 仍 disabled，只有隔離 fixture harness 會寫入 `FIXTURE_COMPLETED` 記錄。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
-  `MANUAL_REVIEW` 的 intent。此 API 用於人工對帳導覽，不提供重送功能。
+  `MANUAL_REVIEW` 的 intent，並附上 durable case 的開案原因與時間。此 API 用於人工
+  對帳導覽，不提供重送功能。
 - `GET /api/v1/autotrade/events`：唯讀 SSE。連線時重播 durable observation，
   以 `Last-Event-ID` 繼續尚未看過的 projection，之後只通知新的本機 durable
   write；同 timestamp 的 replay 以 intent id 作次要排序，讓斷線續接的順序可重現。

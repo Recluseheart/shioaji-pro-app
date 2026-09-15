@@ -89,7 +89,9 @@ test('Run performance renders durable lifecycle facts without a trading request'
 test('Risk limits show durable usage and do not invent remaining exposure', async ({ page }) => {
     let mutationRequests = 0;
     page.on('request', (request) => {
-        if (/\/api\/v1\/order\//.test(request.url())) mutationRequests += 1;
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
     });
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {

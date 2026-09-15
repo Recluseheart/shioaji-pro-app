@@ -159,6 +159,8 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     {overview.decisions.map((decision) => (
                         <div key={decision.intent_id} style={{ borderLeft: '3px solid #f0b44d', paddingLeft: 7 }}>
                             {decision.source} · {operationLabel(decision.operation)} · {decision.status} · {decision.correlation_id.slice(0, 8)}
+                            {decision.risk_decision_missing ? <div style={{ color: '#ef4444' }}>風控判定 journal 缺失；不得據此重送</div> : null}
+                            {typeof decision.allowed === 'boolean' ? <div style={{ color: decision.allowed ? '#73c991' : '#f0b44d' }}>風控判定：{decision.allowed ? '允許' : '拒絕'}{decision.decided_at ? ` · ${decision.decided_at}` : ''}</div> : null}
                             {decision.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{decision.risk_reasons.join('、')}</div> : null}
                         </div>
                     ))}

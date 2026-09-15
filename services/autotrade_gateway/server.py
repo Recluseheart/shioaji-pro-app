@@ -243,6 +243,25 @@ def reconciliation_document(store: IntentStore, orders: list[dict[str, object]])
     ]
 
 
+def decisions_document(store: IntentStore, orders: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Join the immutable risk-decision journal to its intent projection."""
+    decisions = {
+        decision["intent_id"]: decision for decision in store.observation_risk_decisions()
+        if isinstance(decision.get("intent_id"), str)
+    }
+    return [
+        {
+            **item,
+            "allowed": decision.get("allowed") if decision is not None else None,
+            "risk_reasons": decision.get("risk_reasons", []) if decision is not None else [],
+            "decided_at": decision.get("decided_at") if decision is not None else None,
+            "risk_decision_missing": decision is None,
+        }
+        for item in orders
+        for decision in [decisions.get(item.get("intent_id"))]
+    ]
+
+
 def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -256,18 +275,19 @@ def overview_document(
     """
     orders = store.observation_orders() if store is not None else []
     runs = strategy_runs_document(store) if store is not None else []
+    decisions = decisions_document(store, orders) if store is not None else []
     return {
         "health": health_document(strategy_runtime),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": store.observation_signals() if store is not None else [],
         "runs": runs,
-        "decisions": orders,
+        "decisions": decisions,
         "orders": orders,
         "risk": {
             "mode": "ENFORCING",
             "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
             "limits": coordinator.risk.limits.document() if coordinator else {},
-            "last_verdict": latest_risk_verdict(orders),
+            "last_verdict": latest_risk_verdict(decisions),
         },
         "reconciliation": reconciliation_document(store, orders) if store is not None else [],
         "performance": {
@@ -742,12 +762,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/v1/autotrade/decisions":
-            # Every durable intent is also a durable risk decision.  This
-            # endpoint is intentionally a projection only: it cannot retry,
-            # alter a verdict, or fabricate a signal/callback.
+            # This is an immutable join to the separate risk-decision journal.
+            # It cannot retry, alter a verdict, or fabricate a signal/callback.
+            store = getattr(self.server, "order_store")
             self._json(
                 HTTPStatus.OK,
-                {"items": getattr(self.server, "order_store").observation_orders()},
+                {"items": decisions_document(store, store.observation_orders())},
             )
             return
         if path == "/api/v1/autotrade/reconciliation":

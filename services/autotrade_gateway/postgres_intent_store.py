@@ -97,6 +97,11 @@ class PostgresIntentStore:
             WHERE broker_order_id IS NOT NULL AND broker_order_id != ''
             ON CONFLICT DO NOTHING""",
         )
+        self.connection.execute(
+            """INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at)
+            SELECT intent_id, status <> 'RISK_REJECTED', risk_reasons_json, updated_at
+            FROM order_intents ON CONFLICT DO NOTHING""",
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -284,6 +289,27 @@ class PostgresIntentStore:
             observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
             observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def observation_risk_decisions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id, allowed, reasons_json, decided_at FROM risk_decisions "
+                "ORDER BY decided_at DESC, intent_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["allowed"] = bool(observation["allowed"])
+            observation["risk_reasons"] = [
+                reason for reason in parsed_reasons if isinstance(reason, str)
+            ] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations
 

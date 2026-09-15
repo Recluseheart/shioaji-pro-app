@@ -115,9 +115,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   以 `Last-Event-ID` 繼續尚未看過的 projection，之後只通知新的本機 durable
   write；同 timestamp 的 replay 以 intent id 作次要排序，讓斷線續接的順序可重現。
   它不會轉送 sidecar、修改 broker subscription 或重送委託。
-- `GET /api/v1/autotrade/decisions`：將 durable intent／risk verdict 投影為
-  Decision Timeline；會顯示 source、correlation、operation、status 與 risk
-  reasons，但不會生成 signal、改寫 verdict 或提供 retry。
+- `GET /api/v1/autotrade/decisions`：將 durable intent 與獨立的
+  `risk_decisions` journal 投影為 Decision Timeline；會顯示 source、correlation、
+  operation、status、allow／deny、決策時間與 risk reasons，但不會生成 signal、
+  改寫 verdict 或提供 retry。
 - allowlist 中的上游 `GET`（health、info、帳戶、data、monitor、活動委託／
   保留庫存 read model、watchlist）：僅轉送至本機 Shioaji HTTP sidecar（預設
   `http://127.0.0.1:21322`，可用 `SHIOAJI_HTTP_ORIGIN` 指定）。只保留

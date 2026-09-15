@@ -252,6 +252,7 @@ class IntentStore(Protocol):
         self, intent_id: str, broker_order_id: str, terminal: Status,
     ) -> None: ...
     def observation_orders(self) -> list[dict[str, object]]: ...
+    def observation_risk_decisions(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_run(self, run: StrategyRun) -> None: ...
@@ -482,6 +483,11 @@ class SQLiteIntentStore:
             SELECT intent_id, broker_order_id, updated_at, updated_at FROM order_intents
             WHERE broker_order_id IS NOT NULL AND broker_order_id != ''""",
         )
+        self.connection.execute(
+            """INSERT OR IGNORE INTO risk_decisions(intent_id, allowed, reasons_json, decided_at)
+            SELECT intent_id, CASE WHEN status = 'RISK_REJECTED' THEN 0 ELSE 1 END,
+                   risk_reasons_json, updated_at FROM order_intents""",
+        )
         self.connection.commit()
 
     def close(self) -> None:
@@ -686,6 +692,27 @@ class SQLiteIntentStore:
             observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
             observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def observation_risk_decisions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id, allowed, reasons_json, decided_at FROM risk_decisions "
+                "ORDER BY decided_at DESC, intent_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["allowed"] = bool(observation["allowed"])
+            observation["risk_reasons"] = [
+                reason for reason in parsed_reasons if isinstance(reason, str)
+            ] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations
 

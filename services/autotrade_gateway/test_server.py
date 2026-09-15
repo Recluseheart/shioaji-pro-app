@@ -392,6 +392,8 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["source"], "MANUAL_UI")
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
+        self.assertFalse(document["items"][0]["allowed"])
+        self.assertIsInstance(document["items"][0]["decided_at"], str)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_reconciliation_endpoint_exposes_unknown_without_a_resend(self) -> None:

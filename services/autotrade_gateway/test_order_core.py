@@ -306,6 +306,10 @@ class OrderCoreTest(unittest.TestCase):
         observation = self.store.observation_orders()
         self.assertEqual(observation[0]["intent_id"], "historic-intent")
         self.assertIsNone(observation[0]["broker_order_id"])
+        self.assertEqual(self.store.observation_risk_decisions(), [{
+            "intent_id": "historic-intent", "allowed": True, "risk_reasons": [],
+            "decided_at": "2026-01-01T00:00:00+00:00",
+        }])
 
 
 if __name__ == "__main__":

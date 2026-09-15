@@ -94,10 +94,12 @@ describe('normalizeAutotradeOverview', () => {
                 intent_id: 'decision-1', correlation_id: 'correlation-1',
                 source: 'MANUAL_UI', status: 'RISK_REJECTED',
                 risk_reasons: ['trading_gate_not_armed'],
+                allowed: false, decided_at: '2026-09-15T00:00:00+00:00',
             }],
         });
         expect(overview.decisions).toEqual([expect.objectContaining({
             intent_id: 'decision-1', risk_reasons: ['trading_gate_not_armed'],
+            allowed: false, decided_at: '2026-09-15T00:00:00+00:00',
         })]);
         expect(overview.orders).toEqual([]);
     });

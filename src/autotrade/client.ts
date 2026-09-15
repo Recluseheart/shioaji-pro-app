@@ -88,6 +88,9 @@ export type AutotradeOrderObservation = {
     operation_payload: Record<string, unknown> | null;
     instrument: Record<string, unknown> | null;
     risk_reasons: string[];
+    allowed?: boolean | null;
+    decided_at?: string | null;
+    risk_decision_missing?: boolean;
     updated_at: string;
 };
 
@@ -159,6 +162,9 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             operation, target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
             operation_payload: objectOrNull(order.operation_payload), instrument: objectOrNull(order.instrument),
             risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
+            allowed: typeof order.allowed === 'boolean' ? order.allowed : null,
+            decided_at: typeof order.decided_at === 'string' ? order.decided_at : null,
+            risk_decision_missing: order.risk_decision_missing === true,
             updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
         }];
     }) : [];

@@ -263,6 +263,27 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", overview["orders"][0]["risk_reasons"])
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_manual_idempotency_key_reuses_the_same_rejected_receipt(self) -> None:
+        body = json.dumps({
+            "contract": {"code": "2330"},
+            "stock_order": {
+                "action": "Buy", "price": 1000, "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }).encode()
+        receipts = []
+        for _ in range(2):
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(Request(
+                    f"{self.base}/api/v1/order/place_order", data=body, method="POST",
+                    headers={"Idempotency-Key": "manual-retry-1"},
+                ))
+            self.assertEqual(raised.exception.code, 409)
+            receipts.append(json.load(raised.exception))
+        self.assertEqual(receipts[0]["intent_id"], receipts[1]["intent_id"])
+        self.assertEqual(len(getattr(self.server, "order_store").observation_orders()), 1)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_market_order_shape_is_audited_without_a_fake_limit_price_error(self) -> None:
         body = json.dumps({
             "contract": {"code": "2330"},

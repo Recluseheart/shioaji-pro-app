@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import NAMESPACE_URL, uuid5
 
 from .order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
 from .strategy_runtime import StrategyRuntime
@@ -185,6 +188,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _with_idempotency_key(self, intent: Intent) -> Intent:
+        key = self.headers.get("Idempotency-Key")
+        if key is None:
+            return intent
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
+            raise ValueError("invalid idempotency key")
+        return replace(
+            intent,
+            intent_id=str(uuid5(NAMESPACE_URL, f"manual-intent:{key}")),
+            correlation_id=str(uuid5(NAMESPACE_URL, f"manual-correlation:{key}")),
+        )
+
     def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -290,7 +305,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         # is armed.  Those sources call the shared coordinator in-process.
         if source is not Source.MANUAL_UI:
             raise ValueError("browser intent source must be MANUAL_UI")
-        return Intent(
+        return self._with_idempotency_key(Intent(
             source=source,
             account_id=str(value["account_id"]),
             symbol=str(value["symbol"]),
@@ -300,7 +315,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             strategy_id=str(value["strategy_id"]) if value.get("strategy_id") else None,
             run_id=str(value["run_id"]) if value.get("run_id") else None,
             order_price_type=str(value.get("order_price_type", "LMT")).upper(),
-        )
+        ))
 
     def _manual_place_order_intent(self) -> Intent:
         """Map the upstream stock/futures limit-order shape into the common spine.
@@ -325,7 +340,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(order, dict) or not isinstance(order.get("account"), dict):
             raise ValueError("manual order account is required")
         account = order["account"]
-        return Intent(
+        return self._with_idempotency_key(Intent(
             source=Source.MANUAL_UI,
             account_id=str(account["account_id"]),
             symbol=str(contract["code"]),
@@ -333,7 +348,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             quantity=int(order["quantity"]),
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
-        )
+        ))
 
     def _manual_combo_order_intent(self) -> Intent:
         """Map an upstream combo request while retaining its leg identity."""
@@ -536,6 +551,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 intent = self._manual_place_order_intent()
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid manual order"})
+                return
+            store = getattr(self.server, "order_store")
+            if store.has_intent(intent.intent_id):
+                existing = next(item for item in store.observation_orders() if item["intent_id"] == intent.intent_id)
+                self._json(HTTPStatus.CONFLICT, {
+                    "intent_id": existing["intent_id"], "correlation_id": existing["correlation_id"],
+                    "status": existing["status"], "risk_reasons": existing["risk_reasons"],
+                })
                 return
             coordinator = getattr(self.server, "order_coordinator")
             status, verdict = coordinator.accept(intent)

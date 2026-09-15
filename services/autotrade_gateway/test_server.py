@@ -101,6 +101,33 @@ class GatewayServerTest(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 404)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_read_proxy_forwards_each_fixed_contract_without_browser_credentials(self) -> None:
+        paths = (
+            "/api/v1/auth/accounts",
+            "/api/v1/auth/ca_expiretime?person_id=masked",
+            "/api/v1/auth/usage",
+            "/api/v1/order/trades",
+            "/api/v1/order/combotrades",
+            "/api/v1/order/stock_reserve_summary",
+            "/api/v1/order/stock_reserve_detail",
+            "/api/v1/order/earmarking_detail",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                request = Request(
+                    f"{self.base}{path}",
+                    headers={
+                        "Authorization": "Bearer browser-secret",
+                        "Cookie": "session=browser-secret",
+                    },
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                received_path, headers, _body = ReadServiceHandler.received[-1]
+                self.assertEqual(received_path, path)
+                self.assertNotIn("Authorization", headers)
+                self.assertNotIn("Cookie", headers)
+
     def test_overview_never_invents_broker_activity(self) -> None:
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)

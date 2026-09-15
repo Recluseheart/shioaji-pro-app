@@ -53,5 +53,6 @@ describe('Autotrade observer panel summaries', () => {
             limit_price: '1000', order_price_type: 'LMT', strategy_id: 'reference', run_id: 'run-1',
         })).toBe('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1');
         expect(orderObservationText({ operation: 'UPDATE_PRICE', symbol: '2330', side: 'BUY', quantity: 2 })).toBeNull();
+        expect(orderObservationText({ operation: 'PLACE', symbol: '2330', side: 'BUY' })).toBeNull();
     });
 });

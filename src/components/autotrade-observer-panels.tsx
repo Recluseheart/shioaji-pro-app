@@ -207,12 +207,13 @@ function operationLabel(operation: string | undefined): string {
 
 export function orderObservationText(order: Partial<AutotradeOrderObservation>): string | null {
     if (order.operation !== undefined && order.operation !== 'PLACE') return null;
-    if (!order.symbol || !order.side || !Number.isInteger(order.quantity) || order.quantity <= 0) return null;
+    const quantity = order.quantity;
+    if (!order.symbol || !order.side || !Number.isInteger(quantity) || quantity === undefined || quantity <= 0) return null;
     const direction = order.side === 'BUY' ? '買' : order.side === 'SELL' ? '賣' : order.side;
     const price = order.limit_price ? ` · ${order.order_price_type ?? 'LMT'} ${order.limit_price}` : '';
     const attribution = order.strategy_id ? ` · 策略 ${order.strategy_id}` : '';
     const run = order.run_id ? ` · run ${order.run_id}` : '';
-    return `商品：${order.symbol} · ${direction} ${order.quantity}${price}${attribution}${run}`;
+    return `商品：${order.symbol} · ${direction} ${quantity}${price}${attribution}${run}`;
 }
 
 function formatPayload(value: Record<string, unknown>): string {

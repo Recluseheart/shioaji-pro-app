@@ -99,6 +99,11 @@ class PostgresIntentStore:
                 strategy_id TEXT PRIMARY KEY, state TEXT NOT NULL, enabled BOOLEAN NOT NULL,
                 allowed_symbols_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS strategy_control_requests (
+                idempotency_key TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
+                action TEXT NOT NULL, reason TEXT NOT NULL, receipt_json TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS strategy_versions (
                 strategy_id TEXT NOT NULL REFERENCES strategy_definitions(strategy_id),
                 version TEXT NOT NULL, config_checksum TEXT NOT NULL,
@@ -156,7 +161,7 @@ class PostgresIntentStore:
             )
             if cursor.rowcount != 1:
                 raise DuplicateIntentError(intent.intent_id)
-            self.connection.execute(
+            cursor = self.connection.execute(
                 "INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at) VALUES (%s,%s,%s,%s)",
                 (intent.intent_id, verdict.allowed, json.dumps(verdict.reasons), timestamp),
             )
@@ -234,7 +239,7 @@ class PostgresIntentStore:
         uncertain = tuple(status.value for status in _UNCERTAIN)
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
-            self.connection.execute(
+            cursor = self.connection.execute(
                 """INSERT INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
                 SELECT intent_id,'OPEN','restart_recovery',%s,%s FROM order_intents WHERE status = ANY(%s)
                 ON CONFLICT DO NOTHING""", (timestamp, timestamp, list(uncertain)),
@@ -538,6 +543,46 @@ class PostgresIntentStore:
             )
             if cursor.rowcount != 1:
                 raise KeyError(strategy_id)
+
+    def strategy_control_receipt(self, idempotency_key: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT strategy_id, action, reason, receipt_json FROM strategy_control_requests WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            receipt = json.loads(str(row["receipt_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError("stored strategy control receipt is invalid") from None
+        if not isinstance(receipt, dict):
+            raise ValueError("stored strategy control receipt is invalid")
+        return {"strategy_id": str(row["strategy_id"]), "action": str(row["action"]),
+                "reason": str(row["reason"]), "receipt": receipt}
+
+    def record_strategy_control(
+        self, idempotency_key: str, strategy_id: str, action: str, reason: str, receipt: dict[str, object],
+    ) -> bool:
+        existing = self.strategy_control_receipt(idempotency_key)
+        expected = {"strategy_id": strategy_id, "action": action, "reason": reason, "receipt": receipt}
+        if existing is not None:
+            if existing != expected:
+                raise ValueError("idempotency key is already used by a different strategy control")
+            return False
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """INSERT INTO strategy_control_requests(
+                    idempotency_key,strategy_id,action,reason,receipt_json,applied_at
+                ) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+                (idempotency_key, strategy_id, action, reason,
+                 json.dumps(receipt, separators=(",", ":")), now().isoformat()),
+            )
+        created = cursor.rowcount == 1
+        existing = self.strategy_control_receipt(idempotency_key)
+        if existing != expected:
+            raise ValueError("idempotency key is already used by a different strategy control")
+        return created
 
     def observation_strategy_definitions(self) -> list[dict[str, object]]:
         with self._lock:

@@ -66,6 +66,23 @@ class OrderCoreTest(unittest.TestCase):
         self.store = SQLiteIntentStore(journal)
         self.assertEqual(self.store.trading_gate(), Gate.KILLED)
 
+    def test_strategy_control_receipt_is_idempotent_and_request_bound(self) -> None:
+        receipt = {"state": "RUNNING", "enabled": True, "run_id": "run-1"}
+        self.assertTrue(self.store.record_strategy_control(
+            "strategy-start-1", "reference-fixture", "start", "operator test", receipt,
+        ))
+        self.assertEqual(self.store.strategy_control_receipt("strategy-start-1"), {
+            "strategy_id": "reference-fixture", "action": "start", "reason": "operator test",
+            "receipt": receipt,
+        })
+        self.assertFalse(self.store.record_strategy_control(
+            "strategy-start-1", "reference-fixture", "start", "operator test", receipt,
+        ))
+        with self.assertRaises(ValueError):
+            self.store.record_strategy_control(
+                "strategy-start-1", "reference-fixture", "stop", "operator test", receipt,
+            )
+
     def test_armed_intent_requires_authoritative_risk_context(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)

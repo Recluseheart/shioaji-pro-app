@@ -245,6 +245,21 @@ class GatewayServerTest(unittest.TestCase):
                 self.assertEqual(json.load(response)["capability_mode"], "OBSERVER")
             with urlopen(f"{base}/api/v1/autotrade/overview") as response:
                 self.assertEqual(json.load(response)["health"]["capability_mode"], "OBSERVER")
+            with urlopen(Request(
+                f"{base}/api/v1/order/order_deal_records",
+                data=b'{"account_type":"S","broker_id":"fixture","account_id":"fixture"}',
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer browser-secret",
+                    "Cookie": "session=browser-secret",
+                },
+                method="POST",
+            )) as response:
+                self.assertEqual(response.status, 200)
+            path, headers, _body = ReadServiceHandler.received[-1]
+            self.assertEqual(path, "/api/v1/order/order_deal_records")
+            self.assertNotIn("Authorization", headers)
+            self.assertNotIn("Cookie", headers)
             for path in (
                 "/api/v1/autotrade/intents",
                 "/api/v1/autotrade/kill-switch",
@@ -256,7 +271,7 @@ class GatewayServerTest(unittest.TestCase):
                     urlopen(Request(f"{base}{path}", data=b"not-json", method="POST"))
                 self.assertEqual(denied.exception.code, 403)
             self.assertEqual(getattr(server, "order_store").observation_orders(), [])
-            self.assertEqual(ReadServiceHandler.received, [])
+            self.assertEqual(len(ReadServiceHandler.received), 1)
         finally:
             server.shutdown()
             thread.join()
@@ -1394,10 +1409,10 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertNotIn("Authorization", headers)
 
-    def test_all_web_post_read_contracts_are_forwarded_without_browser_credentials(self) -> None:
-        # This is deliberately a UI-facing inventory rather than a copy of
-        # READ_QUERY_POST_PATHS. A newly-added frontend contract must be
-        # represented here with the corresponding compatibility coverage.
+    def test_all_compatibility_post_read_contracts_are_forwarded_without_browser_credentials(self) -> None:
+        # This is deliberately a compatibility inventory rather than a copy
+        # of READ_QUERY_POST_PATHS. A newly-added UI or reconciliation read
+        # contract must be represented here with matching boundary coverage.
         paths = (
             "/api/v1/auth/usage",
             "/api/v1/data/credit_enquire",
@@ -1409,6 +1424,7 @@ class GatewayServerTest(unittest.TestCase):
             "/api/v1/data/ticks",
             "/api/v1/order/combotrades",
             "/api/v1/order/earmarking_detail",
+            "/api/v1/order/order_deal_records",
             "/api/v1/order/stock_reserve_detail",
             "/api/v1/order/stock_reserve_summary",
             "/api/v1/order/trades",

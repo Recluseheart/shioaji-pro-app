@@ -66,6 +66,7 @@ READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/data/ticks",
     "/api/v1/order/combotrades",
     "/api/v1/order/earmarking_detail",
+    "/api/v1/order/order_deal_records",
     "/api/v1/order/stock_reserve_detail",
     "/api/v1/order/stock_reserve_summary",
     "/api/v1/order/trades",

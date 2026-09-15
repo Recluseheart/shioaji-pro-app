@@ -24,16 +24,18 @@ reconciliation preflight，以及每筆最新 RiskContext；只會以記憶體�
 它目前沒有任何設定值或 browser route 可以建構／呼叫，故不是 simulation canary
 或下單功能，也不改變現行 Gateway 的 `DISARMED` 行為。
 
-`POST /api/v1/order/cancel_order` 也會建立 `CANCEL` intent，但在 durable
-broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，會 fail closed
-為 `RISK_REJECTED`，絕不轉送 sidecar。這是稽核入口，不是可用的取消功能。
+`POST /api/v1/order/cancel_order` 會建立 `CANCEL` intent。它只接受本 Gateway
+已持久綁定、尚未終態的 broker order identity，並沿用該原始 intent 的已驗證 SIM
+account；sidecar-only、UNKNOWN、對帳中或終態的 trade id 都 fail closed 為
+`RISK_REJECTED`。目前仍不轉送 sidecar：這是共同 durable path，不是可用的取消功能。
 
 `POST /api/v1/order/cancel_comboorder` 使用同一個 `CANCEL` intent 與 target
-broker order identity 入口，因此不會另開一條未對帳的組合單 mutation 路徑；目標帳戶
-尚未驗證時同樣 fail closed，絕不轉送 sidecar。
+broker order identity 入口，因此不會另開一條未對帳的組合單 mutation 路徑；只有相同
+durable、非終態 target lookup 能驗證帳戶，其餘情況 fail closed，絕不轉送 sidecar。
 
 `POST /api/v1/order/update_price` 與 `update_qty` 使用相同 target-order audit
-模型，並持久化 requested price／quantity；同樣因目標帳戶尚未驗證而 fail closed。
+模型，並持久化 requested price／quantity；只有上述 verified target 可通過 account
+ownership gate，其他 target 一律 fail closed，且目前絕不轉送 sidecar。
 
 `POST /api/v1/order/place_comboorder` 已同樣建立 `MANUAL_UI` intent，並把
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk

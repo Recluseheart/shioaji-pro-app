@@ -222,6 +222,18 @@ class PostgresIntentStore:
             raise KeyError(intent_id)
         return intent_from_persisted_payload(str(row["payload_json"]))
 
+    def verified_target_intent(self, broker_order_id: str) -> Intent | None:
+        """Resolve only a nonterminal, broker-bound order from this store."""
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT intent.payload_json FROM broker_orders AS broker
+                JOIN order_intents AS intent ON intent.intent_id=broker.intent_id
+                WHERE broker.broker_order_id=%s
+                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED')""",
+                (broker_order_id,),
+            ).fetchone()
+        return intent_from_persisted_payload(str(row["payload_json"])) if row else None
+
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:
             row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=%s", (intent_id,)).fetchone()

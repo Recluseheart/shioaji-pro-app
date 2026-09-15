@@ -187,6 +187,16 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "broker_order_id": "POSTGRES-MOCK-ORDER-1",
         })
 
+    def test_verified_target_lookup_excludes_unknown_and_terminal_orders(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        self.store.mark_pending_submit(intent.intent_id, "POSTGRES-TARGET-1")
+        target = self.store.verified_target_intent("POSTGRES-TARGET-1")
+        self.assertIsNotNone(target)
+        self.assertEqual(target.account_id, "SIM-001")
+        self.store.record_terminal_callback(intent.intent_id, "POSTGRES-TARGET-1", Status.CANCELLED)
+        self.assertIsNone(self.store.verified_target_intent("POSTGRES-TARGET-1"))
+
     def test_bound_broker_order_accepts_a_valid_immutable_fill(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         armed_coordinator(self.store).accept(intent)

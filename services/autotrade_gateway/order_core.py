@@ -77,6 +77,10 @@ class Intent:
     instrument: dict[str, object] | None = None
     operation: str = "PLACE"
     target_order_id: str | None = None
+    # Only the durable store may set this after resolving target_order_id to a
+    # still-operable, broker-bound intent. Browser request fields never decide
+    # whether a cancel/replace target belongs to the verified SIM account.
+    target_order_verified: bool = False
     operation_payload: dict[str, object] | None = None
     # The normalized sidecar request is durable execution evidence, never a
     # browser read-model field. It is only read by the future worker owner.
@@ -188,6 +192,10 @@ def intent_from_persisted_payload(payload_json: str) -> Intent:
             raise ValueError(f"stored intent {field_name} is invalid")
         return value
 
+    target_order_verified = payload.get("target_order_verified", False)
+    if not isinstance(target_order_verified, bool):
+        raise ValueError("stored intent target verification is invalid")
+
     quantity = payload.get("quantity")
     if not isinstance(quantity, int) or isinstance(quantity, bool):
         raise ValueError("stored intent quantity is invalid")
@@ -211,6 +219,7 @@ def intent_from_persisted_payload(payload_json: str) -> Intent:
         instrument=optional_object("instrument"),
         operation=text("operation"),
         target_order_id=optional_text("target_order_id"),
+        target_order_verified=target_order_verified,
         operation_payload=optional_object("operation_payload"),
         broker_request=optional_object("broker_request"),
         intent_id=text("intent_id"),
@@ -266,6 +275,7 @@ class IntentStore(Protocol):
     def has_intent(self, intent_id: str) -> bool: ...
     def request_matches(self, intent: Intent) -> bool: ...
     def load_intent(self, intent_id: str) -> Intent: ...
+    def verified_target_intent(self, broker_order_id: str) -> Intent | None: ...
     def outbox_state(self, intent_id: str) -> str | None: ...
     def transition(self, intent_id: str, target: Status) -> None: ...
     def recover(self) -> int: ...
@@ -390,7 +400,8 @@ class RiskEngine:
         elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:
                 reasons.append("target_order_id_required")
-            reasons.append("target_order_account_unverified")
+            if not intent.target_order_verified:
+                reasons.append("target_order_account_unverified")
         else:
             reasons.append("invalid_operation")
         if intent.source is Source.STRATEGY and (not intent.strategy_id or not intent.run_id):
@@ -659,6 +670,23 @@ class SQLiteIntentStore:
         if row is None:
             raise KeyError(intent_id)
         return intent_from_persisted_payload(str(row["payload_json"]))
+
+    def verified_target_intent(self, broker_order_id: str) -> Intent | None:
+        """Return a still-operable target only when its identity is durable.
+
+        UNKNOWN, reconciling, terminal, and sidecar-only orders are never
+        eligible.  A replacement operation must not treat a browser-supplied
+        broker id as proof of simulation account ownership.
+        """
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT intent.payload_json FROM broker_orders AS broker
+                JOIN order_intents AS intent ON intent.intent_id=broker.intent_id
+                WHERE broker.broker_order_id=?
+                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED')""",
+                (broker_order_id,),
+            ).fetchone()
+        return intent_from_persisted_payload(str(row["payload_json"])) if row else None
 
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:

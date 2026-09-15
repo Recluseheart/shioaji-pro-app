@@ -952,15 +952,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if field not in value:
                 raise ValueError(f"{field} is required")
             changes[field] = value[field]
+        # This resolves only a locally broker-bound, nonterminal record.  It
+        # deliberately cannot learn an account from an arbitrary sidecar trade
+        # id, so external/UNKNOWN/terminal targets remain RISK_REJECTED.
+        target = getattr(self.server, "order_store").verified_target_intent(target_order_id)
+        target = self._matching_target_for_operation(target, broker_path, operation)
         return self._with_idempotency_key(Intent(
             source=Source.MANUAL_UI,
-            account_id="SIM-UNVERIFIED",
-            symbol="CANCEL",
+            account_id=target.account_id if target else "SIM-UNVERIFIED",
+            symbol=target.symbol if target else "CANCEL",
             side="CANCEL",
             quantity=0,
             limit_price="0",
             operation=operation,
             target_order_id=target_order_id,
+            target_order_verified=target is not None,
             operation_payload=changes or None,
             broker_request={
                 "path": broker_path or {
@@ -971,6 +977,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "body": value,
             },
         ))
+
+    @staticmethod
+    def _matching_target_for_operation(
+        target: Intent | None, broker_path: str | None, operation: str,
+    ) -> Intent | None:
+        """Keep stock/combo follow-ups bound to their original durable shape."""
+        if target is None or target.operation != "PLACE" or not isinstance(target.broker_request, dict):
+            return None
+        original_path = target.broker_request.get("path")
+        if not isinstance(original_path, str):
+            return None
+        if broker_path == "/api/v1/order/cancel_comboorder":
+            return target if original_path == "/api/v1/order/place_comboorder" else None
+        if operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
+            return target if original_path == "/api/v1/order/place_order" else None
+        return None
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]

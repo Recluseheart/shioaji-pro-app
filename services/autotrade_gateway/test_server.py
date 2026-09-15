@@ -952,6 +952,62 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_bound_nonterminal_order_allows_only_a_durable_follow_up_cancel_intent(self) -> None:
+        store = getattr(self.server, "order_store")
+        original = Intent(
+            Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000",
+            broker_request={
+                "path": "/api/v1/order/place_order",
+                "body": {"contract": {"code": "2330"}},
+            },
+        )
+        armed_coordinator(store).accept(original)
+        store.mark_pending_submit(original.intent_id, "BOUND-SERVER-CANCEL-1")
+        getattr(self.server, "order_coordinator").gate = Gate.ARMED
+
+        request = Request(
+            f"{self.base}/api/v1/order/cancel_order",
+            data=b'{"trade_id":"BOUND-SERVER-CANCEL-1"}',
+            headers={"Content-Type": "application/json", "Idempotency-Key": "bound-cancel-1"},
+            method="POST",
+        )
+        with urlopen(request) as response:
+            receipt = json.load(response)
+
+        self.assertEqual(receipt["status"], "APPROVED")
+        follow_up = store.load_intent(receipt["intent_id"])
+        self.assertEqual(follow_up.account_id, "SIM-001")
+        self.assertTrue(follow_up.target_order_verified)
+        self.assertEqual(follow_up.target_order_id, "BOUND-SERVER-CANCEL-1")
+        self.assertEqual(store.outbox_state(follow_up.intent_id), "PENDING")
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_combo_cancel_cannot_target_a_bound_single_order(self) -> None:
+        store = getattr(self.server, "order_store")
+        original = Intent(
+            Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000",
+            broker_request={
+                "path": "/api/v1/order/place_order",
+                "body": {"contract": {"code": "2330"}},
+            },
+        )
+        armed_coordinator(store).accept(original)
+        store.mark_pending_submit(original.intent_id, "BOUND-SINGLE-ORDER-1")
+        getattr(self.server, "order_coordinator").gate = Gate.ARMED
+
+        request = Request(
+            f"{self.base}/api/v1/order/cancel_comboorder",
+            data=b'{"trade_id":"BOUND-SINGLE-ORDER-1"}',
+            headers={"Content-Type": "application/json", "Idempotency-Key": "mismatched-combo-cancel-1"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(request)
+        self.assertEqual(rejected.exception.code, 409)
+        receipt = json.load(rejected.exception)
+        self.assertIn("target_order_account_unverified", receipt["risk_reasons"])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_cancel_combo_order_uses_the_same_durable_cancel_ingress(self) -> None:
         body = json.dumps({"trade_id": "COMBO-BROKER-ORDER-1"}).encode()
         with self.assertRaises(HTTPError) as raised:

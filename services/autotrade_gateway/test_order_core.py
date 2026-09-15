@@ -227,6 +227,45 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(status, Status.RISK_REJECTED)
         self.assertIn("strategy_identity_required", verdict.reasons)
 
+    def test_verified_bound_order_can_create_a_follow_up_cancel_intent(self) -> None:
+        original = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        coordinator = armed_coordinator(self.store)
+        coordinator.accept(original)
+        self.store.mark_pending_submit(original.intent_id, "BOUND-CANCEL-ORDER-1")
+        cancel = Intent(
+            Source.MANUAL_UI,
+            "SIM-001",
+            "2330",
+            "CANCEL",
+            0,
+            "0",
+            operation="CANCEL",
+            target_order_id="BOUND-CANCEL-ORDER-1",
+            target_order_verified=True,
+        )
+
+        status, verdict = coordinator.accept(cancel)
+
+        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+        self.assertEqual(self.store.outbox_state(cancel.intent_id), "PENDING")
+
+    def test_unverified_cancel_target_remains_fail_closed(self) -> None:
+        cancel = Intent(
+            Source.MANUAL_UI,
+            "SIM-001",
+            "2330",
+            "CANCEL",
+            0,
+            "0",
+            operation="CANCEL",
+            target_order_id="external-order",
+        )
+
+        status, verdict = armed_coordinator(self.store).accept(cancel)
+
+        self.assertEqual((status, verdict.allowed), (Status.RISK_REJECTED, False))
+        self.assertIn("target_order_account_unverified", verdict.reasons)
+
         strategy = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
         status, verdict = armed_coordinator(self.store).accept(strategy)
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))

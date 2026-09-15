@@ -230,10 +230,11 @@ identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CAN
 稽核與後續 read model 不必從 UI 或可變狀態推斷風控結論；此 journal 不是重送、
 改寫 Gate 或觸發 broker 的 API。
 
-`audit_events` 另保留不可變的 `INTENT_EVALUATED` 與已驗證 identity 的
-`BROKER_TERMINAL_CALLBACK` 事實，分別連結 risk verdict 與 broker terminal status。
-相同 terminal callback 的冪等重放不會新增 audit event；這些 journal 只記錄已發生的
-事實，不會把 UNKNOWN 推測成成交或觸發派送。
+`audit_events` 另保留不可變的 `INTENT_EVALUATED`、`BROKER_ORDER_BOUND`、
+`DELIVERY_UNKNOWN` 與已驗證 identity 的 `BROKER_TERMINAL_CALLBACK` 事實，分別連結
+risk verdict、broker identity、delivery ambiguity 與 terminal status。相同 terminal
+callback 的冪等重放不會新增 audit event；這些 journal 只記錄已發生的事實，不會把
+UNKNOWN 推測成成交或觸發派送。
 
 K 線只將同商品、具有有效限價的 `STRATEGY`／`SYSTEM_TRIGGER` `PLACE` intent
 畫成虛線觀察標記，並顯示其方向、數量與 durable status。這些線不是 upstream

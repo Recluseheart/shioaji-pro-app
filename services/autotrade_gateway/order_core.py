@@ -662,6 +662,11 @@ class SQLiteIntentStore:
             )
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.UNKNOWN.value, timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'DELIVERY_UNKNOWN', ?, ?)""",
+                (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
 
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None:
         if not broker_order_id:
@@ -675,6 +680,11 @@ class SQLiteIntentStore:
             )
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, broker_order_id=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'BROKER_ORDER_BOUND', ?, ?)""",
+                (str(uuid4()), intent_id, json.dumps({"broker_order_id": broker_order_id}, separators=(",", ":")), timestamp),
+            )
 
     def record_terminal_callback(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
         """Persist an idempotent terminal callback only after identity binding.

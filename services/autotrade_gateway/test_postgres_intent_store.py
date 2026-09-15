@@ -120,6 +120,10 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertTrue(worker.dispatch_once())
         self.assertFalse(worker.dispatch_once())
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "DELIVERY_UNKNOWN")
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "reason": "dispatch_uncertain:TimeoutError",
+        })
 
     def test_broker_identity_is_persisted_with_pending_submit(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -136,6 +140,10 @@ class PostgresIntentStoreTest(unittest.TestCase):
             self.store.observation_orders()[0]["broker_order_id"],
             "POSTGRES-MOCK-ORDER-1",
         )
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "BROKER_ORDER_BOUND")
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "broker_order_id": "POSTGRES-MOCK-ORDER-1",
+        })
 
     def test_reused_broker_identity_becomes_unknown_without_a_second_binding(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

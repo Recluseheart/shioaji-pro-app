@@ -212,6 +212,10 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
         self.assertEqual(self.store.observation_reconciliation_cases()[0]["reason"], "dispatch_uncertain:TimeoutError")
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "DELIVERY_UNKNOWN")
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "reason": "dispatch_uncertain:TimeoutError",
+        })
 
     def test_corrupt_durable_payload_becomes_unknown_without_dispatch(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -250,6 +254,10 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.status(intent.intent_id), Status.PENDING_SUBMIT)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
         self.assertEqual(self.store.observation_orders()[0]["broker_order_id"], "MOCK-ORDER-1")
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "BROKER_ORDER_BOUND")
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "broker_order_id": "MOCK-ORDER-1",
+        })
 
     def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

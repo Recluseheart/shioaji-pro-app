@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+    fetchAutotradeOrder,
     previewReferenceStrategy,
     type AutotradeOverview,
     type AutotradeOrderObservation,
@@ -142,6 +143,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {order.operation_payload && <div style={{ color: '#aeb7c6' }}>請求：{formatPayload(order.operation_payload)}</div>}
                             {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
+                            {order.intent_id && <DurableOrderDetail intentId={order.intent_id} />}
                         </div>;
                     })}
                 </div>
@@ -198,6 +200,63 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             )}
             <small style={{ color: '#6f7888' }}>唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。</small>
         </section>
+    );
+}
+
+type LoadOrderObservation = (intentId: string) => Promise<AutotradeOrderObservation | null>;
+
+/**
+ * An expandable, durable detail read.  This intentionally fetches no broker
+ * data and contains no mutation action: an absent or failed observation is
+ * rendered as absence rather than being reconstructed from browser state.
+ */
+export function DurableOrderDetail({
+    intentId,
+    loadObservation = fetchAutotradeOrder,
+}: {
+    intentId: string;
+    loadObservation?: LoadOrderObservation;
+}) {
+    const [expanded, setExpanded] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [detail, setDetail] = useState<AutotradeOrderObservation | null | undefined>(undefined);
+
+    useEffect(() => {
+        if (!expanded) return;
+        let current = true;
+        setLoading(true);
+        setDetail(undefined);
+        void loadObservation(intentId)
+            .then((value) => { if (current) setDetail(value); })
+            .catch(() => { if (current) setDetail(null); })
+            .finally(() => { if (current) setLoading(false); });
+        return () => { current = false; };
+    }, [expanded, intentId, loadObservation]);
+
+    return (
+        <div style={{ marginTop: 5 }}>
+            <button
+                onClick={() => setExpanded((value) => !value)}
+                aria-expanded={expanded}
+                title='向 Gateway 重讀此 durable intent；不會查詢或變更 broker'
+            >
+                {expanded ? '收合可稽核詳情' : '查看可稽核詳情'}
+            </button>
+            {expanded && (
+                <div role='status' style={{ color: '#aeb7c6', marginTop: 4 }}>
+                    {loading && '正在讀取 durable 記錄…'}
+                    {!loading && detail === undefined && '詳情尚未載入'}
+                    {!loading && detail === null && 'Gateway 未提供此 durable 記錄；未以本機資料補齊。'}
+                    {!loading && detail && (
+                        <>
+                            intent {detail.intent_id.slice(0, 8)} · {detail.status} · 更新 {detail.updated_at || '未知'}
+                            {detail.broker_order_id ? ` · broker ${detail.broker_order_id}` : ''}
+                            {detail.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{detail.risk_reasons.map(riskReasonLabel).join('、')}</div> : null}
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
     );
 }
 

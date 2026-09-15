@@ -14,12 +14,12 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from services.autotrade_gateway.order_core import Fill, Gate, Intent, OrderCoordinator, RiskContext, RiskPosition, SQLiteIntentStore, Source, Status, StrategyRun
-from services.autotrade_gateway.server import create_server, health_document
+from services.autotrade_gateway.server import GatewayHandler, create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
 
@@ -121,6 +121,19 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
+
+    def test_client_disconnect_while_writing_a_read_response_is_silent(self) -> None:
+        handler = GatewayHandler.__new__(GatewayHandler)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = Mock()
+        handler.wfile.write.side_effect = BrokenPipeError
+
+        handler._bytes(200, b'{}', 'application/json')
+
+        handler.send_response.assert_called_once_with(200)
+        handler.wfile.write.assert_called_once_with(b'{}')
 
     def test_explicit_simulation_execution_wires_only_the_worker_adapter(self) -> None:
         """Opt-in may construct the loopback adapter, but must not arm or send."""

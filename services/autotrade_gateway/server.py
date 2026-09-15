@@ -486,7 +486,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            # A client can abandon any response after the Gateway has already
+            # persisted its result.  It is never a reason to retry a request
+            # or turn a normal disconnect into a handler traceback.
+            return
 
     def _with_idempotency_key(self, intent: Intent) -> Intent:
         key = self.headers.get("Idempotency-Key")
@@ -660,7 +666,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _proxy_read(self) -> None:
         """Forward allowed read traffic without forwarding browser credentials."""

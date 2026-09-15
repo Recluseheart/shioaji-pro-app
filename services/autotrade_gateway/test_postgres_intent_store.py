@@ -58,6 +58,20 @@ class PostgresIntentStoreTest(unittest.TestCase):
             coordinator.accept(intent)
         self.assertEqual(len(self.store.observation_orders()), 1)
 
+    def test_observations_have_a_stable_secondary_order_when_timestamps_tie(self) -> None:
+        first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000", intent_id="intent-a")
+        second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000", intent_id="intent-z")
+        coordinator = OrderCoordinator(self.store)
+        coordinator.accept(first)
+        coordinator.accept(second)
+        self.store.connection.execute(
+            "UPDATE order_intents SET updated_at='2026-01-01T00:00:00+00:00'",
+        )
+        self.assertEqual(
+            [item["intent_id"] for item in self.store.observation_orders()],
+            ["intent-z", "intent-a"],
+        )
+
     def test_worker_timeout_is_unknown_without_retry(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         OrderCoordinator(self.store, Gate.ARMED).accept(intent)

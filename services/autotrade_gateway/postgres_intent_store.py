@@ -180,7 +180,7 @@ class PostgresIntentStore:
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
-            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, payload_json, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, payload_json, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC, intent_id DESC").fetchall()
         observations: list[dict[str, object]] = []
         for row in rows:
             observation = dict(row)

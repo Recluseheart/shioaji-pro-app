@@ -33,6 +33,10 @@ test('Signal Timeline renders a durable signal linked to its risk-rejected inten
                 intent_id: 'intent-1', correlation_id: 'correlation-1', status: 'RISK_REJECTED',
                 risk_reasons: ['trading_gate_not_armed'], observed_at: '2026-09-15T00:00:00+00:00',
             }],
+            audit_events: [{
+                event_id: 'audit-1', intent_id: 'intent-1', event_type: 'INTENT_EVALUATED',
+                details: { status: 'RISK_REJECTED' }, occurred_at: '2026-09-15T00:00:01+00:00',
+            }],
         } });
     });
     await page.goto('/');
@@ -41,6 +45,7 @@ test('Signal Timeline renders a durable signal linked to its risk-rejected inten
     await expect(page.getByText(/訊號 · reference-fixture · REFERENCE_SIGNAL · 2330 買 · RISK_REJECTED · correlat/)).toBeVisible();
     await expect(page.getByText('event event-1 · run run-1 · 2026-09-15T00:00:00+00:00')).toBeVisible();
     await expect(page.getByText('風控：交易閘門尚未啟用')).toBeVisible();
+    await expect(page.getByText('執行事件 · INTENT_EVALUATED · intent intent-1 · 2026-09-15T00:00:01+00:00')).toBeVisible();
     await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
 });
 

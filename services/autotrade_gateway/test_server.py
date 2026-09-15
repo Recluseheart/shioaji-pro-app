@@ -440,6 +440,22 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIsInstance(document["items"][0]["decided_at"], str)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_audit_events_endpoint_projects_durable_lifecycle_facts_without_a_sidecar_call(self) -> None:
+        body = json.dumps({
+            "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+        }).encode()
+        with self.assertRaises(HTTPError):
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        with urlopen(f"{self.base}/api/v1/autotrade/audit-events") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["event_type"], "INTENT_EVALUATED")
+        self.assertEqual(document["items"][0]["details"]["status"], "RISK_REJECTED")
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertEqual(overview["audit_events"][0]["event_type"], "INTENT_EVALUATED")
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_reconciliation_endpoint_exposes_unknown_without_a_resend(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

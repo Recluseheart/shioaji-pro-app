@@ -15,6 +15,7 @@ export type AutotradeOverview = {
     runs: AutotradeRun[];
     decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
+    audit_events: AutotradeAuditEvent[];
     risk: {
         mode: string;
         limits_source: string;
@@ -68,6 +69,14 @@ export type AutotradeSignal = {
     status: string;
     risk_reasons: string[];
     observed_at: string;
+};
+
+export type AutotradeAuditEvent = {
+    event_id: string;
+    intent_id: string | null;
+    event_type: string;
+    details: Record<string, unknown>;
+    occurred_at: string;
 };
 
 export type AutotradeOrderObservation = {
@@ -253,6 +262,21 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             observed_at: signal.observed_at as string,
         }];
     }) : [];
+    const auditEvents = Array.isArray(raw.audit_events) ? raw.audit_events.flatMap((item): AutotradeAuditEvent[] => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+        const event = item as Record<string, unknown>;
+        if (typeof event.event_id !== 'string' || !event.event_id
+            || typeof event.event_type !== 'string' || !event.event_type
+            || typeof event.occurred_at !== 'string' || !event.occurred_at) return [];
+        return [{
+            event_id: event.event_id,
+            intent_id: typeof event.intent_id === 'string' ? event.intent_id : null,
+            event_type: event.event_type,
+            details: event.details && typeof event.details === 'object' && !Array.isArray(event.details)
+                ? event.details as Record<string, unknown> : {},
+            occurred_at: event.occurred_at,
+        }];
+    }) : [];
     return {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
@@ -260,6 +284,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         runs,
         orders: normalizeOrders(raw.orders),
         decisions: normalizeOrders(raw.decisions),
+        audit_events: auditEvents,
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',

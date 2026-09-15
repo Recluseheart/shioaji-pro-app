@@ -49,7 +49,7 @@ const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string 
 function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): number {
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
-        case 'signal_timeline': return overview.signals.length + overview.decisions.length;
+        case 'signal_timeline': return overview.signals.length + overview.decisions.length + overview.audit_events.length;
         case 'auto_orders': return automatedOrderObservations(overview.orders).length;
         case 'risk_limits': return overview.risk.last_verdict === null ? 0 : 1;
         case 'reconciliation': return overview.reconciliation.length;
@@ -71,8 +71,8 @@ export function panelSummary(
                 ? '已載入 simulation 風控限額；ARMED 前必須有權威市場與帳務快照，缺少時會拒絕。所有新 mutation 目前仍由 DISARMED Gateway 拒絕。'
                 : PANEL_COPY[kind].empty;
         case 'signal_timeline':
-            return overview.signals.length > 0 || overview.decisions.length > 0
-                ? '以下為 durable signal、durable intent 與 Risk Engine verdict；不以示範資料取代真實事件。'
+            return overview.signals.length > 0 || overview.decisions.length > 0 || overview.audit_events.length > 0
+                ? '以下為 durable signal、durable intent、Risk Engine verdict 與 immutable 執行事件；不以示範資料取代真實事件。'
                 : PANEL_COPY[kind].empty;
         case 'auto_orders':
             return automatedOrderObservations(overview.orders).length > 0
@@ -171,7 +171,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     })}
                 </div>
             )}
-            {kind === 'signal_timeline' && overview && (overview.signals.length > 0 || overview.decisions.length > 0) ? (
+            {kind === 'signal_timeline' && overview && (overview.signals.length > 0 || overview.decisions.length > 0 || overview.audit_events.length > 0) ? (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {overview.signals.map((signal) => <SignalObservation key={signal.signal_id} signal={signal} />)}
                     {overview.decisions.map((decision) => (
@@ -180,6 +180,12 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {decision.risk_decision_missing ? <div style={{ color: '#ef4444' }}>風控判定 journal 缺失；不得據此重送</div> : null}
                             {typeof decision.allowed === 'boolean' ? <div style={{ color: decision.allowed ? '#73c991' : '#f0b44d' }}>風控判定：{decision.allowed ? '允許' : '拒絕'}{decision.decided_at ? ` · ${decision.decided_at}` : ''}</div> : null}
                             {decision.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{decision.risk_reasons.join('、')}</div> : null}
+                        </div>
+                    ))}
+                    {overview.audit_events.map((event) => (
+                        <div key={event.event_id} style={{ borderLeft: '3px solid #4aa3ff', paddingLeft: 7 }}>
+                            執行事件 · {event.event_type} · {event.intent_id ? `intent ${event.intent_id.slice(0, 8)}` : '全域'} · {event.occurred_at}
+                            {Object.keys(event.details).length > 0 && <div style={{ color: '#aeb7c6' }}>細節：{formatPayload(event.details)}</div>}
                         </div>
                     ))}
                 </div>

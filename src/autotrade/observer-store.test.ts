@@ -7,7 +7,7 @@ const overview = {
         environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
         enabled_strategy_count: 0, gateway_status: 'READY',
     },
-    strategies: [], signals: [], runs: [], decisions: [], orders: [],
+    strategies: [], signals: [], runs: [], decisions: [], orders: [], audit_events: [],
     risk: { mode: 'ENFORCING', limits_source: 'test', limits: {}, last_verdict: null },
     reconciliation: [],
     performance: { run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0' },

@@ -278,6 +278,7 @@ def overview_document(
     """
     orders = store.observation_orders() if store is not None else []
     fills = store.observation_fills() if store is not None else []
+    audit_events = store.observation_audit_events() if store is not None else []
     runs = strategy_runs_document(store) if store is not None else []
     decisions = decisions_document(store, orders) if store is not None else []
     return {
@@ -287,6 +288,7 @@ def overview_document(
         "runs": runs,
         "decisions": decisions,
         "orders": orders,
+        "audit_events": audit_events,
         "risk": {
             "mode": "ENFORCING",
             "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
@@ -780,6 +782,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 {"items": getattr(self.server, "order_store").observation_fills()},
+            )
+            return
+        if path == "/api/v1/autotrade/audit-events":
+            # Immutable lifecycle facts are observations only.  Reading them
+            # must never call a sidecar, retry a broker mutation, or alter a
+            # reconciliation state.
+            self._json(
+                HTTPStatus.OK,
+                {"items": getattr(self.server, "order_store").observation_audit_events()},
             )
             return
         if path.startswith("/api/v1/autotrade/orders/"):

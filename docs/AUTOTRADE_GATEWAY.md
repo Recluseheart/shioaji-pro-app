@@ -119,6 +119,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   quantity/price validation 的 durable fill facts。terminal status 本身不會被當成 fill
   來補造；目前僅 mock／未來 callback seam 可寫入，Gateway production runtime 不會
   自行產生成交資料。
+- `GET /api/v1/autotrade/audit-events`：唯讀列出 immutable lifecycle facts，例如
+  `INTENT_EVALUATED`、`BROKER_ORDER_BOUND`、`DELIVERY_UNKNOWN`、
+  `BROKER_TERMINAL_CALLBACK`、`FILL_RECORDED` 與 `KILL_SWITCH_APPLIED`。此 endpoint
+  與 overview projection 均不會呼叫 sidecar、重送 broker mutation 或改寫任何狀態。
 - `GET /api/v1/autotrade/runs`：從獨立的 durable `strategy_runs` journal 回報策略
   lifecycle、heartbeat、intent count 與最近 intent/status；不會從 order 猜測一個 run。
   目前 production runner 仍 disabled，只有隔離 fixture harness 會寫入 `FIXTURE_COMPLETED` 記錄。

@@ -117,6 +117,20 @@ describe('normalizeAutotradeOverview', () => {
         expect(overview.orders).toEqual([]);
     });
 
+    it('keeps immutable audit lifecycle events separate from risk decisions', () => {
+        const overview = normalizeAutotradeOverview({
+            audit_events: [{
+                event_id: 'event-1', intent_id: 'intent-1', event_type: 'FILL_RECORDED',
+                details: { fill_id: 'fill-1' }, occurred_at: '2026-09-15T00:00:00+00:00',
+            }],
+        });
+        expect(overview.audit_events).toEqual([{
+            event_id: 'event-1', intent_id: 'intent-1', event_type: 'FILL_RECORDED',
+            details: { fill_id: 'fill-1' }, occurred_at: '2026-09-15T00:00:00+00:00',
+        }]);
+        expect(overview.decisions).toEqual([]);
+    });
+
     it('keeps durable reconciliation case evidence with its unknown intent', () => {
         const overview = normalizeAutotradeOverview({
             reconciliation: [{

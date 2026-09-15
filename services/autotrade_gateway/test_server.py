@@ -1396,6 +1396,10 @@ class GatewayServerTest(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             ), "Shioaji watchlist service unavailable"),
             (Request(f"{self.base}/api/v1/stream/data?region=TW"), "Shioaji market stream unavailable"),
+            (Request(
+                f"{self.base}/api/v1/stream/data/order_event?account_type=S",
+                headers={"Authorization": "Bearer browser-secret"},
+            ), "Shioaji trade event stream unavailable"),
         )
         for upstream_error in (TimeoutError, RemoteDisconnected):
             for request, message in cases:

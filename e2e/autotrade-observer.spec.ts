@@ -175,6 +175,49 @@ test('A workspace panel can be resized without a broker mutation', async ({ page
     expect(mutationRequests).toBe(0);
 });
 
+test('Option Chain surfaces a contract-read failure without a broker mutation', async ({ page }) => {
+    let optionReads = 0;
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/data/contracts/options?*', async (route) => {
+        optionReads += 1;
+        if (optionReads === 1) {
+            await route.fulfill({ status: 502, json: { message: 'fixture upstream unavailable' } });
+            return;
+        }
+        const base = {
+            region: 'TW', exchange: 'TAIFEX', security_type: 'OPT', target_code: null,
+            currency: 'TWD', reference: 0, limit_up: 0, limit_down: 0, day_trade: '',
+            update_date: '', category: '', margin_trading_balance: 0,
+            short_selling_balance: 0, delivery_month: '202610', delivery_date: '2026-10-21',
+            strike_price: 22000,
+        };
+        await route.fulfill({ json: [
+            { ...base, code: 'TXO-C-FIXTURE', name: 'fixture call', option_right: 'C' },
+            { ...base, code: 'TXO-P-FIXTURE', name: 'fixture put', option_right: 'P' },
+        ] });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('選擇權 T 字', { exact: true }).click();
+    await expect(page.getByRole('status').filter({
+        hasText: 'TXO 合約載入失敗，請稍後重試',
+    })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重試 TXO 合約' })).toBeVisible();
+    await page.getByRole('button', { name: '重試 TXO 合約' }).click();
+    await expect(page.getByText('履約價', { exact: true })).toBeVisible();
+    await expect(page.getByRole('status').filter({
+        hasText: 'TXO 合約載入失敗，請稍後重試',
+    })).toHaveCount(0);
+    expect(optionReads).toBe(2);
+    expect(mutationRequests).toBe(0);
+});
+
 test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

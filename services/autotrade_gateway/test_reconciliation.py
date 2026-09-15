@@ -19,6 +19,37 @@ class ReconciliationParserTest(unittest.TestCase):
         self.assertEqual(apply_reconciled_terminals(store, (("broker-1", Status.FILLED), ("broker-only", Status.FILLED))), 1)
         self.assertEqual(store.status(intent.intent_id), Status.FILLED)
         store.close()
+
+    def test_apply_leaves_unknown_when_duplicate_terminal_facts_conflict(self) -> None:
+        """A contradictory broker read cannot pick an arbitrary terminal state."""
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        store = SQLiteIntentStore(":memory:")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(
+            store,
+            Gate.ARMED,
+            risk_context_provider=lambda _i: RiskContext(
+                Decimal("1000"), datetime.now(timezone.utc)
+            ),
+        ).accept(intent)
+        store.mark_pending_submit(intent.intent_id, "broker-conflict-1")
+        store.mark_delivery_unknown(intent.intent_id, "timeout")
+
+        self.assertEqual(
+            apply_reconciled_terminals(
+                store,
+                (
+                    ("broker-conflict-1", Status.FILLED),
+                    ("broker-conflict-1", Status.CANCELLED),
+                ),
+            ),
+            0,
+        )
+        self.assertEqual(store.status(intent.intent_id), Status.UNKNOWN)
+        self.assertEqual(store.observation_reconciliation_cases()[0]["state"], "OPEN")
+        store.close()
     def test_maps_only_matching_authoritative_terminal_trade_statuses(self) -> None:
         for source_status, expected in (
             ("Filled", Status.FILLED),

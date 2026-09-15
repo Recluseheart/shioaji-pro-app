@@ -65,7 +65,22 @@ def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Statu
     Broker-only facts and local orders without a matching terminal fact remain
     untouched for operator review; this function never claims or creates outbox work.
     """
-    by_broker_id = {broker_order_id: terminal for broker_order_id, terminal in facts}
+    # A read can contain duplicate observations (for example while a broker is
+    # normalizing an event stream).  Identical duplicates are harmless, but
+    # conflicting terminal claims cannot be resolved by choosing the last
+    # array element.  Leave that identity UNKNOWN for a later read/manual
+    # reconciliation instead of asserting an arbitrary terminal result.
+    by_broker_id: dict[str, Status] = {}
+    conflicted_broker_ids: set[str] = set()
+    for broker_order_id, terminal in facts:
+        if broker_order_id in conflicted_broker_ids:
+            continue
+        previous = by_broker_id.get(broker_order_id)
+        if previous is None:
+            by_broker_id[broker_order_id] = terminal
+        elif previous != terminal:
+            by_broker_id.pop(broker_order_id)
+            conflicted_broker_ids.add(broker_order_id)
     resolved = 0
     for order in store.observation_orders():
         if order.get("status") not in {Status.UNKNOWN.value, Status.RECONCILING.value}:

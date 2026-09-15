@@ -214,6 +214,25 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "broker_order_id": "POSTGRES-MOCK-TERMINAL-1", "status": "FILLED",
         })
 
+    def test_reconciled_terminal_resolves_unknown_with_the_bound_identity(self) -> None:
+        """A broker read may finish UNKNOWN, but cannot create another dispatch."""
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        self.store.mark_pending_submit(intent.intent_id, "POSTGRES-RECONCILED-1")
+        self.store.mark_delivery_unknown(intent.intent_id, "dispatch_uncertain:TimeoutError")
+
+        self.store.record_reconciled_terminal(
+            intent.intent_id, "POSTGRES-RECONCILED-1", Status.FILLED
+        )
+
+        self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")
+        self.assertEqual(self.store.observation_reconciliation_cases()[0]["state"], "RESOLVED")
+        self.assertEqual(
+            self.store.observation_audit_events()[0]["event_type"],
+            "BROKER_RECONCILED_TERMINAL",
+        )
+
     def test_signal_projection_is_durable_and_idempotent(self) -> None:
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
         status, _ = OrderCoordinator(self.store).accept(intent)

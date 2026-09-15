@@ -247,6 +247,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             limit_price=str(value["limit_price"]),
             strategy_id=str(value["strategy_id"]) if value.get("strategy_id") else None,
             run_id=str(value["run_id"]) if value.get("run_id") else None,
+            order_price_type=str(value.get("order_price_type", "LMT")).upper(),
         )
 
     def _manual_place_order_intent(self) -> Intent:
@@ -279,6 +280,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             side=str(order["action"]).upper(),
             quantity=int(order["quantity"]),
             limit_price=str(order["price"]),
+            order_price_type=str(order.get("price_type", "LMT")).upper(),
         )
 
     def do_GET(self) -> None:  # noqa: N802

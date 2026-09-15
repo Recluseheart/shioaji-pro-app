@@ -64,6 +64,7 @@ class Intent:
     limit_price: str
     strategy_id: str | None = None
     run_id: str | None = None
+    order_price_type: str = "LMT"
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
@@ -90,11 +91,14 @@ class RiskEngine:
             reasons.append("invalid_side")
         if intent.quantity <= 0:
             reasons.append("invalid_quantity")
-        try:
-            if float(intent.limit_price) <= 0:
+        if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
+            reasons.append("invalid_order_price_type")
+        elif intent.order_price_type == "LMT":
+            try:
+                if float(intent.limit_price) <= 0:
+                    reasons.append("invalid_limit_price")
+            except ValueError:
                 reasons.append("invalid_limit_price")
-        except ValueError:
-            reasons.append("invalid_limit_price")
         if intent.source is Source.STRATEGY and (not intent.strategy_id or not intent.run_id):
             reasons.append("strategy_identity_required")
         return Verdict(not reasons, tuple(reasons))

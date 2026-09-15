@@ -44,6 +44,15 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(strategy.intent_id), "PENDING")
 
+    def test_market_price_intent_does_not_require_a_positive_limit_price(self) -> None:
+        intent = Intent(
+            Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "0",
+            order_price_type="MKT",
+        )
+        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
+
     def test_restart_marks_pending_delivery_unknown_and_forbids_blind_resend(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         status, _ = OrderCoordinator(self.store, Gate.ARMED).accept(intent)

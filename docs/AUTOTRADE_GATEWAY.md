@@ -7,11 +7,12 @@
 broker-free 的稽核 ingress，在目前固定 `DISARMED` 的設定下只會持久化
 `RISK_REJECTED` receipt，絕不建立 outbox 或觸碰 broker。
 
-`POST /api/v1/order/place_order` 的 stock／futures 限價形狀也已先映射到同一
-個 `MANUAL_UI` intent ingress；在 `DISARMED` 時會得到 `409 RISK_REJECTED` 與
+`POST /api/v1/order/place_order` 的 stock／futures `LMT`、`MKT`、`MKP` 形狀也已
+先映射到同一個 `MANUAL_UI` intent ingress；限價單才要求正的 limit price，市價
+形狀不會被誤報為無效限價。在 `DISARMED` 時仍只會得到 `409 RISK_REJECTED` 與
 intent/correlation receipt，絕不轉送 sidecar。這不是上游 Trade response
-compatibility 的完成宣告：market order、cancel、update、close、combo 與實際
-broker worker 尚未接通。
+compatibility 的完成宣告：cancel、update、close、combo 與實際 broker worker
+尚未接通。
 
 ## 啟動唯讀開發環境
 

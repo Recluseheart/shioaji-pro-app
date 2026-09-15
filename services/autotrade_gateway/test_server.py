@@ -160,6 +160,21 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", overview["orders"][0]["risk_reasons"])
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_market_order_shape_is_audited_without_a_fake_limit_price_error(self) -> None:
+        body = json.dumps({
+            "contract": {"code": "2330"},
+            "stock_order": {
+                "action": "Buy", "price": 0, "price_type": "MKT", "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/order/place_order", data=body, method="POST"))
+        receipt = json.load(raised.exception)
+        self.assertEqual(receipt["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        self.assertNotIn("invalid_limit_price", receipt["risk_reasons"])
+
     def test_intent_ingress_records_a_disarmed_risk_rejection_without_outbox(self) -> None:
         body = json.dumps({
             "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",

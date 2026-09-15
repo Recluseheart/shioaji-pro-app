@@ -53,7 +53,9 @@ event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固
 策略控制面板可呼叫 `reference-fixture` 的 `validate` 與 `dry-run` preview。
 兩者是明確 allowlist 的 broker-free routes：Validate 只回傳 descriptor 與 warnings；
 Dry Run 只回傳共同 Risk Engine 的 hypothetical verdict，永不持久化 intent、建立
-outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 仍為 disabled。
+outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 仍為 disabled；
+即使舊版或遠端 UI 直接呼叫其 API，Gateway 也會回傳 `403 strategy runtime is disabled`，
+不會建立 intent 或連接 sidecar。
 
 目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。

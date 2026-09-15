@@ -261,6 +261,18 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 404)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_strategy_lifecycle_mutations_are_explicitly_denied_without_sidecar_access(self) -> None:
+        for action in ("start", "pause", "resume", "stop"):
+            with self.subTest(action=action), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(
+                    f"{self.base}/api/v1/autotrade/strategies/reference-fixture/{action}",
+                    data=b"{}", method="POST",
+                ))
+            self.assertEqual(raised.exception.code, 403)
+            self.assertEqual(json.load(raised.exception)["message"], "strategy runtime is disabled")
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_signals_route_projects_a_durable_fixture_signal_without_a_sidecar_call(self) -> None:
         store = getattr(self.server, "order_store")
         runtime = StrategyRuntime(OrderCoordinator(store, Gate.DISARMED), allow_reference_fixture=True)

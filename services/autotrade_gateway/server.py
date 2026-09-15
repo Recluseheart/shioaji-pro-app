@@ -101,6 +101,10 @@ RISK_REASON_LABELS = {
 
 
 AUTOTRADE_EVENTS_PATH = "/api/v1/autotrade/events"
+_DISABLED_STRATEGY_CONTROL_PATHS = frozenset(
+    f"/api/v1/autotrade/strategies/reference-fixture/{action}"
+    for action in ("start", "pause", "resume", "stop")
+)
 
 
 def autotrade_event_id(observation: dict[str, object]) -> str:
@@ -792,6 +796,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/autotrade/strategies/reference-fixture/dry-run":
             self._json(HTTPStatus.OK, strategy_runtime.dry_run_document())
+            return
+        if path in _DISABLED_STRATEGY_CONTROL_PATHS:
+            # Keep denial server-side even when a stale browser renders an
+            # enabled control.  This route must not instantiate a runtime,
+            # create an intent, or contact the sidecar.
+            self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
             return
         if path in {"/api/v1/order/cancel_order", "/api/v1/order/cancel_comboorder"}:
             try:

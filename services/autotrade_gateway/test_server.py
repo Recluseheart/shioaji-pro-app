@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from services.autotrade_gateway.order_core import Fill, Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status, StrategyRun
+from services.autotrade_gateway.order_core import Fill, Gate, Intent, OrderCoordinator, RiskContext, RiskPosition, SQLiteIntentStore, Source, Status, StrategyRun
 from services.autotrade_gateway.server import create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
@@ -112,6 +112,33 @@ class GatewayServerTest(unittest.TestCase):
             self.assertIsNotNone(getattr(server, "execution_worker"))
             self.assertEqual(getattr(server, "order_coordinator").gate, Gate.DISARMED)
             self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.server_close()
+            getattr(server, "order_store").close()
+
+    def test_explicit_simulation_risk_context_uses_discovered_account(self) -> None:
+        class SnapshotProvider:
+            def __init__(self, _origin: str) -> None: pass
+            def simulation_stock_accounts(self):
+                from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
+                return (SimulationStockAccount("B", "paper-account-1"),)
+            def stock_risk_context(self, account, symbol: str, *, exchange: str = "TSE"):
+                if (account.account_id, symbol, exchange) != ("paper-account-1", "2330", "TSE"):
+                    raise AssertionError("unexpected simulation snapshot lookup")
+                return RiskContext(
+                    quote_price=Decimal("1000"), quote_at=datetime.now(timezone.utc),
+                    positions={"2330": RiskPosition(0, Decimal("1000"))},
+                )
+        with patch("services.autotrade_gateway.server.SimulationSnapshotProvider", SnapshotProvider), patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT": "1", "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(port=0, upstream_origin="http://127.0.0.1:21322")
+        try:
+            coordinator = getattr(server, "order_coordinator")
+            coordinator.gate = Gate.ARMED
+            status, verdict = coordinator.accept(Intent(Source.MANUAL_UI, "paper-account-1", "2330", "BUY", 1, "1000"))
+            self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+            self.assertEqual(getattr(server, "execution_worker"), None)
         finally:
             server.server_close()
             getattr(server, "order_store").close()

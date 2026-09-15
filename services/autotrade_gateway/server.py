@@ -22,9 +22,12 @@ from .order_core import (
     Intent,
     IntentStore,
     OrderCoordinator,
+    RiskEngine,
+    RiskLimits,
     SQLiteIntentStore,
     Source,
 )
+from .simulation_snapshot import SimulationSnapshotProvider
 from .strategy_runtime import StrategyRuntime
 from .worker import ExecutionWorker
 
@@ -107,6 +110,37 @@ def configured_simulation_execution_worker(
     except ValueError as error:
         raise RuntimeError("simulation execution requires a loopback sidecar") from error
     return ExecutionWorker(store, dispatcher)
+
+
+def configured_simulation_risk_context(
+    upstream_origin: str,
+) -> tuple[RiskEngine, Any] | None:
+    """Build per-intent risk facts from a fresh, verified SIM sidecar read."""
+    if os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1":
+        return None
+    if os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
+        raise RuntimeError("simulation risk context is SIM only")
+    provider = SimulationSnapshotProvider(upstream_origin)
+    accounts = provider.simulation_stock_accounts()
+    by_id = {account.account_id: account for account in accounts}
+    if not by_id:
+        raise RuntimeError("no verified simulation stock account is available")
+    engine = RiskEngine(RiskLimits(allowed_accounts=tuple(sorted(by_id))))
+
+    def context_for(intent: Intent) -> Any:
+        account = by_id.get(intent.account_id)
+        if account is None:
+            return None
+        # 11011 is the explicit OTC convertible-bond mapping; remaining
+        # stock symbols use the verified TSE contract shape. Futures remain
+        # unavailable here rather than being guessed as stock contracts.
+        if intent.symbol == "TXFR1":
+            return None
+        return provider.stock_risk_context(
+            account, intent.symbol, exchange="OTC" if intent.symbol == "11011" else "TSE",
+        )
+
+    return engine, context_for
 
 
 RISK_REASON_LABELS = {
@@ -1091,7 +1125,13 @@ def create_server(
     # no worker could ever treat the stale outbox record as retryable.
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
-    server.order_coordinator = OrderCoordinator(store, gate=store.trading_gate())  # type: ignore[attr-defined]
+    risk_configuration = configured_simulation_risk_context(resolved_upstream_origin)
+    server.order_coordinator = OrderCoordinator(  # type: ignore[attr-defined]
+        store,
+        gate=store.trading_gate(),
+        risk=risk_configuration[0] if risk_configuration else None,
+        risk_context_provider=risk_configuration[1] if risk_configuration else None,
+    )
     # This object is deliberately inert: its only method is invoked by a
     # future in-process execution window, never by a browser route or a
     # background loop.  The default stays None and every server starts

@@ -31,6 +31,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 - `GET /api/v1/autotrade/overview`：策略、訊號、訂單、風控、對帳與績效的
   聚合 read model。沒有持久資料來源時各事件陣列必須為空，不能製造 broker
   activity 來填滿 UI。
+- `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
+  source、correlation、status、broker identity（若有）與 risk reasons，且永遠
+  是唯讀資料。
 - allowlist 中的上游 `GET`（health、info、帳戶、data、monitor、活動委託／
   保留庫存 read model、watchlist）：僅轉送至本機 Shioaji HTTP sidecar（預設
   `http://127.0.0.1:21322`，可用 `SHIOAJI_HTTP_ORIGIN` 指定）。只保留

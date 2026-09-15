@@ -289,6 +289,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/autotrade/overview":
             self._json(HTTPStatus.OK, overview_document(getattr(self.server, "order_store")))
             return
+        if path == "/api/v1/autotrade/intents":
+            self._json(
+                HTTPStatus.OK,
+                {"items": getattr(self.server, "order_store").observation_orders()},
+            )
+            return
         if path == MARKET_SSE_PATH:
             self._relay_market_sse()
             return

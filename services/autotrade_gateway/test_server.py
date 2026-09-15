@@ -82,6 +82,19 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(overview["orders"], [])
         self.assertEqual(overview["reconciliation"], [])
 
+    def test_intents_endpoint_returns_durable_read_only_observations(self) -> None:
+        body = json.dumps({
+            "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+        }).encode()
+        with self.assertRaises(HTTPError):
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        with urlopen(f"{self.base}/api/v1/autotrade/intents") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["source"], "MANUAL_UI")
+        self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
+
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:
             urlopen(Request(f"{self.base}/api/v1/order/cancel_order", method="POST"))

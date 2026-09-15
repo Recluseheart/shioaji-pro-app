@@ -98,6 +98,25 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
 
+    def test_kill_switch_requires_a_reason_and_only_tightens_the_gate(self) -> None:
+        with self.assertRaises(HTTPError) as missing_key:
+            urlopen(Request(
+                f"{self.base}/api/v1/autotrade/kill-switch", data=b'{"reason":"operator test"}', method="POST",
+            ))
+        self.assertEqual(missing_key.exception.code, 400)
+
+        request = Request(
+            f"{self.base}/api/v1/autotrade/kill-switch", data=b'{"reason":"operator test"}',
+            headers={"Content-Type": "application/json", "Idempotency-Key": "kill-test-1"}, method="POST",
+        )
+        with urlopen(request) as response:
+            document = json.load(response)
+        self.assertEqual(document, {"trading_gate": "KILLED", "reason": "operator test", "applied": True})
+        with urlopen(f"{self.base}/api/v1/autotrade/health") as response:
+            self.assertEqual(json.load(response)["trading_gate"], "KILLED")
+        self.assertEqual(getattr(self.server, "order_store").observation_audit_events()[0]["event_type"], "KILL_SWITCH_APPLIED")
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_health_counts_only_runtime_enabled_strategies(self) -> None:
         class Runtime:
             def observations(self) -> list[dict[str, object]]:

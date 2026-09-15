@@ -52,6 +52,19 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.status(intent.intent_id), Status.RISK_REJECTED)
         self.assertIsNone(self.store.outbox_state(intent.intent_id))
 
+    def test_kill_switch_is_persistent_and_never_rearms_the_store(self) -> None:
+        self.assertEqual(self.store.apply_kill_switch("operator test", "kill-test-1"), (
+            Gate.KILLED, "operator test", True,
+        ))
+        self.assertEqual(self.store.apply_kill_switch("later reason", "kill-test-2"), (
+            Gate.KILLED, "operator test", False,
+        ))
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "KILL_SWITCH_APPLIED")
+        journal = Path(self.temp_dir.name) / "gateway-test.db"
+        self.store.close()
+        self.store = SQLiteIntentStore(journal)
+        self.assertEqual(self.store.trading_gate(), Gate.KILLED)
+
     def test_armed_intent_requires_authoritative_risk_context(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)

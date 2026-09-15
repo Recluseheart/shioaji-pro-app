@@ -61,6 +61,16 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.store.transition(intent.intent_id, Status.RECONCILING)
         self.assertEqual(self.store.observation_reconciliation_cases()[0]["state"], "RECONCILING")
 
+    def test_kill_switch_is_persistent_and_never_rearms_the_store(self) -> None:
+        self.assertEqual(self.store.apply_kill_switch("operator test", "kill-test-1"), (
+            Gate.KILLED, "operator test", True,
+        ))
+        self.assertEqual(self.store.apply_kill_switch("later reason", "kill-test-2"), (
+            Gate.KILLED, "operator test", False,
+        ))
+        self.assertEqual(self.store.trading_gate(), Gate.KILLED)
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "KILL_SWITCH_APPLIED")
+
     def test_request_match_requires_every_broker_relevant_field_to_match(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         OrderCoordinator(self.store).accept(intent)

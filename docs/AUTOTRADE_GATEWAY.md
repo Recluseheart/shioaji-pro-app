@@ -61,6 +61,12 @@ outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／St
 即使舊版或遠端 UI 直接呼叫其 API，Gateway 也會回傳 `403 strategy runtime is disabled`，
 不會建立 intent 或連接 sidecar。
 
+`POST /api/v1/autotrade/kill-switch` 是唯一可用的 control mutation，但它只能加嚴：
+request 必須提供非空 `reason` 與有效 `Idempotency-Key`，並將 durable gate 從
+`DISARMED` 轉為 `KILLED`。本 Gateway 沒有 unkill 或 arm route；重啟後仍維持
+`KILLED`，且會寫入 `KILL_SWITCH_APPLIED` audit event。它不會取消既有委託、建立
+intent、啟動 worker 或聯絡 sidecar。
+
 目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
 這些限制透過 overview 的 `risk.limits` 唯讀顯示。若未來 gate 進入 `ARMED`，每筆

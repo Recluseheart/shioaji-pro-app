@@ -197,12 +197,15 @@ def is_valid_combo_contract_query(value: object) -> bool:
     return True
 
 
-def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
+def health_document(
+    strategy_runtime: StrategyRuntime | None = None,
+    gate: Gate = Gate.DISARMED,
+) -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
     observations = strategy_runtime.observations() if strategy_runtime else []
     return {
         "environment": "SIM",
-        "trading_gate": "DISARMED",
+        "trading_gate": gate.value,
         "strategy_count": len(observations),
         "enabled_strategy_count": sum(item.get("enabled") is True for item in observations),
         "gateway_status": "READY",
@@ -277,7 +280,7 @@ def overview_document(
     runs = strategy_runs_document(store) if store is not None else []
     decisions = decisions_document(store, orders) if store is not None else []
     return {
-        "health": health_document(strategy_runtime),
+        "health": health_document(strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": store.observation_signals() if store is not None else [],
         "runs": runs,
@@ -330,6 +333,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             intent_id=str(uuid5(NAMESPACE_URL, f"manual-intent:{key}")),
             correlation_id=str(uuid5(NAMESPACE_URL, f"manual-correlation:{key}")),
         )
+
+    def _kill_switch_request(self) -> tuple[str, str]:
+        """Read a narrow one-way safety control request without forwarding it."""
+        key = self.headers.get("Idempotency-Key")
+        if key is None or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
+            raise ValueError("a valid idempotency key is required")
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 1024:
+            raise ValueError("invalid kill switch body")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict) or set(value) != {"reason"}:
+            raise ValueError("kill switch requires only a reason")
+        reason = value["reason"]
+        if not isinstance(reason, str) or not (1 <= len(reason.strip()) <= 256):
+            raise ValueError("kill switch reason is invalid")
+        return reason.strip(), key
 
     def _accept_or_reuse_intent(self, intent: Intent) -> None:
         store = getattr(self.server, "order_store")
@@ -703,7 +722,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
-            self._json(HTTPStatus.OK, health_document(getattr(self.server, "strategy_runtime", None)))
+            coordinator = getattr(self.server, "order_coordinator")
+            self._json(
+                HTTPStatus.OK,
+                health_document(getattr(self.server, "strategy_runtime", None), coordinator.gate),
+            )
             return
         if path == "/api/v1/autotrade/overview":
             self._json(
@@ -811,6 +834,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         strategy_runtime = getattr(self.server, "strategy_runtime")
+        if path == "/api/v1/autotrade/kill-switch":
+            try:
+                reason, idempotency_key = self._kill_switch_request()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid kill switch request"})
+                return
+            gate, persisted_reason, applied = getattr(self.server, "order_store").apply_kill_switch(
+                reason, idempotency_key,
+            )
+            getattr(self.server, "order_coordinator").gate = gate
+            self._json(HTTPStatus.OK, {
+                "trading_gate": gate.value, "reason": persisted_reason, "applied": applied,
+            })
+            return
         if path == "/api/v1/autotrade/strategies/reference-fixture/validate":
             self._json(HTTPStatus.OK, strategy_runtime.validate_document())
             return
@@ -928,7 +965,7 @@ def create_server(
     # no worker could ever treat the stale outbox record as retryable.
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
-    server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
+    server.order_coordinator = OrderCoordinator(store, gate=store.trading_gate())  # type: ignore[attr-defined]
     server.strategy_runtime = StrategyRuntime(server.order_coordinator)  # type: ignore[attr-defined]
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server

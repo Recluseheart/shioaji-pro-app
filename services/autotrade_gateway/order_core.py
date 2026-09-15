@@ -266,6 +266,8 @@ class IntentStore(Protocol):
     def observation_orders(self) -> list[dict[str, object]]: ...
     def observation_risk_decisions(self) -> list[dict[str, object]]: ...
     def observation_audit_events(self) -> list[dict[str, object]]: ...
+    def trading_gate(self) -> Gate: ...
+    def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
@@ -454,6 +456,10 @@ class SQLiteIntentStore:
             );
             CREATE INDEX IF NOT EXISTS audit_events_occurred_idx
                 ON audit_events(occurred_at DESC, event_id DESC);
+            CREATE TABLE IF NOT EXISTS gateway_controls (
+                control_name TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE, applied_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -794,6 +800,39 @@ class SQLiteIntentStore:
             observation["details"] = details if isinstance(details, dict) else {}
             observations.append(observation)
         return observations
+
+    def trading_gate(self) -> Gate:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT state FROM gateway_controls WHERE control_name='trading_gate'",
+            ).fetchone()
+        if row is None:
+            return Gate.DISARMED
+        try:
+            return Gate(str(row["state"]))
+        except ValueError:
+            return Gate.KILLED
+
+    def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]:
+        """Persist the one-way local kill control; no unkill path exists here."""
+        with self._lock, self.connection:
+            row = self.connection.execute(
+                "SELECT state, reason FROM gateway_controls WHERE control_name='trading_gate'",
+            ).fetchone()
+            if row is not None:
+                return Gate.KILLED, str(row["reason"]), False
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT INTO gateway_controls(control_name, state, reason, idempotency_key, applied_at)
+                VALUES ('trading_gate', 'KILLED', ?, ?, ?)""",
+                (reason, idempotency_key, timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, NULL, 'KILL_SWITCH_APPLIED', ?, ?)""",
+                (str(uuid4()), json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
+            return Gate.KILLED, reason, True
 
     def record_signal(self, signal: StrategySignal) -> None:
         """Persist a signal once; it never changes a broker delivery state."""

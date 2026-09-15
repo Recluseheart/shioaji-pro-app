@@ -34,6 +34,11 @@ event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固
 冒充 `STRATEGY` 或 `SYSTEM_TRIGGER`；這兩種來源未來只能由 Gateway process
 內的 runtime 呼叫共用 coordinator，避免瀏覽器繞過 strategy/run 身分邊界。
 
+策略控制面板可呼叫 `reference-fixture` 的 `validate` 與 `dry-run` preview。
+兩者是明確 allowlist 的 broker-free routes：Validate 只回傳 descriptor 與 warnings；
+Dry Run 只回傳共同 Risk Engine 的 hypothetical verdict，永不持久化 intent、建立
+outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 仍為 disabled。
+
 ## 啟動唯讀開發環境
 
 ```sh

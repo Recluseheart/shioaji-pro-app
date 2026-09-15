@@ -255,6 +255,19 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
 
+    def test_strategy_validate_and_dry_run_never_contact_sidecar_or_persist_intent(self) -> None:
+        for action in ("validate", "dry-run"):
+            with self.subTest(action=action):
+                request = Request(
+                    f"{self.base}/api/v1/autotrade/strategies/reference-fixture/{action}",
+                    data=b"{}", headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urlopen(request) as response:
+                    document = json.load(response)
+                self.assertEqual(document["mode"], "VALIDATE" if action == "validate" else "DRY_RUN")
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_read_proxy_preserves_path_but_never_forwards_browser_credentials(self) -> None:
         request = Request(
             f"{self.base}/api/v1/data/contracts?code=2330",

@@ -397,6 +397,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        strategy_runtime = getattr(self.server, "strategy_runtime")
+        if path == "/api/v1/autotrade/strategies/reference-fixture/validate":
+            self._json(HTTPStatus.OK, strategy_runtime.validate_document())
+            return
+        if path == "/api/v1/autotrade/strategies/reference-fixture/dry-run":
+            self._json(HTTPStatus.OK, strategy_runtime.dry_run_document())
+            return
         if path == "/api/v1/order/cancel_order":
             try:
                 intent = self._manual_cancel_intent()

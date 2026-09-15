@@ -80,6 +80,36 @@ class StrategyRuntime:
             ).document()
         ]
 
+    def validate_document(self) -> dict[str, object]:
+        """Return static fixture validation without starting a runtime."""
+        return {
+            "mode": "VALIDATE",
+            "valid": True,
+            "strategy": self.observations()[0],
+            "warnings": ["strategy_runtime_disabled", "no_market_subscription", "no_broker_capability"],
+        }
+
+    def dry_run_document(self) -> dict[str, object]:
+        """Preview the common risk verdict without persisting or dispatching."""
+        intent = self._fixture_intent("dry-run", utc_now())
+        verdict = self._coordinator.risk.evaluate(intent, self._coordinator.gate)
+        return {
+            "mode": "DRY_RUN",
+            "would_persist": False,
+            "would_create_outbox": False,
+            "would_dispatch_broker": False,
+            "intent": {
+                "source": intent.source.value,
+                "strategy_id": intent.strategy_id,
+                "run_id": intent.run_id,
+                "symbol": intent.symbol,
+                "side": intent.side,
+                "quantity": intent.quantity,
+                "limit_price": intent.limit_price,
+            },
+            "risk": {"allowed": verdict.allowed, "reasons": list(verdict.reasons)},
+        }
+
     def process_fixture_event(self, event: dict[str, object]) -> tuple[Status, Verdict] | None:
         """Submit one deterministic fixture intent only in an isolated harness.
 
@@ -93,7 +123,15 @@ class StrategyRuntime:
         if not isinstance(event_id, str) or not event_id or event_id in self._processed_event_ids:
             return None
         self._processed_event_ids.add(event_id)
-        intent = Intent(
+        intent = self._fixture_intent(event_id, self._parse_observed_at(event.get("observed_at")))
+        status, verdict = self._coordinator.accept(intent)
+        self._last_event_id = event_id
+        self._last_intent_id = intent.intent_id
+        self._last_status = status
+        return status, verdict
+
+    def _fixture_intent(self, event_id: str, created_at: datetime) -> Intent:
+        return Intent(
             source=Source.STRATEGY,
             account_id="SIM-001",
             symbol="2330",
@@ -104,13 +142,8 @@ class StrategyRuntime:
             run_id=f"fixture:{event_id}",
             intent_id=str(uuid5(NAMESPACE_URL, f"{self.strategy_id}:{self.version}:{event_id}")),
             correlation_id=str(uuid5(NAMESPACE_URL, f"correlation:{event_id}")),
-            created_at=self._parse_observed_at(event.get("observed_at")),
+            created_at=created_at,
         )
-        status, verdict = self._coordinator.accept(intent)
-        self._last_event_id = event_id
-        self._last_intent_id = intent.intent_id
-        self._last_status = status
-        return status, verdict
 
     @staticmethod
     def _parse_observed_at(value: object) -> datetime:

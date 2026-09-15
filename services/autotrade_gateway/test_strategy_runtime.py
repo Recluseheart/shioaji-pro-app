@@ -45,6 +45,16 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertIsNone(duplicate)
         self.assertEqual(len(self.store.observation_orders()), 1)
 
+    def test_dry_run_exposes_disarmed_verdict_without_persistence_or_outbox(self) -> None:
+        runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))
+        document = runtime.dry_run_document()
+        self.assertEqual(document["mode"], "DRY_RUN")
+        self.assertFalse(document["would_persist"])
+        self.assertFalse(document["would_create_outbox"])
+        self.assertFalse(document["would_dispatch_broker"])
+        self.assertEqual(document["risk"], {"allowed": False, "reasons": ["trading_gate_not_armed"]})
+        self.assertEqual(self.store.observation_orders(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-import { apiGet } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 
 export type AutotradeHealth = {
     environment: 'SIM' | 'LIVE' | 'UNKNOWN';
@@ -37,6 +37,11 @@ export type AutotradeOrderObservation = {
     instrument: Record<string, unknown> | null;
     risk_reasons: string[];
     updated_at: string;
+};
+
+export type StrategyPreview = {
+    mode: 'VALIDATE' | 'DRY_RUN';
+    message: string;
 };
 
 const fallback: AutotradeHealth = {
@@ -120,4 +125,23 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
 
 export async function fetchAutotradeOverview(): Promise<AutotradeOverview> {
     return normalizeAutotradeOverview(await apiGet<unknown>('/api/v1/autotrade/overview'));
+}
+
+export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): Promise<StrategyPreview> {
+    const document = await apiPost<Record<string, unknown>>(
+        `/api/v1/autotrade/strategies/reference-fixture/${action}`,
+        {},
+    );
+    if (document.mode === 'VALIDATE') {
+        const warnings = Array.isArray(document.warnings)
+            ? document.warnings.filter((warning): warning is string => typeof warning === 'string') : [];
+        return { mode: 'VALIDATE', message: warnings.length ? `驗證完成：${warnings.join('、')}` : '驗證完成' };
+    }
+    const risk = document.risk && typeof document.risk === 'object' ? document.risk as Record<string, unknown> : {};
+    const reasons = Array.isArray(risk.reasons)
+        ? risk.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
+    return {
+        mode: 'DRY_RUN',
+        message: `Dry Run：不建立 intent／outbox、不送 broker；風控 ${risk.allowed === true ? '允許' : '拒絕'}${reasons.length ? `（${reasons.join('、')}）` : ''}`,
+    };
 }

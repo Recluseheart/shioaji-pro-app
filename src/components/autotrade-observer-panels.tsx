@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
     fetchAutotradeOverview,
+    previewReferenceStrategy,
     type AutotradeOverview,
 } from '../autotrade/client';
 
@@ -53,12 +54,19 @@ function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): nu
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
     const [overview, setOverview] = useState<AutotradeOverview | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     useEffect(() => {
         void fetchAutotradeOverview().then(setOverview).catch(() => setError('Gateway 尚未連線'));
     }, []);
     const copy = PANEL_COPY[kind];
     const count = overview ? countFor(kind, overview) : 0;
     const displayedOrders = kind === 'reconciliation' ? overview?.reconciliation : overview?.orders;
+    const runPreview = (action: 'validate' | 'dry-run') => {
+        setError(null);
+        void previewReferenceStrategy(action)
+            .then((result) => setStrategyPreview(result.message))
+            .catch(() => setError('策略預覽目前無法連線到 Gateway'));
+    };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>{copy.title}</strong>
@@ -89,9 +97,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {strategy.strategy_id ?? '未命名策略'} {strategy.version ?? ''} · {strategy.state ?? 'UNKNOWN'} · {strategy.enabled ? '已啟用' : '未啟用'}
                         </div>;
                     })}
+                    {strategyPreview && <div style={{ color: '#aeb7c6' }}>{strategyPreview}</div>}
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <button disabled title='Gateway 目前固定 DISARMED'>驗證策略</button>
-                        <button disabled title='需要獨立策略 runtime 授權'>Dry Run</button>
+                        <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
+                        <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
                         <button disabled title='需要獨立策略 runtime 授權'>開始</button>
                         <button disabled title='Gateway 目前固定 DISARMED'>暫停</button>
                     </div>

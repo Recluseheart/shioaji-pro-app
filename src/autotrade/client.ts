@@ -21,7 +21,7 @@ export type AutotradeOverview = {
         limits: Record<string, unknown>;
         last_verdict: AutotradeRiskVerdict | null;
     };
-    reconciliation: unknown[];
+    reconciliation: AutotradeReconciliationObservation[];
     performance: {
         run_count: number;
         filled_order_count: number;
@@ -91,6 +91,15 @@ export type AutotradeOrderObservation = {
     updated_at: string;
 };
 
+export type AutotradeReconciliationObservation = AutotradeOrderObservation & {
+    reconciliation_case: {
+        state: string;
+        reason: string;
+        opened_at: string;
+        updated_at: string;
+    } | null;
+};
+
 export type StrategyPreview = {
     mode: 'VALIDATE' | 'DRY_RUN';
     message: string;
@@ -152,6 +161,19 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
             updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
         }];
+    }) : [];
+    const reconciliation = Array.isArray(raw.reconciliation) ? raw.reconciliation.flatMap((item): AutotradeReconciliationObservation[] => {
+        const order = normalizeOrders([item])[0];
+        if (!order || !item || typeof item !== 'object') return [];
+        const rawCase = (item as Record<string, unknown>).reconciliation_case;
+        if (!rawCase || typeof rawCase !== 'object') return [{ ...order, reconciliation_case: null }];
+        const caseRecord = rawCase as Record<string, unknown>;
+        if (typeof caseRecord.state !== 'string' || typeof caseRecord.reason !== 'string'
+            || typeof caseRecord.opened_at !== 'string' || typeof caseRecord.updated_at !== 'string') return [{ ...order, reconciliation_case: null }];
+        return [{ ...order, reconciliation_case: {
+            state: caseRecord.state, reason: caseRecord.reason,
+            opened_at: caseRecord.opened_at, updated_at: caseRecord.updated_at,
+        } }];
     }) : [];
     const risk = raw.risk && typeof raw.risk === 'object' ? raw.risk as Record<string, unknown> : {};
     const rawVerdict = risk.last_verdict && typeof risk.last_verdict === 'object'
@@ -233,7 +255,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
                 ? risk.limits as Record<string, unknown> : {},
             last_verdict: lastVerdict,
         },
-        reconciliation: list('reconciliation'),
+        reconciliation,
         performance: {
             run_count: typeof performance.run_count === 'number' ? performance.run_count : 0,
             filled_order_count: typeof performance.filled_order_count === 'number' ? performance.filled_order_count : 0,

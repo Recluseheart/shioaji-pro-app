@@ -102,6 +102,21 @@ describe('normalizeAutotradeOverview', () => {
         expect(overview.orders).toEqual([]);
     });
 
+    it('keeps durable reconciliation case evidence with its unknown intent', () => {
+        const overview = normalizeAutotradeOverview({
+            reconciliation: [{
+                intent_id: 'unknown-1', correlation_id: 'correlation-1', source: 'MANUAL_UI',
+                status: 'UNKNOWN', reconciliation_case: {
+                    state: 'OPEN', reason: 'restart_recovery',
+                    opened_at: '2026-09-15T00:00:00+00:00', updated_at: '2026-09-15T00:00:00+00:00',
+                },
+            }],
+        });
+        expect(overview.reconciliation[0]).toEqual(expect.objectContaining({
+            intent_id: 'unknown-1', reconciliation_case: expect.objectContaining({ reason: 'restart_recovery' }),
+        }));
+    });
+
     it('normalizes durable strategy lifecycle and heartbeat facts', () => {
         const overview = normalizeAutotradeOverview({
             runs: [{

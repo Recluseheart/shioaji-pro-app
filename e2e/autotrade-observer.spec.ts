@@ -74,6 +74,24 @@ test('Run performance renders durable lifecycle facts without a trading request'
     expect(mutationRequests).toBe(0);
 });
 
+test('Reconciliation queue renders its durable case without retry controls', async ({ page }) => {
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY' },
+            reconciliation: [{
+                intent_id: 'unknown-1', correlation_id: 'correlation-1', source: 'MANUAL_UI', status: 'UNKNOWN',
+                symbol: '2330', side: 'BUY', quantity: 1, limit_price: '1000', order_price_type: 'LMT', operation: 'PLACE', risk_reasons: [],
+                reconciliation_case: { state: 'OPEN', reason: 'restart_recovery', opened_at: '2026-09-15T00:00:00+00:00', updated_at: '2026-09-15T00:00:00+00:00' },
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('對帳佇列', { exact: true }).click();
+    await expect(page.getByText('對帳：restart_recovery · 開案 2026-09-15T00:00:00+00:00')).toBeVisible();
+    await expect(page.getByRole('button', { name: /重送|重新送出|開始/ })).toHaveCount(0);
+});
+
 test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
     let detailReads = 0;
     let mutationRequests = 0;

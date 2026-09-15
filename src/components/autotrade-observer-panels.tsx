@@ -4,6 +4,7 @@ import {
     previewReferenceStrategy,
     type AutotradeOverview,
     type AutotradeOrderObservation,
+    type AutotradeReconciliationObservation,
     type AutotradeRiskVerdict,
     type AutotradeSignal,
 } from '../autotrade/client';
@@ -138,12 +139,15 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {
                         const order = item as Partial<AutotradeOrderObservation>;
+                        const reconciliation = kind === 'reconciliation'
+                            ? item as AutotradeReconciliationObservation : null;
                         return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
                             {order.source} · {operationLabel(order.operation)} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}{order.target_order_id ? ` · 目標 ${order.target_order_id}` : ''}
                             {orderObservationText(order) && <div style={{ color: '#aeb7c6' }}>{orderObservationText(order)}</div>}
                             {order.operation_payload && <div style={{ color: '#aeb7c6' }}>請求：{formatPayload(order.operation_payload)}</div>}
                             {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}
+                            {reconciliation?.reconciliation_case && <div style={{ color: '#ef4444' }}>對帳：{reconciliation.reconciliation_case.reason} · 開案 {reconciliation.reconciliation_case.opened_at}</div>}
                             {order.intent_id && <DurableOrderDetail intentId={order.intent_id} />}
                         </div>;
                     })}

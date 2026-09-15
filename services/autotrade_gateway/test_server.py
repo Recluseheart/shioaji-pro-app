@@ -197,6 +197,166 @@ class GatewayServerTest(unittest.TestCase):
         }, clear=False), self.assertRaisesRegex(RuntimeError, "verified risk context"):
             create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
 
+    def test_observer_mode_rejects_every_control_and_order_mutation_before_parsing(self) -> None:
+        with patch.dict(os.environ, {"AUTOTRADE_GATEWAY_MODE": "OBSERVER"}, clear=False):
+            server = create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            for path in (
+                "/api/v1/autotrade/intents",
+                "/api/v1/autotrade/kill-switch",
+                "/api/v1/autotrade/reconciliation/not-a-real-intent/refresh",
+                "/api/v1/order/place_order",
+                "/api/v1/watchlist",
+            ):
+                with self.subTest(path=path), self.assertRaises(HTTPError) as denied:
+                    urlopen(Request(f"{base}{path}", data=b"not-json", method="POST"))
+                self.assertEqual(denied.exception.code, 403)
+            self.assertEqual(getattr(server, "order_store").observation_orders(), [])
+            self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            getattr(server, "order_store").close()
+
+    def test_observer_mode_refuses_execution_or_strategy_control_configuration(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_GATEWAY_MODE": "OBSERVER",
+            "AUTOTRADE_ENABLE_SIMULATION_EXECUTION": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "observer mode"):
+            create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+
+    def test_targeted_simulation_reconciliation_refresh_is_idempotent_and_never_dispatches(self) -> None:
+        class SnapshotProvider:
+            def __init__(self, _origin: str) -> None: pass
+            def simulation_stock_accounts(self):
+                from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
+                return (SimulationStockAccount("B", "paper-account-1"),)
+            def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
+                return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
+
+        class TradeProvider:
+            calls = 0
+            def __init__(self, _origin: str) -> None: pass
+            def terminal_facts(self, _account):
+                type(self).calls += 1
+                return (("broker-target", Status.FILLED), ("broker-other", Status.CANCELLED))
+
+        with patch("services.autotrade_gateway.server.SimulationSnapshotProvider", SnapshotProvider), patch(
+            "services.autotrade_gateway.server.SimulationTradeProvider", TradeProvider,
+        ), patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT": "1",
+            "AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            store = getattr(server, "order_store")
+            target = Intent(Source.MANUAL_UI, "paper-account-1", "2330", "BUY", 1, "1000")
+            other = Intent(Source.MANUAL_UI, "paper-account-1", "2317", "BUY", 1, "1000")
+            coordinator = getattr(server, "order_coordinator")
+            coordinator.gate = Gate.ARMED
+            coordinator.accept(target)
+            coordinator.accept(other)
+            store.mark_pending_submit(target.intent_id, "broker-target")
+            store.mark_pending_submit(other.intent_id, "broker-other")
+            self.assertIn(store.claim_outbox(), {target.intent_id, other.intent_id})
+            self.assertIn(store.claim_outbox(), {target.intent_id, other.intent_id})
+            store.mark_delivery_unknown(target.intent_id, "timeout")
+            store.mark_delivery_unknown(other.intent_id, "timeout")
+            base = f"http://127.0.0.1:{server.server_port}"
+            def request(reason: str = "operator verification"):
+                return Request(
+                    f"{base}/api/v1/autotrade/reconciliation/{target.intent_id}/refresh",
+                    data=json.dumps({"reason": reason}).encode(), method="POST",
+                    headers={"Content-Type": "application/json", "Idempotency-Key": "refresh-target-1"},
+                )
+            with urlopen(request()) as response:
+                first = json.load(response)
+            with urlopen(request()) as response:
+                replay = json.load(response)
+            self.assertTrue(first["applied"])
+            self.assertFalse(replay["applied"])
+            self.assertEqual((first["resolved_intents"], first["status"]), (1, "FILLED"))
+            self.assertEqual(TradeProvider.calls, 1)
+            self.assertEqual(store.status(target.intent_id), Status.FILLED)
+            self.assertEqual(store.status(other.intent_id), Status.UNKNOWN)
+            self.assertEqual(store.outbox_state(other.intent_id), "UNKNOWN")
+            self.assertEqual(getattr(server, "execution_worker"), None)
+            with self.assertRaises(HTTPError) as collision:
+                urlopen(request("different reason"))
+            self.assertEqual(collision.exception.code, 409)
+            self.assertEqual(TradeProvider.calls, 1)
+            self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            getattr(server, "order_store").close()
+
+    def test_reconciliation_refresh_timeout_stays_pending_without_a_second_broker_read(self) -> None:
+        class SnapshotProvider:
+            def __init__(self, _origin: str) -> None: pass
+            def simulation_stock_accounts(self):
+                from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
+                return (SimulationStockAccount("B", "paper-account-1"),)
+            def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
+                return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
+
+        class TimeoutTradeProvider:
+            calls = 0
+            def __init__(self, _origin: str) -> None: pass
+            def terminal_facts(self, _account):
+                type(self).calls += 1
+                raise TimeoutError("sidecar response uncertain")
+
+        with patch("services.autotrade_gateway.server.SimulationSnapshotProvider", SnapshotProvider), patch(
+            "services.autotrade_gateway.server.SimulationTradeProvider", TimeoutTradeProvider,
+        ), patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT": "1",
+            "AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            store = getattr(server, "order_store")
+            intent = Intent(Source.MANUAL_UI, "paper-account-1", "2330", "BUY", 1, "1000")
+            coordinator = getattr(server, "order_coordinator")
+            coordinator.gate = Gate.ARMED
+            coordinator.accept(intent)
+            self.assertEqual(store.claim_outbox(), intent.intent_id)
+            store.mark_pending_submit(intent.intent_id, "broker-timeout")
+            store.mark_delivery_unknown(intent.intent_id, "dispatch_uncertain:TimeoutError")
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}/api/v1/autotrade/reconciliation/{intent.intent_id}/refresh",
+                data=b'{"reason":"operator timeout drill"}', method="POST",
+                headers={"Content-Type": "application/json", "Idempotency-Key": "refresh-timeout-1"},
+            )
+            for _ in range(2):
+                with self.assertRaises(HTTPError) as unavailable:
+                    urlopen(request)
+                self.assertEqual(unavailable.exception.code, 503)
+            self.assertEqual(TimeoutTradeProvider.calls, 1)
+            self.assertEqual(store.status(intent.intent_id), Status.RECONCILING)
+            # A bound broker identity remains non-claimable DISPATCHED; the
+            # UNKNOWN intent still cannot be re-enqueued or dispatched.
+            self.assertEqual(store.outbox_state(intent.intent_id), "DISPATCHED")
+            self.assertEqual(store.reconciliation_refresh_receipt("refresh-timeout-1")["state"], "PENDING")
+            self.assertEqual(getattr(server, "execution_worker"), None)
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            getattr(server, "order_store").close()
+
     def test_execution_adapter_refuses_non_simulation_environment(self) -> None:
         with patch.dict(os.environ, {
             "AUTOTRADE_ENABLE_SIMULATION_EXECUTION": "1",

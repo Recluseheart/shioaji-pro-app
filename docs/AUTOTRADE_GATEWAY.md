@@ -76,6 +76,28 @@ request 必須提供非空 `reason` 與有效 `Idempotency-Key`，並將 durable
 `KILLED`，且會寫入 `KILL_SWITCH_APPLIED` audit event。它不會取消既有委託、建立
 intent、啟動 worker 或聯絡 sidecar。
 
+當 `AUTOTRADE_ENV=SIM`、`AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT=1` 與
+`AUTOTRADE_ENABLE_SIMULATION_RECONCILIATION=1` 同時成立時，operator 可對已經是
+`UNKNOWN` 或 `RECONCILING` 的單一 durable intent 使用
+`POST /api/v1/autotrade/reconciliation/{intent_id}/refresh`。body 只能是非空
+`reason`，並必須有 `Idempotency-Key`。此控制面會先耐久保留 request、將該筆標為
+`RECONCILING`，然後只讀取已驗證的 SIM account trades；只在既有 broker identity
+符合且回傳 terminal fact 時才更新該指定 intent。它不會建立 intent、claim outbox、
+啟動 worker 或重送任何委託，也不會掃描／結案其他 UNKNOWN 訂單。
+
+同一 key 與同一 request 完成後只回傳原 receipt，不會再次讀 broker。若程序在
+reservation 後中斷，該 key 保留 `PENDING`，Gateway 回 `503` 而不是猜測 read
+是否已發生；operator 必須先檢查 durable case，再以新 key 建立另一筆稽核 refresh。
+此 route 在預設設定、LIVE，或未驗證 SIM account 時一律 `403`。
+
+供 Tailscale Serve 使用的 remote process 必須設定
+`AUTOTRADE_GATEWAY_MODE=OBSERVER`。這是 server-side capability boundary：只保留
+明列的 POST-shaped market/data queries 與 stream subscriptions，任何 control、
+intent、order、watchlist 或 internal broker callback 的 mutation 都在 router 最前面回
+`403`，甚至不解析 body。Observer mode 也拒絕同時啟用 execution、strategy lifecycle
+或 reference strategy signal。local operator 另以預設 `OPERATOR` mode 執行，不得將
+Tailscale Serve 指到 operator process。
+
 目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
 這些限制透過 overview 的 `risk.limits` 唯讀顯示。若未來 gate 進入 `ARMED`，每筆

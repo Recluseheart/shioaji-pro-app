@@ -76,7 +76,9 @@ class SimulationTradeProvider:
         return tuple(fact for item in result if (fact := terminal_callback_from_trade(item)) is not None)
 
 
-def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Status], ...]) -> int:
+def apply_reconciled_terminals(
+    store: IntentStore, facts: tuple[tuple[str, Status], ...], *, intent_id: str | None = None,
+) -> int:
     """Resolve only local UNKNOWN/RECONCILING orders with matching broker facts.
 
     Broker-only facts and local orders without a matching terminal fact remain
@@ -100,9 +102,11 @@ def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Statu
             conflicted_broker_ids.add(broker_order_id)
     resolved = 0
     for order in store.observation_orders():
+        if intent_id is not None and order.get("intent_id") != intent_id:
+            continue
         if order.get("status") not in {Status.UNKNOWN.value, Status.RECONCILING.value}:
             continue
-        intent_id = order.get("intent_id")
+        observed_intent_id = order.get("intent_id")
         observed_broker_order_id = order.get("broker_order_id")
         observed_terminal = (
             by_broker_id.get(observed_broker_order_id)
@@ -110,11 +114,11 @@ def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Statu
             else None
         )
         if (
-            isinstance(intent_id, str)
+            isinstance(observed_intent_id, str)
             and isinstance(observed_broker_order_id, str)
             and observed_terminal is not None
         ):
-            store.record_reconciled_terminal(intent_id, observed_broker_order_id, observed_terminal)
+            store.record_reconciled_terminal(observed_intent_id, observed_broker_order_id, observed_terminal)
             resolved += 1
     return resolved
 
@@ -132,9 +136,9 @@ class ReconciliationRefresher:
         self.provider = provider
         self.account = account
 
-    def refresh(self) -> ReconciliationRefresh:
+    def refresh(self, *, intent_id: str | None = None) -> ReconciliationRefresh:
         facts = self.provider.terminal_facts(self.account)
         return ReconciliationRefresh(
             observed_terminal_facts=len(facts),
-            resolved_intents=apply_reconciled_terminals(self.store, facts),
+            resolved_intents=apply_reconciled_terminals(self.store, facts, intent_id=intent_id),
         )

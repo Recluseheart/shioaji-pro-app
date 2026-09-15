@@ -131,6 +131,41 @@ class ReconciliationParserTest(unittest.TestCase):
         self.assertEqual(store.outbox_state(intent.intent_id), "TERMINAL")
         store.close()
 
+    def test_targeted_refresh_does_not_resolve_another_ambiguous_intent(self) -> None:
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        store = SQLiteIntentStore(":memory:")
+        coordinator = OrderCoordinator(
+            store, Gate.ARMED,
+            risk_context_provider=lambda _i: RiskContext(Decimal("1000"), datetime.now(timezone.utc)),
+        )
+        target = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        other = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
+        coordinator.accept(target)
+        coordinator.accept(other)
+        store.mark_pending_submit(target.intent_id, "broker-target")
+        store.mark_pending_submit(other.intent_id, "broker-other")
+        # A real uncertain delivery originates from a claimed outbox lease;
+        # keep this fixture on the same no-retry state-machine path.
+        self.assertIn(store.claim_outbox(), {target.intent_id, other.intent_id})
+        self.assertIn(store.claim_outbox(), {target.intent_id, other.intent_id})
+        store.mark_delivery_unknown(target.intent_id, "timeout")
+        store.mark_delivery_unknown(other.intent_id, "timeout")
+
+        class Provider:
+            def terminal_facts(self, _account: SimulationStockAccount):
+                return (("broker-target", Status.FILLED), ("broker-other", Status.CANCELLED))
+
+        result = ReconciliationRefresher(
+            store, Provider(), SimulationStockAccount("broker", "paper-account"),
+        ).refresh(intent_id=target.intent_id)
+        self.assertEqual((result.observed_terminal_facts, result.resolved_intents), (2, 1))
+        self.assertEqual(store.status(target.intent_id), Status.FILLED)
+        self.assertEqual(store.status(other.intent_id), Status.UNKNOWN)
+        self.assertEqual(store.outbox_state(other.intent_id), "UNKNOWN")
+        store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,6 +83,13 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 state TEXT NOT NULL, reason TEXT NOT NULL, opened_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reconciliation_refresh_requests (
+                idempotency_key TEXT PRIMARY KEY, intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
+                reason TEXT NOT NULL, state TEXT NOT NULL, receipt_json TEXT, applied_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS reconciliation_refresh_pending_intent_idx
+                ON reconciliation_refresh_requests(intent_id) WHERE state='PENDING';
             CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
             CREATE TABLE IF NOT EXISTS strategy_signals (
                 signal_id TEXT PRIMARY KEY,
@@ -344,6 +351,90 @@ class PostgresIntentStore:
             self.connection.execute("UPDATE reconciliation_cases SET state='RESOLVED', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
             self.connection.execute("""INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
                 VALUES (%s, %s, 'BROKER_RECONCILED_TERMINAL', %s, %s)""", (str(uuid4()), intent_id, json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")), timestamp))
+
+    def reconciliation_refresh_receipt(self, idempotency_key: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT intent_id, reason, state, receipt_json FROM reconciliation_refresh_requests WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        receipt: dict[str, object] | None = None
+        if row["receipt_json"] is not None:
+            try:
+                parsed = json.loads(str(row["receipt_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise ValueError("stored reconciliation refresh receipt is invalid") from None
+            if not isinstance(parsed, dict):
+                raise ValueError("stored reconciliation refresh receipt is invalid")
+            receipt = parsed
+        return {"intent_id": str(row["intent_id"]), "reason": str(row["reason"]),
+                "state": str(row["state"]), "receipt": receipt}
+
+    def begin_reconciliation_refresh(self, idempotency_key: str, intent_id: str, reason: str) -> bool:
+        with self._lock, self.connection.transaction():
+            existing = self.connection.execute(
+                "SELECT intent_id, reason FROM reconciliation_refresh_requests WHERE idempotency_key=%s", (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["intent_id"] != intent_id or existing["reason"] != reason:
+                    raise ValueError("idempotency key is already used by a different reconciliation refresh")
+                return False
+            pending = self.connection.execute(
+                "SELECT 1 FROM reconciliation_refresh_requests WHERE intent_id=%s AND state='PENDING'", (intent_id,),
+            ).fetchone()
+            if pending is not None:
+                raise ValueError("reconciliation refresh is already in progress")
+            order = self.connection.execute(
+                "SELECT status FROM order_intents WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            case = self.connection.execute(
+                "SELECT state FROM reconciliation_cases WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            if order is None or case is None or Status(str(order["status"])) not in {Status.UNKNOWN, Status.RECONCILING}:
+                raise ValueError("reconciliation refresh is not valid for current intent status")
+            if str(case["state"]) == "RESOLVED":
+                raise ValueError("reconciliation refresh is not valid for resolved intent")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT INTO reconciliation_refresh_requests(
+                    idempotency_key,intent_id,reason,state,receipt_json,applied_at,completed_at
+                ) VALUES (%s, %s, %s, 'PENDING', NULL, %s, NULL)""",
+                (idempotency_key, intent_id, reason, timestamp),
+            )
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s",
+                                    (Status.RECONCILING.value, timestamp, intent_id))
+            self.connection.execute("UPDATE reconciliation_cases SET state='RECONCILING', updated_at=%s WHERE intent_id=%s",
+                                    (timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'RECONCILIATION_REFRESH_STARTED', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
+        return True
+
+    def complete_reconciliation_refresh(
+        self, idempotency_key: str, intent_id: str, reason: str, receipt: dict[str, object],
+    ) -> None:
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT intent_id, reason, state FROM reconciliation_refresh_requests WHERE idempotency_key=%s FOR UPDATE",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None or row["intent_id"] != intent_id or row["reason"] != reason or row["state"] != "PENDING":
+                raise ValueError("reconciliation refresh reservation is invalid")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """UPDATE reconciliation_refresh_requests SET state='COMPLETE', receipt_json=%s, completed_at=%s
+                WHERE idempotency_key=%s""",
+                (json.dumps(receipt, separators=(",", ":")), timestamp, idempotency_key),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'RECONCILIATION_REFRESH_COMPLETED', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps(receipt, separators=(",", ":")), timestamp),
+            )
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:

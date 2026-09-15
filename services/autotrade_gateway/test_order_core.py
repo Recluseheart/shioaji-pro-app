@@ -83,6 +83,25 @@ class OrderCoreTest(unittest.TestCase):
                 "strategy-start-1", "reference-fixture", "stop", "operator test", receipt,
             )
 
+    def test_reconciliation_refresh_reservation_is_request_bound_and_audited(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        self.store.recover()
+        self.assertTrue(self.store.begin_reconciliation_refresh("refresh-1", intent.intent_id, "operator check"))
+        self.assertEqual(self.store.status(intent.intent_id), Status.RECONCILING)
+        self.assertFalse(self.store.begin_reconciliation_refresh("refresh-1", intent.intent_id, "operator check"))
+        with self.assertRaisesRegex(ValueError, "different reconciliation refresh"):
+            self.store.begin_reconciliation_refresh("refresh-1", intent.intent_id, "different reason")
+        self.store.complete_reconciliation_refresh("refresh-1", intent.intent_id, "operator check", {
+            "observed_terminal_facts": 0, "resolved_intents": 0, "status": "RECONCILING",
+        })
+        self.assertEqual(self.store.reconciliation_refresh_receipt("refresh-1"), {
+            "intent_id": intent.intent_id, "reason": "operator check", "state": "COMPLETE",
+            "receipt": {"observed_terminal_facts": 0, "resolved_intents": 0, "status": "RECONCILING"},
+        })
+        event_types = {event["event_type"] for event in self.store.observation_audit_events()}
+        self.assertTrue({"RECONCILIATION_REFRESH_STARTED", "RECONCILIATION_REFRESH_COMPLETED"} <= event_types)
+
     def test_armed_intent_requires_authoritative_risk_context(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)

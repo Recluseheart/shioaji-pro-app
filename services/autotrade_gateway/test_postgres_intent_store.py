@@ -233,6 +233,23 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "BROKER_RECONCILED_TERMINAL",
         )
 
+    def test_reconciliation_refresh_reservation_is_request_bound_and_durable(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        self.store.recover()
+        self.assertTrue(self.store.begin_reconciliation_refresh("pg-refresh-1", intent.intent_id, "operator check"))
+        self.assertEqual(self.store.status(intent.intent_id), Status.RECONCILING)
+        self.assertFalse(self.store.begin_reconciliation_refresh("pg-refresh-1", intent.intent_id, "operator check"))
+        self.store.complete_reconciliation_refresh("pg-refresh-1", intent.intent_id, "operator check", {
+            "observed_terminal_facts": 0, "resolved_intents": 0, "status": "RECONCILING",
+        })
+        self.assertEqual(self.store.reconciliation_refresh_receipt("pg-refresh-1"), {
+            "intent_id": intent.intent_id, "reason": "operator check", "state": "COMPLETE",
+            "receipt": {"observed_terminal_facts": 0, "resolved_intents": 0, "status": "RECONCILING"},
+        })
+        with self.assertRaisesRegex(ValueError, "different reconciliation refresh"):
+            self.store.begin_reconciliation_refresh("pg-refresh-1", intent.intent_id, "different reason")
+
     def test_signal_projection_is_durable_and_idempotent(self) -> None:
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
         status, _ = OrderCoordinator(self.store).accept(intent)

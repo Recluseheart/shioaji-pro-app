@@ -197,6 +197,33 @@ def strategy_control_action(path: str) -> str | None:
     return action if path.startswith(prefix) and action in {"start", "pause", "resume", "stop"} else None
 
 
+def reconciliation_refresh_intent_id(path: str) -> str | None:
+    """Return the exact durable intent id for the narrow refresh operation."""
+    prefix = "/api/v1/autotrade/reconciliation/"
+    suffix = "/refresh"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    intent_id = path[len(prefix):-len(suffix)]
+    return intent_id if re.fullmatch(r"[A-Za-z0-9-]{1,128}", intent_id) else None
+
+
+def is_observer_read_post_path(path: str) -> bool:
+    """Keep the remote observer's POST-shaped data queries read-only.
+
+    The upstream Shioaji compatibility contract has several POST queries and
+    stream subscriptions.  They are explicitly enumerated here; every other
+    POST/PUT/PATCH/DELETE is denied before an operator/control handler can
+    parse it.  This makes the Tailscale-facing process a distinct capability
+    mode rather than a UI-only convention.
+    """
+    return (
+        path == COMBO_CONTRACT_BUILD_PATH
+        or path in READ_QUERY_POST_PATHS
+        or path == TRADE_CALLBACK_SUBSCRIPTION_PATH
+        or is_allowed_market_stream_post(path)
+    )
+
+
 def autotrade_event_id(observation: dict[str, object]) -> str:
     """Make the immutable observation version suitable for Last-Event-ID."""
     return f"{observation['intent_id']}:{observation['updated_at']}"
@@ -484,6 +511,60 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def _strategy_control_request(self) -> tuple[str, str]:
         """Read an operator lifecycle request; it is never forwarded upstream."""
         return self._kill_switch_request()
+
+    def _reconciliation_refresh(self, intent_id: str) -> None:
+        """Run exactly one reserved, target-scoped SIM broker read.
+
+        This endpoint has no dispatcher, worker, or order-creation access.
+        Its retained idempotency reservation deliberately fails closed after a
+        crash: the same key never guesses whether the upstream read happened.
+        """
+        refresher = getattr(self.server, "reconciliation_refresher")
+        if refresher is None:
+            self._json(HTTPStatus.FORBIDDEN, {"message": "simulation reconciliation is disabled"})
+            return
+        try:
+            reason, idempotency_key = self._strategy_control_request()
+            store = getattr(self.server, "order_store")
+            existing = store.reconciliation_refresh_receipt(idempotency_key)
+            if existing is not None:
+                if existing["intent_id"] != intent_id or existing["reason"] != reason:
+                    raise ValueError("idempotency key is already used by a different reconciliation refresh")
+                if existing["state"] == "COMPLETE" and isinstance(existing["receipt"], dict):
+                    self._json(HTTPStatus.OK, {"intent_id": intent_id, "reason": reason,
+                                                **existing["receipt"], "applied": False})
+                    return
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "message": "reconciliation refresh receipt is pending; inspect the durable case before using a new key",
+                    "intent_id": intent_id,
+                })
+                return
+            if not store.begin_reconciliation_refresh(idempotency_key, intent_id, reason):
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "message": "reconciliation refresh receipt is pending; inspect the durable case before using a new key",
+                    "intent_id": intent_id,
+                })
+                return
+            result = refresher.refresh(intent_id=intent_id)
+            observation = next(item for item in store.observation_orders() if item.get("intent_id") == intent_id)
+            receipt = {
+                "observed_terminal_facts": result.observed_terminal_facts,
+                "resolved_intents": result.resolved_intents,
+                "status": observation["status"],
+            }
+            store.complete_reconciliation_refresh(idempotency_key, intent_id, reason, receipt)
+            getattr(self.server, "autotrade_event_hub").publish(observation)
+            self._json(HTTPStatus.OK, {"intent_id": intent_id, "reason": reason, **receipt, "applied": True})
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            self._json(HTTPStatus.CONFLICT, {"message": "reconciliation refresh was not applicable"})
+        except (HTTPError, URLError, TimeoutError, OSError):
+            # The reservation remains PENDING.  A timeout cannot establish
+            # that the read did not reach the sidecar, so the same key must
+            # never issue another request or advance this order to dispatch.
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "message": "reconciliation refresh outcome is unknown; inspect the durable case before using a new key",
+                "intent_id": intent_id,
+            })
 
     def _record_internal_terminal_callback(self) -> None:
         """Accept a terminal fact only from the explicitly configured broker bridge.
@@ -1015,12 +1096,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        if getattr(self.server, "observer_mode", False) and not is_observer_read_post_path(path):
+            self._json(HTTPStatus.FORBIDDEN, {"message": "observer mode does not permit mutations"})
+            return
         strategy_runtime = getattr(self.server, "strategy_runtime")
         if path == "/api/v1/autotrade/internal/broker-terminal":
             try:
                 self._record_internal_terminal_callback()
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.CONFLICT, {"message": "broker callback was not applicable"})
+            return
+        if intent_id := reconciliation_refresh_intent_id(path):
+            self._reconciliation_refresh(intent_id)
             return
         if path == "/api/v1/autotrade/kill-switch":
             try:
@@ -1156,6 +1243,18 @@ def create_server(
 ) -> ThreadingHTTPServer:
     # Refuse a bad process configuration before binding a port.  The detailed
     # loopback-origin validation happens when the worker adapter is built.
+    mode = os.getenv("AUTOTRADE_GATEWAY_MODE", "OPERATOR").upper()
+    if mode not in {"OPERATOR", "OBSERVER"}:
+        raise RuntimeError("AUTOTRADE_GATEWAY_MODE must be OPERATOR or OBSERVER")
+    if mode == "OBSERVER" and any(
+        os.getenv(flag) == "1"
+        for flag in (
+            "AUTOTRADE_ENABLE_SIMULATION_EXECUTION",
+            "AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE",
+            "AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS",
+        )
+    ):
+        raise RuntimeError("observer mode cannot enable execution or strategy controls")
     if (
         os.getenv("AUTOTRADE_ENABLE_SIMULATION_EXECUTION") == "1"
         and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
@@ -1191,6 +1290,7 @@ def create_server(
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
     server.daemon_threads = True
+    server.observer_mode = mode == "OBSERVER"  # type: ignore[attr-defined]
     server.upstream_origin = resolved_upstream_origin.rstrip("/")  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:

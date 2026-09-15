@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict
+from datetime import datetime
 from threading import Lock
 
 from .order_core import (
     _UNCERTAIN,
     DuplicateIntentError,
     Intent,
+    StrategyRun,
     StrategySignal,
     Status,
     Verdict,
@@ -60,6 +62,20 @@ class PostgresIntentStore:
             );
             CREATE INDEX IF NOT EXISTS strategy_signals_observed_idx
                 ON strategy_signals(observed_at DESC, signal_id DESC);
+            CREATE TABLE IF NOT EXISTS strategy_runs (
+                run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
+                version TEXT NOT NULL, config_checksum TEXT NOT NULL,
+                state TEXT NOT NULL, last_intent_id TEXT REFERENCES order_intents(intent_id),
+                last_status TEXT, intent_count INTEGER NOT NULL,
+                started_at TEXT NOT NULL, heartbeat_at TEXT, ended_at TEXT, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS strategy_runs_updated_idx
+                ON strategy_runs(updated_at DESC, run_id DESC);
+            CREATE TABLE IF NOT EXISTS strategy_heartbeats (
+                run_id TEXT NOT NULL REFERENCES strategy_runs(run_id),
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, observed_at)
+            );
             """
         )
         self.connection.execute("ALTER TABLE order_intents ADD COLUMN IF NOT EXISTS broker_order_id TEXT")
@@ -267,3 +283,53 @@ class PostgresIntentStore:
             ] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations
+
+    def record_strategy_run(self, run: StrategyRun) -> None:
+        """Persist one fixture lifecycle without changing any delivery state."""
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_runs(
+                    run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(run_id) DO NOTHING""",
+                (
+                    run.run_id, run.strategy_id, run.version, run.config_checksum, run.state,
+                    run.last_intent_id, run.last_status.value if run.last_status else None,
+                    run.intent_count, run.started_at.isoformat(),
+                    run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+                    run.ended_at.isoformat() if run.ended_at else None, run.updated_at.isoformat(),
+                ),
+            )
+            if run.heartbeat_at is not None:
+                self.connection.execute(
+                    """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING""", (run.run_id, run.heartbeat_at.isoformat()),
+                )
+
+    def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None:
+        """Record a monotonic liveness fact for an existing durable run."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET heartbeat_at=CASE
+                    WHEN heartbeat_at IS NULL OR heartbeat_at < %s THEN %s ELSE heartbeat_at END,
+                    updated_at=CASE WHEN updated_at < %s THEN %s ELSE updated_at END
+                    WHERE run_id=%s""",
+                (timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def observation_strategy_runs(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                    FROM strategy_runs ORDER BY updated_at DESC, run_id DESC""",
+            ).fetchall()
+        return [dict(row) for row in rows]

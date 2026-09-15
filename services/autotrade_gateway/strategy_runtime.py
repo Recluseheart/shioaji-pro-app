@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
-from .order_core import Intent, OrderCoordinator, Source, Status, StrategySignal, Verdict
+from .order_core import Intent, OrderCoordinator, Source, Status, StrategyRun, StrategySignal, Verdict
 
 
 def utc_now() -> datetime:
@@ -165,6 +165,7 @@ class StrategyRuntime:
                 tuple(reason for reason in reasons if isinstance(reason, str))
                 if isinstance(reasons, list) else (),
             )
+            self._record_fixture_run(existing, self._coordinator.store.status(intent.intent_id))
             self._last_event_id = event_id
             self._last_intent_id = existing.intent_id
             self._last_status = self._coordinator.store.status(intent.intent_id)
@@ -172,6 +173,7 @@ class StrategyRuntime:
         self._processed_event_ids.add(event_id)
         status, verdict = self._coordinator.accept(intent)
         self._record_fixture_signal(event_id, intent, status, verdict.reasons)
+        self._record_fixture_run(intent, status)
         self._last_event_id = event_id
         self._last_intent_id = intent.intent_id
         self._last_status = status
@@ -200,6 +202,26 @@ class StrategyRuntime:
             status=status,
             risk_reasons=reasons,
             observed_at=intent.created_at,
+        ))
+
+    def _record_fixture_run(self, intent: Intent, status: Status) -> None:
+        """Write test-harness lifecycle evidence; this never enables a runner."""
+        run_id = intent.run_id
+        if run_id is None:
+            raise ValueError("fixture intent must have a run id")
+        self._coordinator.store.record_strategy_run(StrategyRun(
+            run_id=run_id,
+            strategy_id=self.strategy_id,
+            version=self.version,
+            config_checksum=self.config_checksum,
+            state="FIXTURE_COMPLETED",
+            last_intent_id=intent.intent_id,
+            last_status=status,
+            intent_count=1,
+            started_at=intent.created_at,
+            heartbeat_at=intent.created_at,
+            ended_at=intent.created_at,
+            updated_at=intent.created_at,
         ))
 
     def _fixture_intent(self, event_id: str, created_at: datetime) -> Intent:

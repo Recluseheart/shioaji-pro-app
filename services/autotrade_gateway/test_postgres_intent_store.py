@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategySignal
+from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyRun, StrategySignal
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -150,3 +150,23 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "correlation_id": intent.correlation_id, "status": "RISK_REJECTED",
             "risk_reasons": ["trading_gate_not_armed"], "observed_at": "2026-09-15T00:00:00+00:00",
         }])
+
+    def test_strategy_run_and_heartbeat_are_durable_without_dispatching(self) -> None:
+        started_at = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        self.store.record_strategy_run(StrategyRun(
+            run_id="fixture-run-1", strategy_id="reference-fixture", version="v1",
+            config_checksum="fixture-checksum", state="FIXTURE_OBSERVED",
+            last_intent_id=None, last_status=None, intent_count=0,
+            started_at=started_at, heartbeat_at=started_at, ended_at=None,
+            updated_at=started_at,
+        ))
+        heartbeat_at = datetime(2026, 9, 15, 0, 1, tzinfo=timezone.utc)
+        self.store.record_strategy_heartbeat("fixture-run-1", heartbeat_at)
+        self.assertEqual(self.store.observation_strategy_runs(), [{
+            "run_id": "fixture-run-1", "strategy_id": "reference-fixture", "version": "v1",
+            "config_checksum": "fixture-checksum", "state": "FIXTURE_OBSERVED",
+            "last_intent_id": None, "last_status": None, "intent_count": 0,
+            "started_at": started_at.isoformat(), "heartbeat_at": heartbeat_at.isoformat(),
+            "ended_at": None, "updated_at": heartbeat_at.isoformat(),
+        }])
+        self.assertEqual(self.store.observation_orders(), [])

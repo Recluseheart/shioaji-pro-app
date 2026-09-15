@@ -56,6 +56,20 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(signals[0]["intent_id"], observation["intent_id"])
         self.assertEqual(signals[0]["status"], "RISK_REJECTED")
         self.assertEqual(signals[0]["risk_reasons"], ["trading_gate_not_armed"])
+        runs = self.store.observation_strategy_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual({key: runs[0][key] for key in (
+            "run_id", "strategy_id", "version", "config_checksum", "state",
+            "last_intent_id", "last_status", "intent_count",
+        )}, {
+            "run_id": "fixture:event-1", "strategy_id": "reference-fixture",
+            "version": "v1", "config_checksum": "reference-fixture-v1",
+            "state": "FIXTURE_COMPLETED", "last_intent_id": observation["intent_id"],
+            "last_status": "RISK_REJECTED", "intent_count": 1,
+        })
+        self.assertEqual(runs[0]["started_at"], runs[0]["heartbeat_at"])
+        self.assertEqual(runs[0]["heartbeat_at"], runs[0]["ended_at"])
+        self.assertEqual(runs[0]["ended_at"], runs[0]["updated_at"])
 
     def test_fixture_event_is_deduplicated_deterministically(self) -> None:
         runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)

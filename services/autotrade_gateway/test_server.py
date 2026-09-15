@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
+from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status, StrategyRun
 from services.autotrade_gateway.server import create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
@@ -345,11 +345,23 @@ class GatewayServerTest(unittest.TestCase):
         coordinator = OrderCoordinator(store, Gate.DISARMED)
         coordinator.accept(strategy_intent)
         coordinator.accept(manual_intent)
+        recorded_at = datetime(2026, 9, 15, tzinfo=timezone.utc)
+        store.record_strategy_run(StrategyRun(
+            run_id="run-durable", strategy_id="fixture", version="test-v1",
+            config_checksum="test-checksum", state="FIXTURE_COMPLETED",
+            last_intent_id=strategy_intent.intent_id, last_status=Status.RISK_REJECTED,
+            intent_count=1, started_at=recorded_at, heartbeat_at=recorded_at,
+            ended_at=recorded_at, updated_at=recorded_at,
+        ))
         with urlopen(f"{self.base}/api/v1/autotrade/runs") as response:
             document = json.load(response)
         self.assertEqual(document["items"], [
-            {"run_id": "run-durable", "strategy_id": "fixture", "last_intent_id": strategy_intent.intent_id,
-             "last_status": "RISK_REJECTED", "updated_at": document["items"][0]["updated_at"], "intent_count": 1},
+            {"run_id": "run-durable", "strategy_id": "fixture", "version": "test-v1",
+             "config_checksum": "test-checksum", "state": "FIXTURE_COMPLETED",
+             "last_intent_id": strategy_intent.intent_id, "last_status": "RISK_REJECTED",
+             "intent_count": 1, "started_at": recorded_at.isoformat(),
+             "heartbeat_at": recorded_at.isoformat(), "ended_at": recorded_at.isoformat(),
+             "updated_at": recorded_at.isoformat()},
         ])
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)

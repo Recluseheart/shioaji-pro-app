@@ -83,6 +83,73 @@ class Intent:
     created_at: datetime = field(default_factory=now)
 
 
+def intent_from_persisted_payload(payload_json: str) -> Intent:
+    """Reconstruct the exact durable request for the execution owner.
+
+    An execution worker must dispatch the immutable intent that Risk Engine
+    accepted, not a browser-shaped retry or a reconstructed approximation.
+    Corrupt persistence is intentionally an error: the worker will mark its
+    claimed delivery UNKNOWN rather than inventing fields and sending it.
+    """
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("stored intent payload is invalid JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("stored intent payload is not an object")
+
+    def text(field_name: str) -> str:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"stored intent {field_name} is invalid")
+        return value
+
+    def optional_text(field_name: str) -> str | None:
+        value = payload.get(field_name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"stored intent {field_name} is invalid")
+        return value
+
+    def optional_object(field_name: str) -> dict[str, object] | None:
+        value = payload.get(field_name)
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"stored intent {field_name} is invalid")
+        return value
+
+    quantity = payload.get("quantity")
+    if not isinstance(quantity, int) or isinstance(quantity, bool):
+        raise ValueError("stored intent quantity is invalid")
+    try:
+        source = Source(text("source"))
+        created_at = datetime.fromisoformat(text("created_at"))
+    except ValueError as error:
+        raise ValueError("stored intent source or timestamp is invalid") from error
+    if created_at.tzinfo is None:
+        raise ValueError("stored intent timestamp has no timezone")
+    return Intent(
+        source=source,
+        account_id=text("account_id"),
+        symbol=text("symbol"),
+        side=text("side"),
+        quantity=quantity,
+        limit_price=text("limit_price"),
+        strategy_id=optional_text("strategy_id"),
+        run_id=optional_text("run_id"),
+        order_price_type=text("order_price_type"),
+        instrument=optional_object("instrument"),
+        operation=text("operation"),
+        target_order_id=optional_text("target_order_id"),
+        operation_payload=optional_object("operation_payload"),
+        intent_id=text("intent_id"),
+        correlation_id=text("correlation_id"),
+        created_at=created_at,
+    )
+
+
 _REQUEST_IDENTITY_EXCLUSIONS = frozenset({"intent_id", "correlation_id", "created_at"})
 
 
@@ -129,6 +196,7 @@ class IntentStore(Protocol):
     def status(self, intent_id: str) -> Status: ...
     def has_intent(self, intent_id: str) -> bool: ...
     def request_matches(self, intent: Intent) -> bool: ...
+    def load_intent(self, intent_id: str) -> Intent: ...
     def outbox_state(self, intent_id: str) -> str | None: ...
     def transition(self, intent_id: str, target: Status) -> None: ...
     def recover(self) -> int: ...
@@ -376,6 +444,15 @@ class SQLiteIntentStore:
                 "SELECT payload_json FROM order_intents WHERE intent_id=?", (intent.intent_id,),
             ).fetchone()
         return row is not None and persisted_request_matches(intent, str(row["payload_json"]))
+
+    def load_intent(self, intent_id: str) -> Intent:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=?", (intent_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(intent_id)
+        return intent_from_persisted_payload(str(row["payload_json"]))
 
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:

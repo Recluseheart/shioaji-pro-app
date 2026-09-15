@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .order_core import IntentStore
+from .order_core import Intent, IntentStore
 
 
 class Dispatcher(Protocol):
-    def dispatch(self, intent_id: str) -> str: ...
+    def dispatch(self, intent: Intent) -> str: ...
 
 
 class ExecutionWorker:
@@ -21,7 +21,7 @@ class ExecutionWorker:
         if intent_id is None:
             return False
         try:
-            broker_order_id = self.dispatcher.dispatch(intent_id)
+            broker_order_id = self.dispatcher.dispatch(self.store.load_intent(intent_id))
             self.store.mark_pending_submit(intent_id, broker_order_id)
         except Exception as error:
             # A timeout/crash never implies delivery did not happen.

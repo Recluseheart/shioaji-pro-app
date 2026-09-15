@@ -87,8 +87,8 @@ class StrategyRuntimeTest(unittest.TestCase):
         observation = self.store.observation_orders()[0]
 
         class MockDispatcher:
-            def dispatch(self, intent_id: str) -> str:
-                if intent_id != observation["intent_id"]:
+            def dispatch(self, intent) -> str:
+                if intent.intent_id != observation["intent_id"]:
                     raise AssertionError("worker claimed a different strategy intent")
                 return "MOCK-STRATEGY-ORDER-1"
 

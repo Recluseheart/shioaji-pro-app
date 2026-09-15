@@ -172,6 +172,11 @@ intent 一起持久化並出現在唯讀 observation。任何 timeout、例外�
 journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
 內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。
 
+Execution Worker 在呼叫未來的 HTTP adapter 前，會從 durable journal 重建最初被
+Risk Engine 接受的 immutable intent，而不是使用瀏覽器重送的 payload 或由欄位猜測
+新 request。若 journal payload 無法嚴格重建，該 leased outbox 直接進入 `UNKNOWN`，
+adapter 不會被呼叫；這與 network timeout 相同，必須經 reconciliation 才能處理。
+
 mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持久化的 broker
 identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
 或 `BROKER_REJECTED`。相同 terminal callback 可冪等重放；identity 不符、衝突終態

@@ -191,12 +191,40 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
 
+    def test_corrupt_durable_payload_becomes_unknown_without_dispatch(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        with self.store.connection:
+            self.store.connection.execute(
+                "UPDATE order_intents SET payload_json=? WHERE intent_id=?", ("{}", intent.intent_id),
+            )
+
+        class NeverDispatcher:
+            calls = 0
+
+            def dispatch(self, _intent: Intent) -> str:
+                self.calls += 1
+                return "must-not-dispatch"
+
+        dispatcher = NeverDispatcher()
+        self.assertTrue(ExecutionWorker(self.store, dispatcher).dispatch_once())
+        self.assertEqual(dispatcher.calls, 0)
+        self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
+
     def test_broker_identity_advances_claim_to_pending_submit(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         armed_coordinator(self.store).accept(intent)
         class AcceptedDispatcher:
-            def dispatch(self, _intent_id: str) -> str: return "MOCK-ORDER-1"
-        self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
+            received: Intent | None = None
+
+            def dispatch(self, persisted: Intent) -> str:
+                self.received = persisted
+                return "MOCK-ORDER-1"
+
+        dispatcher = AcceptedDispatcher()
+        self.assertTrue(ExecutionWorker(self.store, dispatcher).dispatch_once())
+        self.assertEqual(dispatcher.received, intent)
         self.assertEqual(self.store.status(intent.intent_id), Status.PENDING_SUBMIT)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
         self.assertEqual(self.store.observation_orders()[0]["broker_order_id"], "MOCK-ORDER-1")

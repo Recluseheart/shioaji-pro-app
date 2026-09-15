@@ -13,6 +13,7 @@ from .order_core import (
     Intent,
     Status,
     Verdict,
+    intent_from_persisted_payload,
     now,
     persisted_request_matches,
 )
@@ -102,6 +103,15 @@ class PostgresIntentStore:
                 "SELECT payload_json FROM order_intents WHERE intent_id=%s", (intent.intent_id,),
             ).fetchone()
         return row is not None and persisted_request_matches(intent, str(row["payload_json"]))
+
+    def load_intent(self, intent_id: str) -> Intent:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=%s", (intent_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(intent_id)
+        return intent_from_persisted_payload(str(row["payload_json"]))
 
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:

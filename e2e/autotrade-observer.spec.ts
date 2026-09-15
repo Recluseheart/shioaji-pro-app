@@ -1,4 +1,101 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function isolateGatewayReads(page: Page) {
+    // Catalogue interactions are local workspace operations.  Do not let an
+    // unavailable upstream session turn this UI regression into a chain of
+    // five-second Gateway read retries; targeted tests install richer routes
+    // after this fallback when their data state is under test.
+    await page.addInitScript(() => {
+        class FixtureEventSource {
+            static readonly CONNECTING = 0;
+            static readonly OPEN = 1;
+            static readonly CLOSED = 2;
+            onopen: ((event: Event) => void) | null = null;
+            onerror: ((event: Event) => void) | null = null;
+            readyState = FixtureEventSource.CONNECTING;
+
+            constructor(_url: string, _eventSourceInitDict?: EventSourceInit) {
+                queueMicrotask(() => {
+                    this.readyState = FixtureEventSource.OPEN;
+                    this.onopen?.(new Event('open'));
+                });
+            }
+
+            addEventListener(
+                _type: string,
+                _listener: EventListenerOrEventListenerObject,
+            ) {}
+
+            close() {
+                this.readyState = FixtureEventSource.CLOSED;
+            }
+        }
+
+        window.EventSource = FixtureEventSource as unknown as typeof EventSource;
+    });
+    await page.route('**/api/v1/**', async (route) => {
+        await route.fulfill({
+            status: 503,
+            json: { message: 'isolated browser fixture: gateway read unavailable' },
+        });
+    });
+}
+
+async function exerciseSingletonPanels(
+    page: Page,
+    singletonPanels: readonly (readonly [string, boolean])[],
+) {
+    const blocks = page.locator('[data-block-id]');
+    // The workspace hydrates asynchronously from its persisted/default
+    // layout.  Establish the known initial layout before deriving per-panel
+    // counts, otherwise an early read races at zero and mistakes the default
+    // seven blocks for a newly added singleton.
+    await expect(blocks).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of singletonPanels) {
+        if (initiallyPresent) {
+            await page.getByRole('button', { name: /新增面板/ }).click();
+            const library = page.getByRole('dialog', { name: '新增面板' });
+            await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+            const present = library.getByRole('button', {
+                name: new RegExp(`${label}.*已在版面中`),
+            }).first();
+            await expect(present).toBeVisible();
+            await present.click();
+            const existing = blocks.filter({ hasText: label }).first();
+            await existing.getByTitle('移除此面板').click();
+        }
+
+        const beforeIds = await blocks.evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute('data-block-id')),
+        );
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+        const addedId = await blocks.evaluateAll((elements, ids) =>
+            elements
+                .map((element) => element.getAttribute('data-block-id'))
+                .find((id) => id && !ids.includes(id)),
+            beforeIds,
+        );
+        expect(addedId).toBeTruthy();
+        const added = page.locator(`[data-block-id="${addedId}"]`);
+
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const duplicateLibrary = page.getByRole('dialog', { name: '新增面板' });
+        await duplicateLibrary.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        const duplicate = duplicateLibrary.getByRole('button', {
+            name: new RegExp(`${label}.*已在版面中`),
+        }).first();
+        await expect(duplicate).toBeVisible();
+        await duplicate.click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+
+        await added.getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(beforeIds.length);
+    }
+}
 
 test('Panel Library exposes every public and Autotrade catalogue category', async ({ page }) => {
     await page.goto('/');
@@ -49,6 +146,75 @@ test('Panel Library adds and removes every repeatable panel without a broker mut
     await expect(library.getByRole('button', { name: /自選清單 已在版面中/ })).toBeVisible();
     await library.getByRole('button', { name: /自選清單 已在版面中/ }).click();
     await expect(blocks).toHaveCount(initialCount);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes account and derivative singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['自選清單', true], ['排行榜', true], ['持倉/委託/帳務', true],
+        ['損益分析', false], ['選擇權 T 字', false], ['個股期選擇器', false],
+        ['權證篩選器', false], ['組合單', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes market singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['組合商品', false],
+        ['通知中心', false], ['診斷 Debug', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes tool singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['產業全景', false], ['即時訊號', false], ['選擇權損益圖', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes feature-gated and Autotrade singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['策略回測', false], ['AI Agent', false], ['自動交易總覽', false], ['策略控制', false],
+        ['訊號與決策', false], ['自動委託與持倉', false], ['風控與限額', false],
+        ['對帳佇列', false], ['執行績效', false],
+    ] as const);
     expect(mutationRequests).toBe(0);
 });
 

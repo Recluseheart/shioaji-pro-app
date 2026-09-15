@@ -25,12 +25,15 @@ human UAT completion.
 
 - `e2e/autotrade-observer.spec.ts` runs on desktop and mobile. It proves the
   six catalogue categories and their current public/Autotrade counts are
-  exposed by the panel library; it adds/removes every repeatable BlockType,
-  proves an existing singleton is located rather than duplicated, proves a
-  every pinnable panel can enter and leave its pinned state using a non-real
-  contract fixture, proves a workspace panel can be moved and resized in both
-  layouts, proves the seven Autotrade panels can be added, and confirms these
-  observer presentations do not emit broker mutation requests.
+  exposed by the panel library; it adds/removes every repeatable BlockType and
+  contains add/locate/remove coverage for every singleton BlockType. The
+  singleton coverage has passed on desktop; mobile execution evidence remains
+  open. It also proves every pinnable panel can enter and leave its pinned
+  state using a non-real contract fixture, proves a workspace panel can be
+  moved and resized in both layouts, proves the seven Autotrade panels can be
+  added, and confirms these observer presentations do not emit broker mutation
+  requests. The Option Chain has a fixture-backed contract-read failure →
+  manual retry → recovery E2E case.
 - `playwright.config.ts` starts the Gateway with `uv run python`, matching the
   Python 3.11+ project runtime. It deliberately runs with the default
   `SIM`/`DISARMED` Gateway configuration.
@@ -42,10 +45,11 @@ converted to checkmarks without the named evidence:
 
 - `PARITY-CATALOG-01`: every `BlockType` can be added, moved, resized, pinned
   where allowed, and removed in desktop and mobile layouts. Catalogue presence,
-  every repeatable panel's add/remove coverage, all applicable
-  link → pin → link transitions, and representative move and resize
-  transitions in both layouts are now present. Per-BlockType move/resize
-  coverage remains open.
+  every repeatable BlockType's add/remove coverage, all singleton add/locate/
+  remove scenarios, all applicable link → pin → link transitions, and
+  representative move and resize transitions in both layouts are present.
+  Singleton mobile execution evidence and per-BlockType move/resize coverage
+  remain open.
 - `PARITY-FIXTURE-01`: each public block has loading, empty, data, error and
   stale fixtures without contacting a broker.
 - `PARITY-VISUAL-01`: 1440p, 1080p and narrow-screen dark/black/light visual

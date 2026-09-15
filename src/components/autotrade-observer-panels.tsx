@@ -5,6 +5,7 @@ import {
     type AutotradeOverview,
     type AutotradeOrderObservation,
     type AutotradeRiskVerdict,
+    type AutotradeSignal,
 } from '../autotrade/client';
 import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
 
@@ -46,7 +47,7 @@ const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string 
 function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): number {
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
-        case 'signal_timeline': return overview.decisions.length;
+        case 'signal_timeline': return overview.signals.length + overview.decisions.length;
         case 'auto_orders': return automatedOrderObservations(overview.orders).length;
         case 'risk_limits': return overview.risk.last_verdict === null ? 0 : 1;
         case 'reconciliation': return overview.reconciliation.length;
@@ -68,8 +69,8 @@ export function panelSummary(
                 ? '已載入 simulation 風控限額；ARMED 前必須有權威市場與帳務快照，缺少時會拒絕。所有新 mutation 目前仍由 DISARMED Gateway 拒絕。'
                 : PANEL_COPY[kind].empty;
         case 'signal_timeline':
-            return overview.decisions.length > 0
-                ? '以下為 durable intent 與 Risk Engine verdict；不以示範資料取代真實事件。'
+            return overview.signals.length > 0 || overview.decisions.length > 0
+                ? '以下為 durable signal、durable intent 與 Risk Engine verdict；不以示範資料取代真實事件。'
                 : PANEL_COPY[kind].empty;
         case 'auto_orders':
             return automatedOrderObservations(overview.orders).length > 0
@@ -148,8 +149,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     })}
                 </div>
             )}
-            {kind === 'signal_timeline' && overview?.decisions.length ? (
+            {kind === 'signal_timeline' && overview && (overview.signals.length > 0 || overview.decisions.length > 0) ? (
                 <div style={{ display: 'grid', gap: 5 }}>
+                    {overview.signals.map((signal) => <SignalObservation key={signal.signal_id} signal={signal} />)}
                     {overview.decisions.map((decision) => (
                         <div key={decision.intent_id} style={{ borderLeft: '3px solid #f0b44d', paddingLeft: 7 }}>
                             {decision.source} · {operationLabel(decision.operation)} · {decision.status} · {decision.correlation_id.slice(0, 8)}
@@ -201,6 +203,15 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             <small style={{ color: '#6f7888' }}>唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。</small>
         </section>
     );
+}
+
+function SignalObservation({ signal }: { signal: AutotradeSignal }) {
+    const direction = signal.side === 'BUY' ? '買' : signal.side === 'SELL' ? '賣' : signal.side;
+    return <div style={{ borderLeft: '3px solid #4aa3ff', paddingLeft: 7 }}>
+        訊號 · {signal.strategy_id} · {signal.signal_type} · {signal.symbol} {direction} · {signal.status} · {signal.correlation_id.slice(0, 8)}
+        <div style={{ color: '#aeb7c6' }}>event {signal.event_id} · run {signal.run_id} · {signal.observed_at || '觀測時間未知'}</div>
+        {signal.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{signal.risk_reasons.map(riskReasonLabel).join('、')}</div> : null}
+    </div>;
 }
 
 type LoadOrderObservation = (intentId: string) => Promise<AutotradeOrderObservation | null>;

@@ -111,6 +111,20 @@ describe('normalizeAutotradeOverview', () => {
         })]);
     });
 
+    it('accepts only complete durable signals linked to an intent', () => {
+        const overview = normalizeAutotradeOverview({
+            signals: [{
+                signal_id: 'signal-1', strategy_id: 'reference-fixture', run_id: 'run-1',
+                event_id: 'event-1', signal_type: 'REFERENCE_SIGNAL', symbol: '2330', side: 'BUY',
+                intent_id: 'intent-1', correlation_id: 'correlation-1', status: 'RISK_REJECTED',
+                risk_reasons: ['trading_gate_not_armed'], observed_at: '2026-09-15T00:00:00+00:00',
+            }, { signal_id: 'incomplete' }],
+        });
+        expect(overview.signals).toEqual([expect.objectContaining({
+            signal_id: 'signal-1', intent_id: 'intent-1', risk_reasons: ['trading_gate_not_armed'],
+        })]);
+    });
+
     it('preserves a target-order change as immutable observation data', () => {
         const overview = normalizeAutotradeOverview({
             health: { environment: 'SIM', trading_gate: 'DISARMED' },

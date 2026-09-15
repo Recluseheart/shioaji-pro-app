@@ -11,7 +11,7 @@ export type AutotradeHealth = {
 export type AutotradeOverview = {
     health: AutotradeHealth;
     strategies: unknown[];
-    signals: unknown[];
+    signals: AutotradeSignal[];
     runs: AutotradeRun[];
     decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
@@ -47,6 +47,21 @@ export type AutotradeRun = {
     last_status: string | null;
     updated_at: string;
     intent_count: number;
+};
+
+export type AutotradeSignal = {
+    signal_id: string;
+    strategy_id: string;
+    run_id: string;
+    event_id: string;
+    signal_type: string;
+    symbol: string;
+    side: string;
+    intent_id: string;
+    correlation_id: string;
+    status: string;
+    risk_reasons: string[];
+    observed_at: string;
 };
 
 export type AutotradeOrderObservation = {
@@ -168,10 +183,34 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             intent_count: run.intent_count,
         }];
     }) : [];
+    const signals = Array.isArray(raw.signals) ? raw.signals.flatMap((item): AutotradeSignal[] => {
+        if (!item || typeof item !== 'object') return [];
+        const signal = item as Record<string, unknown>;
+        const required = [
+            'signal_id', 'strategy_id', 'run_id', 'event_id', 'signal_type', 'symbol', 'side',
+            'intent_id', 'correlation_id', 'status', 'observed_at',
+        ] as const;
+        if (required.some((field) => typeof signal[field] !== 'string' || !signal[field])) return [];
+        return [{
+            signal_id: signal.signal_id as string,
+            strategy_id: signal.strategy_id as string,
+            run_id: signal.run_id as string,
+            event_id: signal.event_id as string,
+            signal_type: signal.signal_type as string,
+            symbol: signal.symbol as string,
+            side: signal.side as string,
+            intent_id: signal.intent_id as string,
+            correlation_id: signal.correlation_id as string,
+            status: signal.status as string,
+            risk_reasons: Array.isArray(signal.risk_reasons)
+                ? signal.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],
+            observed_at: signal.observed_at as string,
+        }];
+    }) : [];
     return {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
-        signals: list('signals'),
+        signals,
         runs,
         orders: normalizeOrders(raw.orders),
         decisions: normalizeOrders(raw.decisions),

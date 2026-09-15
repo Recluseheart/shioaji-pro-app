@@ -39,6 +39,18 @@ describe('Autotrade observer panel summaries', () => {
         expect(panelSummary('signal_timeline', overview, null)).toContain('durable intent');
     });
 
+    it('counts a durable signal as timeline evidence before its linked decision', () => {
+        const overview = normalizeAutotradeOverview({
+            signals: [{
+                signal_id: 'signal-1', strategy_id: 'reference-fixture', run_id: 'run-1',
+                event_id: 'event-1', signal_type: 'REFERENCE_SIGNAL', symbol: '2330', side: 'BUY',
+                intent_id: 'intent-1', correlation_id: 'correlation-1', status: 'RISK_REJECTED',
+                risk_reasons: ['trading_gate_not_armed'], observed_at: '2026-09-15T00:00:00+00:00',
+            }],
+        });
+        expect(panelSummary('signal_timeline', overview, null)).toContain('durable signal');
+    });
+
     it('keeps a connection error ahead of any observation summary', () => {
         expect(panelSummary('risk_limits', null, 'Gateway 尚未連線')).toBe('Gateway 尚未連線');
     });

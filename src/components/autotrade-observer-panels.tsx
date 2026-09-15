@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
     previewReferenceStrategy,
     type AutotradeOverview,
+    type AutotradeRiskVerdict,
 } from '../autotrade/client';
 import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
 
@@ -162,6 +163,11 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     ))}
                 </div>
             )}
+            {kind === 'risk_limits' && riskVerdictText(overview?.risk.last_verdict) && (
+                <div role='status' style={{ color: overview?.risk.last_verdict?.allowed ? '#73c991' : '#f0b44d' }}>
+                    {riskVerdictText(overview?.risk.last_verdict)}
+                </div>
+            )}
             {kind === 'run_performance' && overview && (
                 <div style={{ display: 'grid', gap: 5, color: '#8892a6' }}>
                     <div>已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}</div>
@@ -193,6 +199,25 @@ function riskLabel(key: string): string {
         max_daily_loss: '每日最大損失', max_quote_age_seconds: '最大行情秒數',
         max_price_deviation: '最大價格偏離',
     } as Record<string, string>)[key] ?? key;
+}
+
+export function riskVerdictText(verdict: AutotradeRiskVerdict | null | undefined): string | null {
+    if (!verdict) return null;
+    const reasons = verdict.reasons.map(riskReasonLabel);
+    const outcome = verdict.allowed ? '允許' : '拒絕';
+    return `最近風控：${outcome}${reasons.length ? `（${reasons.join('、')}）` : ''} · 追蹤 ${verdict.correlation_id.slice(0, 8)}`;
+}
+
+function riskReasonLabel(reason: string): string {
+    return ({
+        trading_gate_not_armed: '交易閘門尚未啟用',
+        risk_context_unavailable: '缺少權威市場與帳務風控快照',
+        stale_quote: '行情已過期或不可用',
+        price_deviation_exceeded: '委託價格偏離最新行情過大',
+        position_limit_exceeded: '預估商品部位超過限額',
+        gross_exposure_limit_exceeded: '預估總曝險超過限額',
+        daily_loss_limit_exceeded: '每日損失已達限額',
+    } as Record<string, string>)[reason] ?? reason;
 }
 
 function Badge({ label, value, tone }: { label: string; value: string; tone: string }) {

@@ -54,6 +54,22 @@ describe('normalizeAutotradeOverview', () => {
         });
     });
 
+    it('normalizes the latest durable risk verdict without accepting a malformed one', () => {
+        const overview = normalizeAutotradeOverview({
+            risk: {
+                last_verdict: {
+                    intent_id: 'intent-1', correlation_id: 'correlation-1',
+                    status: 'RISK_REJECTED', allowed: false,
+                    reasons: ['trading_gate_not_armed'], source: 'MANUAL_UI', updated_at: '2026-01-01T00:00:00+00:00',
+                },
+            },
+        });
+        expect(overview.risk.last_verdict).toEqual(expect.objectContaining({
+            allowed: false, reasons: ['trading_gate_not_armed'], correlation_id: 'correlation-1',
+        }));
+        expect(normalizeAutotradeOverview({ risk: { last_verdict: { allowed: false } } }).risk.last_verdict).toBeNull();
+    });
+
     it('normalizes the durable decision timeline separately from orders', () => {
         const overview = normalizeAutotradeOverview({
             decisions: [{

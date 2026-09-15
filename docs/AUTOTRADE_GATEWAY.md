@@ -80,7 +80,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 - `GET /api/v1/autotrade/health`：環境、交易閘門與 Gateway 狀態。
 - `GET /api/v1/autotrade/overview`：策略、訊號、訂單、風控、對帳與績效的
   聚合 read model。沒有持久資料來源時各事件陣列必須為空，不能製造 broker
-  activity 來填滿 UI。
+  activity 來填滿 UI。`risk.last_verdict` 只投影最新 durable ingress 的
+  intent、correlation、status 與 reasons，方便 UI 說明最近一次風控結果；它不會
+  自行重新評估、建立 signal 或補造 broker 狀態。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
   是唯讀資料。複合商品會同時帶回其持久化的 `instrument.legs` identity。

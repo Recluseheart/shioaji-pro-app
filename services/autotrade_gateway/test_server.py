@@ -396,6 +396,15 @@ class GatewayServerTest(unittest.TestCase):
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)
         self.assertIn("trading_gate_not_armed", overview["orders"][0]["risk_reasons"])
+        self.assertEqual(overview["risk"]["last_verdict"], {
+            "intent_id": receipt["intent_id"],
+            "correlation_id": receipt["correlation_id"],
+            "status": "RISK_REJECTED",
+            "allowed": False,
+            "reasons": ["trading_gate_not_armed"],
+            "source": "MANUAL_UI",
+            "updated_at": overview["orders"][0]["updated_at"],
+        })
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_manual_idempotency_key_reuses_the_same_rejected_receipt(self) -> None:

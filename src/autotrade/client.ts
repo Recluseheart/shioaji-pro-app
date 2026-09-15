@@ -15,7 +15,12 @@ export type AutotradeOverview = {
     runs: AutotradeRun[];
     decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
-    risk: { mode: string; limits_source: string; limits: Record<string, unknown>; last_verdict: unknown };
+    risk: {
+        mode: string;
+        limits_source: string;
+        limits: Record<string, unknown>;
+        last_verdict: AutotradeRiskVerdict | null;
+    };
     reconciliation: unknown[];
     performance: {
         run_count: number;
@@ -23,6 +28,16 @@ export type AutotradeOverview = {
         realized_pnl: string;
         unrealized_pnl: string;
     };
+};
+
+export type AutotradeRiskVerdict = {
+    intent_id: string;
+    correlation_id: string;
+    status: string;
+    allowed: boolean;
+    reasons: string[];
+    source: string;
+    updated_at: string;
 };
 
 export type AutotradeRun = {
@@ -108,6 +123,26 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         }];
     }) : [];
     const risk = raw.risk && typeof raw.risk === 'object' ? raw.risk as Record<string, unknown> : {};
+    const rawVerdict = risk.last_verdict && typeof risk.last_verdict === 'object'
+        ? risk.last_verdict as Record<string, unknown> : null;
+    const lastVerdict: AutotradeRiskVerdict | null = rawVerdict
+        && typeof rawVerdict.intent_id === 'string'
+        && typeof rawVerdict.correlation_id === 'string'
+        && typeof rawVerdict.status === 'string'
+        && typeof rawVerdict.allowed === 'boolean'
+        && typeof rawVerdict.source === 'string'
+        && typeof rawVerdict.updated_at === 'string'
+        ? {
+            intent_id: rawVerdict.intent_id,
+            correlation_id: rawVerdict.correlation_id,
+            status: rawVerdict.status,
+            allowed: rawVerdict.allowed,
+            reasons: Array.isArray(rawVerdict.reasons)
+                ? rawVerdict.reasons.filter((reason): reason is string => typeof reason === 'string') : [],
+            source: rawVerdict.source,
+            updated_at: rawVerdict.updated_at,
+        }
+        : null;
     const performance = raw.performance && typeof raw.performance === 'object'
         ? raw.performance as Record<string, unknown> : {};
     const runs = Array.isArray(raw.runs) ? raw.runs.flatMap((item): AutotradeRun[] => {
@@ -135,7 +170,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',
             limits: risk.limits && typeof risk.limits === 'object' && !Array.isArray(risk.limits)
                 ? risk.limits as Record<string, unknown> : {},
-            last_verdict: risk.last_verdict ?? null,
+            last_verdict: lastVerdict,
         },
         reconciliation: list('reconciliation'),
         performance: {

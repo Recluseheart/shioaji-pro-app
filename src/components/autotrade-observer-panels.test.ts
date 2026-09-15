@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeAutotradeOverview } from '../autotrade/client';
-import { panelSummary } from './autotrade-observer-panels';
+import { panelSummary, riskVerdictText } from './autotrade-observer-panels';
 
 describe('Autotrade observer panel summaries', () => {
     it('does not describe populated simulation limits as unavailable', () => {
@@ -26,5 +26,12 @@ describe('Autotrade observer panel summaries', () => {
 
     it('keeps a connection error ahead of any observation summary', () => {
         expect(panelSummary('risk_limits', null, 'Gateway 尚未連線')).toBe('Gateway 尚未連線');
+    });
+
+    it('presents the latest rejected verdict with a readable reason and short correlation', () => {
+        expect(riskVerdictText({
+            intent_id: 'intent-1', correlation_id: 'correlation-123456', status: 'RISK_REJECTED',
+            allowed: false, reasons: ['trading_gate_not_armed'], source: 'MANUAL_UI', updated_at: '',
+        })).toBe('最近風控：拒絕（交易閘門尚未啟用） · 追蹤 correlat');
     });
 });

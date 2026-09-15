@@ -199,6 +199,23 @@ def strategy_runs_document(orders: list[dict[str, object]]) -> list[dict[str, ob
     return list(runs.values())
 
 
+def latest_risk_verdict(orders: list[dict[str, object]]) -> dict[str, object] | None:
+    """Project the latest durable ingress verdict without inventing risk facts."""
+    if not orders:
+        return None
+    latest = orders[0]
+    reasons = latest.get("risk_reasons")
+    return {
+        "intent_id": latest.get("intent_id"),
+        "correlation_id": latest.get("correlation_id"),
+        "status": latest.get("status"),
+        "allowed": latest.get("status") != "RISK_REJECTED",
+        "reasons": list(reasons) if isinstance(reasons, list) else [],
+        "source": latest.get("source"),
+        "updated_at": latest.get("updated_at"),
+    }
+
+
 def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -223,7 +240,7 @@ def overview_document(
             "mode": "ENFORCING",
             "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
             "limits": coordinator.risk.limits.document() if coordinator else {},
-            "last_verdict": None,
+            "last_verdict": latest_risk_verdict(orders),
         },
         "reconciliation": [item for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}],
         "performance": {

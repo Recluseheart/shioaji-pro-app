@@ -393,6 +393,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 {"items": getattr(self.server, "order_store").observation_orders()},
             )
             return
+        if path == "/api/v1/autotrade/orders":
+            # The order projection intentionally comes from the same durable
+            # intent journal, so a browser cannot receive a broker status
+            # that is detached from its source, risk verdict, or correlation.
+            self._json(
+                HTTPStatus.OK,
+                {"items": getattr(self.server, "order_store").observation_orders()},
+            )
+            return
         if path == "/api/v1/autotrade/decisions":
             # Every durable intent is also a durable risk decision.  This
             # endpoint is intentionally a projection only: it cannot retry,

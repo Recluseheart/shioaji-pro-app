@@ -107,6 +107,24 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
 
+    def test_orders_endpoint_projects_durable_broker_identity_without_a_sidecar_call(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "fixture", "run-1")
+        OrderCoordinator(store, Gate.ARMED).accept(intent)
+
+        class MockDispatcher:
+            def dispatch(self, _intent_id: str) -> str:
+                return "MOCK-ORDER-READ-1"
+
+        from services.autotrade_gateway.worker import ExecutionWorker
+        self.assertTrue(ExecutionWorker(store, MockDispatcher()).dispatch_once())
+        with urlopen(f"{self.base}/api/v1/autotrade/orders") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"][0]["intent_id"], intent.intent_id)
+        self.assertEqual(document["items"][0]["broker_order_id"], "MOCK-ORDER-READ-1")
+        self.assertEqual(document["items"][0]["source"], "STRATEGY")
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_decision_timeline_projects_durable_risk_verdict_without_a_sidecar_call(self) -> None:
         body = json.dumps({
             "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",

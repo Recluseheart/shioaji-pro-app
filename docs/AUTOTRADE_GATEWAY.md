@@ -74,6 +74,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
   是唯讀資料。複合商品會同時帶回其持久化的 `instrument.legs` identity。
+- `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
+  projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，
+  不會呼叫 sidecar、重送或偽造 broker status。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
   `MANUAL_REVIEW` 的 intent。此 API 用於人工對帳導覽，不提供重送功能。
 - `GET /api/v1/autotrade/decisions`：將 durable intent／risk verdict 投影為

@@ -227,6 +227,11 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(status, Status.RISK_REJECTED)
         self.assertIn("strategy_identity_required", verdict.reasons)
 
+        strategy = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
+        status, verdict = armed_coordinator(self.store).accept(strategy)
+        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+        self.assertEqual(self.store.outbox_state(strategy.intent_id), "PENDING")
+
     def test_verified_bound_order_can_create_a_follow_up_cancel_intent(self) -> None:
         original = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         coordinator = armed_coordinator(self.store)
@@ -266,10 +271,22 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual((status, verdict.allowed), (Status.RISK_REJECTED, False))
         self.assertIn("target_order_account_unverified", verdict.reasons)
 
-        strategy = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
-        status, verdict = armed_coordinator(self.store).accept(strategy)
-        self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
-        self.assertEqual(self.store.outbox_state(strategy.intent_id), "PENDING")
+    def test_verified_follow_up_update_validates_price_and_quantity(self) -> None:
+        for operation, payload, reason in (
+            ("UPDATE_PRICE", {"price": 0}, "invalid_update_price"),
+            ("UPDATE_PRICE", {"price": "NaN"}, "invalid_update_price"),
+            ("UPDATE_QUANTITY", {"quantity": 0}, "invalid_update_quantity"),
+            ("UPDATE_QUANTITY", {"quantity": True}, "invalid_update_quantity"),
+        ):
+            with self.subTest(operation=operation, payload=payload):
+                intent = Intent(
+                    Source.MANUAL_UI, "SIM-001", "2330", "CANCEL", 0, "0",
+                    operation=operation, target_order_id="BOUND-UPDATE-1",
+                    target_order_verified=True, operation_payload=payload,
+                )
+                status, verdict = armed_coordinator(self.store).accept(intent)
+                self.assertEqual(status, Status.RISK_REJECTED)
+                self.assertIn(reason, verdict.reasons)
 
     def test_market_price_intent_does_not_require_a_positive_limit_price(self) -> None:
         intent = Intent(

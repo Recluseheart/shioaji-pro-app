@@ -947,6 +947,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
         target_order_id = value.get("trade_id")
         if not isinstance(target_order_id, str) or not target_order_id:
             raise ValueError("trade_id is required")
+        expected_fields = {"trade_id", *change_fields}
+        if set(value) != expected_fields:
+            raise ValueError("target order payload has unsupported fields")
         changes: dict[str, object] = {}
         for field in change_fields:
             if field not in value:

@@ -1049,6 +1049,17 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(observation["operation_payload"], expected_change)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_target_mutation_rejects_unsupported_browser_fields(self) -> None:
+        body = json.dumps({"trade_id": "BROKER-ORDER-1", "price": 1000, "account": "override"}).encode()
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(Request(
+                f"{self.base}/api/v1/order/update_price", data=body,
+                headers={"Content-Type": "application/json"}, method="POST",
+            ))
+        self.assertEqual(rejected.exception.code, 400)
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_manual_place_order_is_durably_rejected_while_disarmed(self) -> None:
         body = json.dumps({
             "contract": {"code": "2330"},

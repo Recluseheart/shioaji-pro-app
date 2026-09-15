@@ -35,7 +35,8 @@ durable、非終態 target lookup 能驗證帳戶，其餘情況 fail closed，�
 
 `POST /api/v1/order/update_price` 與 `update_qty` 使用相同 target-order audit
 模型，並持久化 requested price／quantity；只有上述 verified target 可通過 account
-ownership gate，其他 target 一律 fail closed，且目前絕不轉送 sidecar。
+ownership gate，其他 target 一律 fail closed。payload 只能是 `trade_id` 加有限且正的
+`price` 或正整數 `quantity`，不接受 browser 附加帳戶或其他欄位；目前絕不轉送 sidecar。
 
 `POST /api/v1/order/place_comboorder` 已同樣建立 `MANUAL_UI` intent，並把
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk

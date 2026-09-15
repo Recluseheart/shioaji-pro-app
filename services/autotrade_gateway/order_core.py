@@ -402,6 +402,18 @@ class RiskEngine:
                 reasons.append("target_order_id_required")
             if not intent.target_order_verified:
                 reasons.append("target_order_account_unverified")
+            changes = intent.operation_payload or {}
+            if intent.operation == "UPDATE_PRICE":
+                try:
+                    price = Decimal(str(changes.get("price")))
+                    if not price.is_finite() or price <= 0:
+                        reasons.append("invalid_update_price")
+                except (InvalidOperation, ValueError):
+                    reasons.append("invalid_update_price")
+            if intent.operation == "UPDATE_QUANTITY":
+                quantity = changes.get("quantity")
+                if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
+                    reasons.append("invalid_update_quantity")
         else:
             reasons.append("invalid_operation")
         if intent.source is Source.STRATEGY and (not intent.strategy_id or not intent.run_id):

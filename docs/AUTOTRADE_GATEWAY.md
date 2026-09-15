@@ -57,8 +57,11 @@ outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／St
 
 目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
-這些限制透過 overview 的 `risk.limits` 唯讀顯示。quote freshness、position、daily
-loss、gross exposure、頻率及 cooldown 必須等 PostgreSQL read model 移植完成後才可宣稱可用。
+這些限制透過 overview 的 `risk.limits` 唯讀顯示。若未來 gate 進入 `ARMED`，每筆
+`PLACE` 還必須取得最新的 `RiskContext`；缺少 context、行情過期、價格偏離、預估部位、
+每日損失或總曝險超限都會 fail closed，且不建立 outbox。現階段尚未有 PostgreSQL／sidecar
+提供權威 context，因此不宣稱這些動態限制可用；frequency 與 cooldown 也仍待 durable
+read model 移植。
 
 ## 啟動唯讀開發環境
 

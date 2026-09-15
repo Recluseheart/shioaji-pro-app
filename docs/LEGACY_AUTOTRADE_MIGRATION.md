@@ -22,7 +22,7 @@ Legacy 工作樹的使用者檔案（包括未追蹤 `docs/.DS_Store`）不屬�
 | `apps/strategy_runner/runner.py` | 部分移植 | fixture event dedup、strategy/run identity 與共同 intent ingress 已移植；async lifecycle、heartbeat 與 durable strategy run store 尚待 Phase 4。 |
 | `apps/strategy_runner/persistence.py` | 待 adapter | 必須落在 schema-scoped PostgreSQL strategy/run/signal tables，不能回退為 process memory。 |
 | `packages/domain/models.py`、`state_machine.py` | 部分移植 | `order_core.py` 已提供 source、intent、outbox、UNKNOWN/reconciliation 不重送及 broker identity seam；instrument/unit/fill domain 仍待統一模型。 |
-| `packages/risk/engine.py` | 待 adapter | 現行 `RiskEngine` 僅維持最小 fail-closed gate／simulation／target-account policy；quote、position、loss、exposure、frequency 與 cooldown limits 尚未移植。 |
+| `packages/risk/engine.py` | 部分移植 | 現行 `RiskEngine` 已移植 gate／simulation baseline，並以 `RiskContext` fail-closed 檢查 quote freshness／偏離、position、daily loss 與 gross exposure；尚未有 PostgreSQL／sidecar 權威 context provider，frequency 與 cooldown limits 也仍待 durable read model。 |
 | `apps/execution_gateway/store.py` | 部分移植 | `PostgresIntentStore` 提供 schema-scoped intent/outbox、recovery 與 observation；fills、callback、strategy state 和 risk usage tables 尚待 migration。 |
 | `apps/execution_gateway/worker.py`、`service.py` | 待 adapter | 沒有 Shioaji session 的 `ExecutionWorker` seam 已存在；HTTP broker adapter、callback/reconciliation worker 仍未接入，不能視為可送 simulation order。 |
 | `packages/broker_shioaji` | 暫不移植 | 需先取得另行授權才可建立任何 Shioaji simulation session 或 mutation；LIVE 與 CA 維持 disabled。 |

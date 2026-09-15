@@ -90,6 +90,12 @@ RISK_REASON_LABELS = {
     "symbol_not_allowed": "商品不在 allowlist",
     "quantity_limit_exceeded": "數量超過單筆限額",
     "notional_limit_exceeded": "名目金額超過單筆限額",
+    "risk_context_unavailable": "缺少權威市場與帳務風控快照",
+    "stale_quote": "行情已過期或不可用",
+    "price_deviation_exceeded": "委託價格偏離最新行情過大",
+    "position_limit_exceeded": "預估商品部位超過限額",
+    "gross_exposure_limit_exceeded": "預估總曝險超過限額",
+    "daily_loss_limit_exceeded": "每日損失已達限額",
 }
 
 

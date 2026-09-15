@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -12,8 +14,19 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source, Status
+from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
 from services.autotrade_gateway.server import create_server
+
+
+def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
+    return OrderCoordinator(
+        store,
+        Gate.ARMED,
+        risk_context_provider=lambda: RiskContext(
+            quote_price=Decimal("1000"),
+            quote_at=datetime.now(timezone.utc),
+        ),
+    )
 
 
 class ReadServiceHandler(BaseHTTPRequestHandler):
@@ -140,6 +153,8 @@ class GatewayServerTest(unittest.TestCase):
         }])
         self.assertEqual(overview["risk"]["limits_source"], "gateway_static_simulation_v1")
         self.assertEqual(overview["risk"]["limits"]["max_order_notional"], "5000000")
+        self.assertEqual(overview["risk"]["limits"]["max_gross_exposure"], "10000000")
+        self.assertEqual(overview["risk"]["limits"]["max_quote_age_seconds"], 5)
         self.assertEqual(overview["orders"], [])
         self.assertEqual(overview["reconciliation"], [])
 
@@ -159,7 +174,7 @@ class GatewayServerTest(unittest.TestCase):
     def test_orders_endpoint_projects_durable_broker_identity_without_a_sidecar_call(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "fixture", "run-1")
-        OrderCoordinator(store, Gate.ARMED).accept(intent)
+        armed_coordinator(store).accept(intent)
 
         class MockDispatcher:
             def dispatch(self, _intent_id: str) -> str:
@@ -209,7 +224,7 @@ class GatewayServerTest(unittest.TestCase):
     def test_reconciliation_endpoint_exposes_unknown_without_a_resend(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(store, Gate.ARMED).accept(intent)
+        armed_coordinator(store).accept(intent)
         store.recover()
         with urlopen(f"{self.base}/api/v1/autotrade/reconciliation") as response:
             document = json.load(response)
@@ -293,7 +308,7 @@ class GatewayServerTest(unittest.TestCase):
             database_path = Path(temporary_directory) / "restart-recovery.db"
             previous_store = SQLiteIntentStore(database_path)
             intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-            OrderCoordinator(previous_store, Gate.ARMED).accept(intent)
+            armed_coordinator(previous_store).accept(intent)
             self.assertEqual(previous_store.outbox_state(intent.intent_id), "PENDING")
             previous_store.close()
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -11,11 +13,26 @@ from services.autotrade_gateway.order_core import (
     DuplicateIntentError,
     Intent,
     OrderCoordinator,
+    RiskContext,
+    RiskEngine,
+    RiskLimits,
+    RiskPosition,
     Source,
     SQLiteIntentStore,
     Status,
 )
 from services.autotrade_gateway.worker import ExecutionWorker
+
+
+def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
+    return OrderCoordinator(
+        store,
+        Gate.ARMED,
+        risk_context_provider=lambda: RiskContext(
+            quote_price=Decimal("1000"),
+            quote_at=datetime.now(timezone.utc),
+        ),
+    )
 
 
 class OrderCoreTest(unittest.TestCase):
@@ -34,6 +51,50 @@ class OrderCoreTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", verdict.reasons)
         self.assertEqual(self.store.status(intent.intent_id), Status.RISK_REJECTED)
         self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
+    def test_armed_intent_requires_authoritative_risk_context(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        self.assertEqual(status, Status.RISK_REJECTED)
+        self.assertIn("risk_context_unavailable", verdict.reasons)
+        self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
+    def test_armed_intent_rejects_a_stale_market_snapshot_without_outbox(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        coordinator = OrderCoordinator(
+            self.store,
+            Gate.ARMED,
+            risk_context_provider=lambda: RiskContext(
+                quote_price=Decimal("1000"),
+                quote_at=datetime.now(timezone.utc) - timedelta(seconds=6),
+            ),
+        )
+        status, verdict = coordinator.accept(intent)
+        self.assertEqual(status, Status.RISK_REJECTED)
+        self.assertIn("stale_quote", verdict.reasons)
+        self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
+    def test_dynamic_risk_context_enforces_position_loss_and_exposure_limits(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 10, "1000")
+        verdict = RiskEngine(RiskLimits(
+            max_position_per_symbol=10,
+            max_gross_exposure=Decimal("1000"),
+            max_daily_loss=Decimal("100"),
+        )).evaluate(
+            intent,
+            Gate.ARMED,
+            RiskContext(
+                quote_price=Decimal("1000"),
+                quote_at=datetime.now(timezone.utc),
+                positions={"2330": RiskPosition(quantity=10, market_price=Decimal("1000"))},
+                realized_pnl=Decimal("-100"),
+            ),
+        )
+        self.assertFalse(verdict.allowed)
+        self.assertEqual(
+            set(verdict.reasons),
+            {"position_limit_exceeded", "gross_exposure_limit_exceeded", "daily_loss_limit_exceeded"},
+        )
 
     def test_request_match_requires_every_broker_relevant_field_to_match(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -70,12 +131,12 @@ class OrderCoreTest(unittest.TestCase):
 
     def test_strategy_identity_and_source_are_required_for_common_ingress(self) -> None:
         incomplete = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000")
-        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(incomplete)
+        status, verdict = armed_coordinator(self.store).accept(incomplete)
         self.assertEqual(status, Status.RISK_REJECTED)
         self.assertIn("strategy_identity_required", verdict.reasons)
 
         strategy = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
-        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(strategy)
+        status, verdict = armed_coordinator(self.store).accept(strategy)
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(strategy.intent_id), "PENDING")
 
@@ -84,7 +145,7 @@ class OrderCoreTest(unittest.TestCase):
             Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "0",
             order_price_type="MKT",
         )
-        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        status, verdict = armed_coordinator(self.store).accept(intent)
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
 
@@ -97,14 +158,14 @@ class OrderCoreTest(unittest.TestCase):
         )
         for intent, expected_reason in cases:
             with self.subTest(reason=expected_reason):
-                status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+                status, verdict = armed_coordinator(self.store).accept(intent)
                 self.assertEqual(status, Status.RISK_REJECTED)
                 self.assertIn(expected_reason, verdict.reasons)
                 self.assertIsNone(self.store.outbox_state(intent.intent_id))
 
     def test_restart_marks_pending_delivery_unknown_and_forbids_blind_resend(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        status, _ = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        status, _ = armed_coordinator(self.store).accept(intent)
         self.assertEqual(status, Status.APPROVED)
         self.assertEqual(self.store.recover(), 1)
         self.assertEqual(self.store.status(intent.intent_id), Status.UNKNOWN)
@@ -114,7 +175,7 @@ class OrderCoreTest(unittest.TestCase):
 
     def test_timeout_claim_becomes_unknown_and_is_not_retried(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
 
         class TimeoutDispatcher:
             calls = 0
@@ -132,7 +193,7 @@ class OrderCoreTest(unittest.TestCase):
 
     def test_broker_identity_advances_claim_to_pending_submit(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
         class AcceptedDispatcher:
             def dispatch(self, _intent_id: str) -> str: return "MOCK-ORDER-1"
         self.assertTrue(ExecutionWorker(self.store, AcceptedDispatcher()).dispatch_once())
@@ -142,7 +203,7 @@ class OrderCoreTest(unittest.TestCase):
 
     def test_terminal_callback_is_identity_bound_idempotent_and_never_reopens_delivery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
 
         class AcceptedDispatcher:
             def dispatch(self, _intent_id: str) -> str: return "MOCK-ORDER-1"

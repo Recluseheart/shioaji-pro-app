@@ -189,6 +189,9 @@ function riskLabel(key: string): string {
     return ({
         allowed_accounts: '允許帳戶', allowed_symbols: '允許商品',
         max_order_quantity: '單筆最大數量', max_order_notional: '單筆最大名目金額',
+        max_position_per_symbol: '單一商品最大部位', max_gross_exposure: '最大總曝險',
+        max_daily_loss: '每日最大損失', max_quote_age_seconds: '最大行情秒數',
+        max_price_deviation: '最大價格偏離',
     } as Record<string, string>)[key] ?? key;
 }
 

@@ -3,10 +3,23 @@ from __future__ import annotations
 import os
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, OrderCoordinator, Source, Status
+from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status
 from services.autotrade_gateway.worker import ExecutionWorker
+
+
+def armed_coordinator(store: IntentStore) -> OrderCoordinator:
+    return OrderCoordinator(
+        store,
+        Gate.ARMED,
+        risk_context_provider=lambda: RiskContext(
+            quote_price=Decimal("1000"),
+            quote_at=datetime.now(timezone.utc),
+        ),
+    )
 
 
 class PostgresIntentStoreTest(unittest.TestCase):
@@ -31,7 +44,7 @@ class PostgresIntentStoreTest(unittest.TestCase):
 
     def test_atomic_outbox_and_unknown_recovery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        status, verdict = armed_coordinator(self.store).accept(intent)
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
         self.assertEqual(self.store.recover(), 1)
@@ -74,7 +87,7 @@ class PostgresIntentStoreTest(unittest.TestCase):
 
     def test_worker_timeout_is_unknown_without_retry(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
         class TimeoutDispatcher:
             def dispatch(self, _intent_id: str) -> None: raise TimeoutError()
         worker = ExecutionWorker(self.store, TimeoutDispatcher())
@@ -84,7 +97,7 @@ class PostgresIntentStoreTest(unittest.TestCase):
 
     def test_broker_identity_is_persisted_with_pending_submit(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
 
         class AcceptedDispatcher:
             def dispatch(self, _intent_id: str) -> str:
@@ -100,7 +113,7 @@ class PostgresIntentStoreTest(unittest.TestCase):
 
     def test_terminal_callback_requires_the_persisted_broker_identity(self) -> None:
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
-        OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+        armed_coordinator(self.store).accept(intent)
 
         class AcceptedDispatcher:
             def dispatch(self, _intent_id: str) -> str:

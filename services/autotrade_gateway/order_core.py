@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import Callable, Protocol
 from uuid import uuid4
 
 
@@ -144,17 +144,17 @@ class IntentStore(Protocol):
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """Portable first slice of the legacy simulation risk policy.
-
-    Position, quote freshness, daily loss, and frequency budgets require their
-    own durable read models and are intentionally not implied by this static
-    policy.  These baseline limits still apply regardless of the trading gate.
-    """
+    """Portable simulation limits; dynamic checks require a fresh context."""
 
     allowed_accounts: tuple[str, ...] = ("SIM-001",)
     allowed_symbols: tuple[str, ...] = ("2330", "2317", "0050", "11011", "TXFR1")
     max_order_quantity: int = 10_000
     max_order_notional: Decimal = Decimal("5000000")
+    max_position_per_symbol: int = 2_000
+    max_gross_exposure: Decimal = Decimal("10000000")
+    max_daily_loss: Decimal = Decimal("100000")
+    max_quote_age_seconds: int = 5
+    max_price_deviation: Decimal = Decimal("0.10")
 
     def document(self) -> dict[str, object]:
         return {
@@ -162,6 +162,11 @@ class RiskLimits:
             "allowed_symbols": list(self.allowed_symbols),
             "max_order_quantity": self.max_order_quantity,
             "max_order_notional": str(self.max_order_notional),
+            "max_position_per_symbol": self.max_position_per_symbol,
+            "max_gross_exposure": str(self.max_gross_exposure),
+            "max_daily_loss": str(self.max_daily_loss),
+            "max_quote_age_seconds": self.max_quote_age_seconds,
+            "max_price_deviation": str(self.max_price_deviation),
         }
 
 
@@ -171,7 +176,12 @@ class RiskEngine:
     def __init__(self, limits: RiskLimits | None = None) -> None:
         self.limits = limits or RiskLimits()
 
-    def evaluate(self, intent: Intent, gate: Gate) -> Verdict:
+    def evaluate(
+        self,
+        intent: Intent,
+        gate: Gate,
+        context: RiskContext | None = None,
+    ) -> Verdict:
         reasons: list[str] = []
         if gate is not Gate.ARMED:
             reasons.append("trading_gate_not_armed")
@@ -201,6 +211,8 @@ class RiskEngine:
                         reasons.append("notional_limit_exceeded")
                 except (InvalidOperation, ValueError):
                     reasons.append("invalid_limit_price")
+            if gate is Gate.ARMED:
+                reasons.extend(self._dynamic_reasons(intent, context))
         elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:
                 reasons.append("target_order_id_required")
@@ -210,6 +222,71 @@ class RiskEngine:
         if intent.source is Source.STRATEGY and (not intent.strategy_id or not intent.run_id):
             reasons.append("strategy_identity_required")
         return Verdict(not reasons, tuple(reasons))
+
+    def _dynamic_reasons(self, intent: Intent, context: RiskContext | None) -> list[str]:
+        """Evaluate limits that require an authoritative market/account snapshot.
+
+        A future execution gateway must supply this snapshot from its durable
+        read models immediately before it creates an outbox record.  Absence
+        is deliberately a rejection rather than a permissive fallback: an
+        armed process with stale data must never become a bypass around risk.
+        """
+        if context is None:
+            return ["risk_context_unavailable"]
+        reasons: list[str] = []
+        timestamp = now()
+        quote_price = context.quote_price
+        quote_at = context.quote_at
+        if (
+            quote_price is None
+            or quote_price <= 0
+            or quote_at is None
+            or (timestamp - quote_at).total_seconds() > self.limits.max_quote_age_seconds
+        ):
+            reasons.append("stale_quote")
+        else:
+            if intent.order_price_type == "LMT":
+                try:
+                    deviation = abs(Decimal(intent.limit_price) - quote_price) / quote_price
+                    if deviation > self.limits.max_price_deviation:
+                        reasons.append("price_deviation_exceeded")
+                except InvalidOperation:
+                    reasons.append("invalid_limit_price")
+            proposed_notional = Decimal(intent.quantity) * (
+                quote_price if intent.order_price_type != "LMT" else Decimal(intent.limit_price)
+            )
+            current_quantity = context.positions.get(intent.symbol, RiskPosition()).quantity
+            projected_quantity = current_quantity + (intent.quantity if intent.side == "BUY" else -intent.quantity)
+            if abs(projected_quantity) > self.limits.max_position_per_symbol:
+                reasons.append("position_limit_exceeded")
+            gross_exposure = sum(
+                abs(position.quantity) * position.market_price
+                for position in context.positions.values()
+            )
+            if gross_exposure + proposed_notional > self.limits.max_gross_exposure:
+                reasons.append("gross_exposure_limit_exceeded")
+        if context.realized_pnl + context.unrealized_pnl <= -self.limits.max_daily_loss:
+            reasons.append("daily_loss_limit_exceeded")
+        return reasons
+
+
+@dataclass(frozen=True)
+class RiskPosition:
+    """Sanitized position fact from the durable account read model."""
+
+    quantity: int = 0
+    market_price: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True)
+class RiskContext:
+    """Fresh, authoritative facts needed for dynamic order risk checks."""
+
+    quote_price: Decimal | None = None
+    quote_at: datetime | None = None
+    positions: dict[str, RiskPosition] = field(default_factory=dict)
+    realized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal = Decimal("0")
 
 
 class SQLiteIntentStore:
@@ -418,11 +495,19 @@ class SQLiteIntentStore:
 class OrderCoordinator:
     """One ingress point for manual UI and strategy intents; it owns no broker."""
 
-    def __init__(self, store: IntentStore, gate: Gate = Gate.DISARMED, risk: RiskEngine | None = None) -> None:
+    def __init__(
+        self,
+        store: IntentStore,
+        gate: Gate = Gate.DISARMED,
+        risk: RiskEngine | None = None,
+        risk_context_provider: Callable[[], RiskContext | None] | None = None,
+    ) -> None:
         self.store = store
         self.gate = gate
         self.risk = risk or RiskEngine()
+        self.risk_context_provider = risk_context_provider
 
     def accept(self, intent: Intent) -> tuple[Status, Verdict]:
-        verdict = self.risk.evaluate(intent, self.gate)
+        context = self.risk_context_provider() if self.risk_context_provider else None
+        verdict = self.risk.evaluate(intent, self.gate, context)
         return self.store.persist(intent, verdict), verdict

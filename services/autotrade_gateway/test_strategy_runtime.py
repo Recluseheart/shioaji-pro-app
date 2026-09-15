@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from services.autotrade_gateway.order_core import Gate, OrderCoordinator, SQLiteIntentStore, Status
+from services.autotrade_gateway.order_core import Gate, OrderCoordinator, RiskContext, SQLiteIntentStore, Status
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 from services.autotrade_gateway.worker import ExecutionWorker
+
+
+def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
+    return OrderCoordinator(
+        store,
+        Gate.ARMED,
+        risk_context_provider=lambda: RiskContext(
+            quote_price=Decimal("1000"),
+            quote_at=datetime.now(timezone.utc),
+        ),
+    )
 
 
 class StrategyRuntimeTest(unittest.TestCase):
@@ -66,7 +79,7 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(self.store.observation_orders(), [])
 
     def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
-        runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.ARMED), allow_reference_fixture=True)
+        runtime = StrategyRuntime(armed_coordinator(self.store), allow_reference_fixture=True)
         result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})
         self.assertIsNotNone(result)
         status, verdict = result or (None, None)

@@ -94,6 +94,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   是唯讀資料。每筆也投影已持久化的 `symbol`、`side`、`quantity`、`limit_price`
   與 `order_price_type`，讓相同商品的 K 線可建立不可操作的觀察標記；複合商品會
   同時帶回其持久化的 `instrument.legs` identity。
+- `GET /api/v1/autotrade/intents/{intent_id}` 與
+  `GET /api/v1/autotrade/orders/{intent_id}`：同一 immutable observation 的 detail
+  projection，供 UI 顯示／複製 correlation、risk verdict 與 broker identity；不會
+  查 sidecar、改寫狀態或重送。未知 id 回傳 `404`。
 - `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
   projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，
   不會呼叫 sidecar、重送或偽造 broker status。

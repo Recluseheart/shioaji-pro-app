@@ -719,6 +719,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 {"items": getattr(self.server, "order_store").observation_orders()},
             )
             return
+        if path.startswith("/api/v1/autotrade/intents/"):
+            self._durable_observation_detail(path.removeprefix("/api/v1/autotrade/intents/"))
+            return
         if path == "/api/v1/autotrade/orders":
             # The order projection intentionally comes from the same durable
             # intent journal, so a browser cannot receive a broker status
@@ -727,6 +730,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {"items": getattr(self.server, "order_store").observation_orders()},
             )
+            return
+        if path.startswith("/api/v1/autotrade/orders/"):
+            self._durable_observation_detail(path.removeprefix("/api/v1/autotrade/orders/"))
             return
         if path == "/api/v1/autotrade/runs":
             self._json(
@@ -768,6 +774,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"message": "read route not permitted"})
             return
         self._json(HTTPStatus.NOT_FOUND, {"message": "route not found"})
+
+    def _durable_observation_detail(self, intent_id: str) -> None:
+        """Return an immutable detail projection without a sidecar lookup."""
+        observation = next(
+            (item for item in getattr(self.server, "order_store").observation_orders()
+             if item.get("intent_id") == intent_id),
+            None,
+        )
+        if observation is None:
+            self._json(HTTPStatus.NOT_FOUND, {"message": "intent not found"})
+        else:
+            self._json(HTTPStatus.OK, observation)
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]

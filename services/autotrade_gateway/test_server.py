@@ -263,6 +263,28 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["status"], "RISK_REJECTED")
         self.assertIn("trading_gate_not_armed", document["items"][0]["risk_reasons"])
 
+    def test_individual_intent_and_order_reads_share_the_durable_projection(self) -> None:
+        body = json.dumps({
+            "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",
+            "side": "BUY", "quantity": 1, "limit_price": "1000",
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/autotrade/intents", data=body, method="POST"))
+        receipt = json.load(raised.exception)
+        intent_id = receipt["intent_id"]
+        for resource in ("intents", "orders"):
+            with self.subTest(resource=resource), urlopen(
+                f"{self.base}/api/v1/autotrade/{resource}/{intent_id}",
+            ) as response:
+                document = json.load(response)
+            self.assertEqual(document["intent_id"], intent_id)
+            self.assertEqual(document["correlation_id"], receipt["correlation_id"])
+            self.assertEqual(document["status"], "RISK_REJECTED")
+        with self.assertRaises(HTTPError) as missing:
+            urlopen(f"{self.base}/api/v1/autotrade/orders/not-an-intent")
+        self.assertEqual(missing.exception.code, 404)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_orders_endpoint_projects_durable_broker_identity_without_a_sidecar_call(self) -> None:
         store = getattr(self.server, "order_store")
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "fixture", "run-1")

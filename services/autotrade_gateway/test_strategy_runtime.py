@@ -73,6 +73,14 @@ class StrategyRuntimeTest(unittest.TestCase):
         restarted_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
         self.assertIsNone(restarted_runtime.process_fixture_event(event))
         self.assertEqual(len(self.store.observation_orders()), 1)
+        self.assertEqual(restarted_runtime.observations()[0], {
+            "strategy_id": "reference-fixture", "version": "v1",
+            "config_checksum": "reference-fixture-v1", "state": "DISABLED",
+            "enabled": False, "allowed_symbols": ["2330"],
+            "last_event_id": "event-after-restart",
+            "last_intent_id": self.store.observation_orders()[0]["intent_id"],
+            "last_status": "RISK_REJECTED",
+        })
 
     def test_restart_repairs_a_missing_durable_signal_without_creating_another_intent(self) -> None:
         event = {"reference_signal": True, "event_id": "signal-repair"}

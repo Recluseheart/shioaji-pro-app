@@ -141,6 +141,9 @@ class StrategyRuntime:
                 tuple(reason for reason in reasons if isinstance(reason, str))
                 if isinstance(reasons, list) else (),
             )
+            self._last_event_id = event_id
+            self._last_intent_id = existing.intent_id
+            self._last_status = self._coordinator.store.status(intent.intent_id)
             return None
         self._processed_event_ids.add(event_id)
         status, verdict = self._coordinator.accept(intent)

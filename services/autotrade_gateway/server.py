@@ -10,6 +10,7 @@ import socket
 from hmac import compare_digest
 from dataclasses import replace
 from http import HTTPStatus
+from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Queue
 from threading import Lock
@@ -743,15 +744,35 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.close_connection = True
                 upstream_socket = response.fp.raw._sock  # type: ignore[union-attr]
-                upstream_socket.setblocking(False)
                 while True:
                     if self._sse_client_disconnected():
                         return
                     try:
+                        upstream_socket.setblocking(False)
+                        try:
+                            buffered = response.fp.peek(1)  # type: ignore[union-attr]
+                        except BlockingIOError:
+                            buffered = b""
+                        finally:
+                            upstream_socket.setblocking(True)
+                    except OSError:
+                        # A finite upstream response can close its socket as
+                        # the final buffered bytes are relayed.
+                        return
+                    if not buffered:
+                        try:
+                            readable, _, _ = select.select([upstream_socket], [], [], 1)
+                        except (OSError, ValueError):
+                            return
+                        if not readable:
+                            continue
+                    try:
                         chunk = response.read1(4_096)
-                    except BlockingIOError:
-                        select.select([upstream_socket], [], [], 1)
-                        continue
+                    except IncompleteRead:
+                        # An upstream restart may close a chunked stream
+                        # without a final chunk.  It is a stream termination,
+                        # never a reason to retain a downstream socket.
+                        return
                     if not chunk:
                         return
                     self.wfile.write(chunk)

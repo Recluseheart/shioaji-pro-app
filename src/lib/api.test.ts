@@ -40,6 +40,22 @@ describe('agent harness mutation routing', () => {
 });
 
 describe('Gateway risk receipts', () => {
+    it('preserves an explicit idempotency key for the narrow kill-switch control', async () => {
+        const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await apiPost('/api/v1/autotrade/kill-switch', { reason: 'operator test' }, {
+            headers: { 'Idempotency-Key': 'kill-test-1' },
+        });
+        expect(fetchMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+            headers: expect.objectContaining({
+                'Content-Type': 'application/json', 'Idempotency-Key': 'kill-test-1',
+            }),
+        }));
+    });
+
     it('keeps the human-readable reason and short correlation code on a rejected mutation', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
             message: '風控拒絕：交易閘門尚未啟用',

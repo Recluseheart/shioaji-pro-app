@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+    applyAutotradeKillSwitch,
     fetchAutotradeOrder,
     previewReferenceStrategy,
     type AutotradeOverview,
@@ -93,6 +94,7 @@ export function panelSummary(
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
     const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
+    const [killSwitchMessage, setKillSwitchMessage] = useState<string | null>(null);
     const [showAllOrders, setShowAllOrders] = useState(false);
     useEffect(() => {
         return autotradeObserverStore.subscribe(setObserver);
@@ -111,6 +113,22 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
         void previewReferenceStrategy(action)
             .then((result) => setStrategyPreview(result.message))
             .catch(() => setStrategyPreview('策略預覽目前無法連線到 Gateway'));
+    };
+    const runKillSwitch = () => {
+        if (overview?.health.trading_gate === 'KILLED') {
+            setKillSwitchMessage('Kill Switch 已啟用；此介面沒有解除鎖定功能。');
+            return;
+        }
+        const reason = globalThis.prompt('請輸入啟用 Kill Switch 的原因；此操作只會阻擋新 mutation。');
+        if (!reason?.trim()) return;
+        const idempotencyKey = globalThis.crypto.randomUUID();
+        void applyAutotradeKillSwitch(reason.trim(), idempotencyKey)
+            .then((receipt) => setKillSwitchMessage(
+                receipt.applied
+                    ? `Kill Switch 已啟用：${receipt.reason}`
+                    : `Kill Switch 已存在：${receipt.reason}`,
+            ))
+            .catch(() => setKillSwitchMessage('Kill Switch 請求失敗；請確認 Gateway 連線與原因。'));
     };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
@@ -180,7 +198,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                         <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
                         <button disabled title='需要獨立策略 runtime 授權'>開始</button>
                         <button disabled title='Gateway 目前固定 DISARMED'>暫停</button>
+                        <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
                     </div>
+                    {killSwitchMessage && <div role='status' style={{ color: '#ef4444' }}>{killSwitchMessage}</div>}
                 </>
             )}
             {kind === 'risk_limits' && overview && Object.keys(overview.risk.limits).length > 0 && (

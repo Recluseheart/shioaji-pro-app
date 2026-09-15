@@ -16,6 +16,7 @@ test('Autotrade control panel is visible but cannot start a strategy while disar
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('策略控制', { exact: true }).click();
     await expect(page.getByRole('button', { name: '開始' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '啟用 Kill Switch' })).toBeVisible();
     await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。')).toBeVisible();
 });
 

@@ -107,7 +107,13 @@ export async function apiGet<T>(path: string, opts?: { signal?: AbortSignal; hea
 export async function apiPost<T>(
     path: string,
     body: unknown,
-    opts?: { timeoutMs?: number; agentInitiated?: boolean; agentCallId?: string; agentAuto?: boolean },
+    opts?: {
+        timeoutMs?: number;
+        headers?: HeadersInit;
+        agentInitiated?: boolean;
+        agentCallId?: string;
+        agentAuto?: boolean;
+    },
 ): Promise<T> {
     const harnessEnabled = isAgentHarnessEnabled();
     if (
@@ -162,7 +168,7 @@ export async function apiPost<T>(
         base() + path,
         {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...opts?.headers },
             body: JSON.stringify(body),
         },
         // opt-in only — order paths must never abort an in-flight request

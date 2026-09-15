@@ -108,6 +108,12 @@ export type StrategyPreview = {
     message: string;
 };
 
+export type AutotradeKillSwitchReceipt = {
+    trading_gate: 'KILLED';
+    reason: string;
+    applied: boolean;
+};
+
 const fallback: AutotradeHealth = {
     environment: 'UNKNOWN',
     trading_gate: 'UNKNOWN',
@@ -304,5 +310,23 @@ export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): 
     return {
         mode: 'DRY_RUN',
         message: `Dry Run：不建立 intent／outbox、不送 broker；風控 ${risk.allowed === true ? '允許' : '拒絕'}${reasons.length ? `（${reasons.join('、')}）` : ''}`,
+    };
+}
+
+export async function applyAutotradeKillSwitch(
+    reason: string,
+    idempotencyKey: string,
+): Promise<AutotradeKillSwitchReceipt> {
+    const document = await apiPost<Record<string, unknown>>(
+        '/api/v1/autotrade/kill-switch',
+        { reason },
+        { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+    if (document.trading_gate !== 'KILLED' || typeof document.reason !== 'string'
+        || typeof document.applied !== 'boolean') {
+        throw new Error('Gateway returned an invalid kill switch receipt');
+    }
+    return {
+        trading_gate: 'KILLED', reason: document.reason, applied: document.applied,
     };
 }

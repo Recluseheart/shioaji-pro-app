@@ -6,6 +6,7 @@ vi.mock('../lib/api', () => ({ apiGet: mocks.get, apiPost: mocks.post }));
 import {
     fetchAutotradeIntent,
     fetchAutotradeOrder,
+    applyAutotradeKillSwitch,
     normalizeAutotradeHealth,
     normalizeAutotradeOverview,
 } from './client';
@@ -27,6 +28,18 @@ describe('Autotrade Gateway health contract', () => {
         expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY' })).toEqual({
             environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY',
         });
+    });
+
+    it('submits the one-way kill switch with a caller-supplied idempotency key', async () => {
+        mocks.post.mockResolvedValue({ trading_gate: 'KILLED', reason: 'operator test', applied: true });
+        await expect(applyAutotradeKillSwitch('operator test', 'kill-test-1')).resolves.toEqual({
+            trading_gate: 'KILLED', reason: 'operator test', applied: true,
+        });
+        expect(mocks.post).toHaveBeenCalledWith(
+            '/api/v1/autotrade/kill-switch',
+            { reason: 'operator test' },
+            { headers: { 'Idempotency-Key': 'kill-test-1' } },
+        );
     });
 });
 

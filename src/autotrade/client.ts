@@ -12,6 +12,7 @@ export type AutotradeOverview = {
     health: AutotradeHealth;
     strategies: unknown[];
     signals: unknown[];
+    runs: AutotradeRun[];
     decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
     risk: { mode: string; limits_source: string; limits: Record<string, unknown>; last_verdict: unknown };
@@ -22,6 +23,15 @@ export type AutotradeOverview = {
         realized_pnl: string;
         unrealized_pnl: string;
     };
+};
+
+export type AutotradeRun = {
+    run_id: string;
+    strategy_id: string | null;
+    last_intent_id: string | null;
+    last_status: string | null;
+    updated_at: string;
+    intent_count: number;
 };
 
 export type AutotradeOrderObservation = {
@@ -100,10 +110,24 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
     const risk = raw.risk && typeof raw.risk === 'object' ? raw.risk as Record<string, unknown> : {};
     const performance = raw.performance && typeof raw.performance === 'object'
         ? raw.performance as Record<string, unknown> : {};
+    const runs = Array.isArray(raw.runs) ? raw.runs.flatMap((item): AutotradeRun[] => {
+        if (!item || typeof item !== 'object') return [];
+        const run = item as Record<string, unknown>;
+        if (typeof run.run_id !== 'string' || typeof run.intent_count !== 'number') return [];
+        return [{
+            run_id: run.run_id,
+            strategy_id: typeof run.strategy_id === 'string' ? run.strategy_id : null,
+            last_intent_id: typeof run.last_intent_id === 'string' ? run.last_intent_id : null,
+            last_status: typeof run.last_status === 'string' ? run.last_status : null,
+            updated_at: typeof run.updated_at === 'string' ? run.updated_at : '',
+            intent_count: run.intent_count,
+        }];
+    }) : [];
     return {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
         signals: list('signals'),
+        runs,
         orders: normalizeOrders(raw.orders),
         decisions: normalizeOrders(raw.decisions),
         risk: {

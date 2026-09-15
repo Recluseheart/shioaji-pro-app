@@ -68,6 +68,15 @@ describe('normalizeAutotradeOverview', () => {
         expect(overview.orders).toEqual([]);
     });
 
+    it('normalizes a durable strategy run without inventing a heartbeat', () => {
+        const overview = normalizeAutotradeOverview({
+            runs: [{ run_id: 'run-1', strategy_id: 'reference-fixture', last_status: 'RISK_REJECTED', intent_count: 1 }],
+        });
+        expect(overview.runs).toEqual([expect.objectContaining({
+            run_id: 'run-1', strategy_id: 'reference-fixture', intent_count: 1,
+        })]);
+    });
+
     it('preserves a target-order change as immutable observation data', () => {
         const overview = normalizeAutotradeOverview({
             health: { environment: 'SIM', trading_gate: 'DISARMED' },

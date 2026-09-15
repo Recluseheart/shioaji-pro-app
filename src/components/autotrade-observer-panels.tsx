@@ -159,8 +159,13 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 </div>
             )}
             {kind === 'run_performance' && overview && (
-                <div style={{ color: '#8892a6' }}>
-                    已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}
+                <div style={{ display: 'grid', gap: 5, color: '#8892a6' }}>
+                    <div>已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}</div>
+                    {overview.runs.map((run) => (
+                        <div key={run.run_id} style={{ borderLeft: '3px solid #8892a6', paddingLeft: 7 }}>
+                            {run.strategy_id ?? '未命名策略'} · {run.run_id} · {run.last_status ?? 'UNKNOWN'} · {run.intent_count} intents
+                        </div>
+                    ))}
                 </div>
             )}
             <small style={{ color: '#6f7888' }}>唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。</small>

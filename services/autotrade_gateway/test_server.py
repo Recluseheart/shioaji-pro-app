@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -1354,13 +1355,14 @@ class GatewayServerTest(unittest.TestCase):
             ), "Shioaji watchlist service unavailable"),
             (Request(f"{self.base}/api/v1/stream/data?region=TW"), "Shioaji market stream unavailable"),
         )
-        for request, message in cases:
-            with self.subTest(path=request.full_url), patch(
-                "services.autotrade_gateway.server.urlopen", side_effect=TimeoutError,
-            ), self.assertRaises(HTTPError) as raised:
-                urlopen(request)
-            self.assertEqual(raised.exception.code, 502)
-            self.assertEqual(json.load(raised.exception)["message"], message)
+        for upstream_error in (TimeoutError, RemoteDisconnected):
+            for request, message in cases:
+                with self.subTest(path=request.full_url, upstream_error=upstream_error.__name__), patch(
+                    "services.autotrade_gateway.server.urlopen", side_effect=upstream_error,
+                ), self.assertRaises(HTTPError) as raised:
+                    urlopen(request)
+                self.assertEqual(raised.exception.code, 502)
+                self.assertEqual(json.load(raised.exception)["message"], message)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_allowlisted_read_query_post_preserves_json_but_not_credentials(self) -> None:

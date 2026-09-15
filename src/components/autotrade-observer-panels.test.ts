@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeAutotradeOverview } from '../autotrade/client';
-import { panelSummary, riskVerdictText } from './autotrade-observer-panels';
+import { automatedOrderObservations, panelSummary, riskVerdictText } from './autotrade-observer-panels';
 
 describe('Autotrade observer panel summaries', () => {
     it('does not describe populated simulation limits as unavailable', () => {
@@ -33,5 +33,17 @@ describe('Autotrade observer panel summaries', () => {
             intent_id: 'intent-1', correlation_id: 'correlation-123456', status: 'RISK_REJECTED',
             allowed: false, reasons: ['trading_gate_not_armed'], source: 'MANUAL_UI', updated_at: '',
         })).toBe('最近風控：拒絕（交易閘門尚未啟用） · 追蹤 correlat');
+    });
+
+    it('defaults Auto Orders to strategy and system sources, excluding manual intents', () => {
+        const overview = normalizeAutotradeOverview({
+            orders: [
+                { intent_id: 'manual', correlation_id: 'c1', source: 'MANUAL_UI', status: 'RISK_REJECTED' },
+                { intent_id: 'strategy', correlation_id: 'c2', source: 'STRATEGY', status: 'RISK_REJECTED' },
+                { intent_id: 'system', correlation_id: 'c3', source: 'SYSTEM_TRIGGER', status: 'RISK_REJECTED' },
+            ],
+        });
+        expect(automatedOrderObservations(overview.orders).map((order) => order.intent_id)).toEqual(['strategy', 'system']);
+        expect(panelSummary('auto_orders', overview, null)).toContain('自動委託');
     });
 });

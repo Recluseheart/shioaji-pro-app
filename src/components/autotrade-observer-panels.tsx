@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
     previewReferenceStrategy,
     type AutotradeOverview,
+    type AutotradeOrderObservation,
     type AutotradeRiskVerdict,
 } from '../autotrade/client';
 import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
@@ -45,7 +46,7 @@ function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): nu
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
         case 'signal_timeline': return overview.decisions.length;
-        case 'auto_orders': return overview.orders.length;
+        case 'auto_orders': return automatedOrderObservations(overview.orders).length;
         case 'risk_limits': return overview.risk.last_verdict === null ? 0 : 1;
         case 'reconciliation': return overview.reconciliation.length;
         case 'run_performance': return overview.performance.run_count;
@@ -70,7 +71,7 @@ export function panelSummary(
                 ? '以下為 durable intent 與 Risk Engine verdict；不以示範資料取代真實事件。'
                 : PANEL_COPY[kind].empty;
         case 'auto_orders':
-            return overview.orders.length > 0
+            return automatedOrderObservations(overview.orders).length > 0
                 ? '以下為可對帳的自動委託與策略歸屬持倉觀察資料。'
                 : PANEL_COPY[kind].empty;
         case 'reconciliation':
@@ -89,13 +90,20 @@ export function panelSummary(
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
     const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
+    const [showAllOrders, setShowAllOrders] = useState(false);
     useEffect(() => {
         return autotradeObserverStore.subscribe(setObserver);
     }, []);
     const { overview, error } = observer;
     const copy = PANEL_COPY[kind];
-    const count = overview ? countFor(kind, overview) : 0;
-    const displayedOrders = kind === 'reconciliation' ? overview?.reconciliation : overview?.orders;
+    const count = overview
+        ? kind === 'auto_orders' && showAllOrders ? overview.orders.length : countFor(kind, overview)
+        : 0;
+    const displayedOrders = kind === 'reconciliation'
+        ? overview?.reconciliation
+        : kind === 'auto_orders' && overview
+            ? (showAllOrders ? overview.orders : automatedOrderObservations(overview.orders))
+            : undefined;
     const runPreview = (action: 'validate' | 'dry-run') => {
         void previewReferenceStrategy(action)
             .then((result) => setStrategyPreview(result.message))
@@ -114,6 +122,15 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <div role='status' style={{ color: '#f0b44d' }}>
                     Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。
                 </div>
+            )}
+            {kind === 'auto_orders' && overview && overview.orders.length > automatedOrderObservations(overview.orders).length && (
+                <label style={{ color: '#aeb7c6' }}>
+                    <input
+                        type='checkbox'
+                        checked={showAllOrders}
+                        onChange={(event) => setShowAllOrders(event.target.checked)}
+                    /> 顯示全部委託（含手動）
+                </label>
             )}
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
@@ -206,6 +223,12 @@ export function riskVerdictText(verdict: AutotradeRiskVerdict | null | undefined
     const reasons = verdict.reasons.map(riskReasonLabel);
     const outcome = verdict.allowed ? '允許' : '拒絕';
     return `最近風控：${outcome}${reasons.length ? `（${reasons.join('、')}）` : ''} · 追蹤 ${verdict.correlation_id.slice(0, 8)}`;
+}
+
+export function automatedOrderObservations(
+    orders: AutotradeOrderObservation[],
+): AutotradeOrderObservation[] {
+    return orders.filter((order) => order.source === 'STRATEGY' || order.source === 'SYSTEM_TRIGGER');
 }
 
 function riskReasonLabel(reason: string): string {

@@ -220,6 +220,11 @@ identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CAN
 顯示它們，讓使用者可辨認為何某筆 intent 被拒絕；原因不是可由 UI 修改、重送或
 繞過 Gate 的控制項。
 
+每個 ingress 的 allow／deny verdict 也會和 intent／outbox 在同一個資料庫交易內
+另寫入不可覆寫的 `risk_decisions` journal（`allowed`、reasons、決策時間）。它讓
+稽核與後續 read model 不必從 UI 或可變狀態推斷風控結論；此 journal 不是重送、
+改寫 Gate 或觸發 broker 的 API。
+
 K 線只將同商品、具有有效限價的 `STRATEGY`／`SYSTEM_TRIGGER` `PLACE` intent
 畫成虛線觀察標記，並顯示其方向、數量與 durable status。這些線不是 upstream
 活動委託線：不能拖曳、取消或改價；`MANUAL_UI`、取消／改價／改量及無價格的

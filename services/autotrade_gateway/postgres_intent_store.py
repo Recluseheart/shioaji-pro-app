@@ -50,6 +50,10 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS risk_decisions (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                allowed BOOLEAN NOT NULL, reasons_json TEXT NOT NULL, decided_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -117,6 +121,10 @@ class PostgresIntentStore:
             )
             if cursor.rowcount != 1:
                 raise DuplicateIntentError(intent.intent_id)
+            self.connection.execute(
+                "INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at) VALUES (%s,%s,%s,%s)",
+                (intent.intent_id, verdict.allowed, json.dumps(verdict.reasons), timestamp),
+            )
             if verdict.allowed:
                 self.connection.execute(
                     "INSERT INTO execution_outbox(intent_id,state,created_at,updated_at) VALUES (%s,'PENDING',%s,%s)",

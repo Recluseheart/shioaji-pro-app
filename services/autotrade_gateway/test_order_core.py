@@ -114,6 +114,17 @@ class OrderCoreTest(unittest.TestCase):
             coordinator.accept(intent)
         self.assertEqual(len(self.store.observation_orders()), 1)
 
+    def test_risk_verdict_is_durable_separately_from_its_intent(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        status, verdict = OrderCoordinator(self.store, Gate.DISARMED).accept(intent)
+        self.assertEqual((status, verdict.allowed), (Status.RISK_REJECTED, False))
+        decision = self.store.connection.execute(
+            "SELECT allowed, reasons_json FROM risk_decisions WHERE intent_id=?", (intent.intent_id,),
+        ).fetchone()
+        self.assertEqual(dict(decision), {
+            "allowed": 0, "reasons_json": '["trading_gate_not_armed"]',
+        })
+
     def test_observations_have_a_stable_secondary_order_when_timestamps_tie(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000", intent_id="intent-a")
         second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000", intent_id="intent-z")

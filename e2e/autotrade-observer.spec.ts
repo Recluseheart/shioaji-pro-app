@@ -18,3 +18,38 @@ test('Autotrade control panel is visible but cannot start a strategy while disar
     await expect(page.getByRole('button', { name: '開始' })).toBeDisabled();
     await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。')).toBeVisible();
 });
+
+test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            orders: [
+                {
+                    intent_id: 'automatic-intent', correlation_id: 'automatic-correlation',
+                    source: 'STRATEGY', status: 'SUBMITTED', symbol: '2330', side: 'BUY',
+                    quantity: 2, limit_price: '1000', order_price_type: 'LMT',
+                    strategy_id: 'reference', run_id: 'run-1', operation: 'PLACE', risk_reasons: [],
+                },
+                {
+                    intent_id: 'manual-intent', correlation_id: 'manual-correlation',
+                    source: 'MANUAL_UI', status: 'RISK_REJECTED', symbol: '2330', side: 'SELL',
+                    quantity: 1, limit_price: '999', order_price_type: 'LMT',
+                    operation: 'PLACE', risk_reasons: ['trading_gate_not_armed'],
+                },
+            ],
+        } });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動委託與持倉', { exact: true }).click();
+    await expect(page.getByText(/STRATEGY · 下單 · SUBMITTED · automati/)).toBeVisible();
+    await expect(page.getByText('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1')).toBeVisible();
+    await expect(page.getByText(/MANUAL_UI · 下單/)).toHaveCount(0);
+
+    await page.getByLabel('顯示全部委託（含手動）').check();
+    await expect(page.getByText(/MANUAL_UI · 下單 · RISK_REJECTED · manual-c/)).toBeVisible();
+});

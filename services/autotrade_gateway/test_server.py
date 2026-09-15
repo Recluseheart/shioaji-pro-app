@@ -89,6 +89,8 @@ class GatewayServerTest(unittest.TestCase):
             "enabled": False, "allowed_symbols": ["2330"],
             "last_event_id": None, "last_intent_id": None, "last_status": None,
         }])
+        self.assertEqual(overview["risk"]["limits_source"], "gateway_static_simulation_v1")
+        self.assertEqual(overview["risk"]["limits"]["max_order_notional"], "5000000")
         self.assertEqual(overview["orders"], [])
         self.assertEqual(overview["reconciliation"], [])
 

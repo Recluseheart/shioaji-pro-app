@@ -13,7 +13,7 @@ export type AutotradeOverview = {
     strategies: unknown[];
     signals: unknown[];
     orders: AutotradeOrderObservation[];
-    risk: { mode: string; limits_source: string; last_verdict: unknown };
+    risk: { mode: string; limits_source: string; limits: Record<string, unknown>; last_verdict: unknown };
     reconciliation: unknown[];
     performance: {
         run_count: number;
@@ -111,6 +111,8 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',
+            limits: risk.limits && typeof risk.limits === 'object' && !Array.isArray(risk.limits)
+                ? risk.limits as Record<string, unknown> : {},
             last_verdict: risk.last_verdict ?? null,
         },
         reconciliation: list('reconciliation'),

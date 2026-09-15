@@ -39,6 +39,11 @@ event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固
 Dry Run 只回傳共同 Risk Engine 的 hypothetical verdict，永不持久化 intent、建立
 outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 仍為 disabled。
 
+目前已移植的 simulation risk baseline 會同時套用於手動和策略 `PLACE` intent：
+固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
+這些限制透過 overview 的 `risk.limits` 唯讀顯示。quote freshness、position、daily
+loss、gross exposure、頻率及 cooldown 必須等 PostgreSQL read model 移植完成後才可宣稱可用。
+
 ## 啟動唯讀開發環境
 
 ```sh

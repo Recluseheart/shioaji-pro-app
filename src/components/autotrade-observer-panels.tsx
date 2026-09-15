@@ -106,6 +106,14 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     </div>
                 </>
             )}
+            {kind === 'risk_limits' && overview && Object.keys(overview.risk.limits).length > 0 && (
+                <div style={{ display: 'grid', gap: 4, color: '#aeb7c6' }}>
+                    <div>來源：{overview.risk.limits_source}</div>
+                    {Object.entries(overview.risk.limits).map(([key, value]) => (
+                        <div key={key}>{riskLabel(key)}：{Array.isArray(value) ? value.join('、') : String(value)}</div>
+                    ))}
+                </div>
+            )}
             {kind === 'run_performance' && overview && (
                 <div style={{ color: '#8892a6' }}>
                     已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}
@@ -122,6 +130,13 @@ function operationLabel(operation: string | undefined): string {
 
 function formatPayload(value: Record<string, unknown>): string {
     return Object.entries(value).map(([key, item]) => `${key}=${typeof item === 'string' ? item : JSON.stringify(item)}`).join(' · ');
+}
+
+function riskLabel(key: string): string {
+    return ({
+        allowed_accounts: '允許帳戶', allowed_symbols: '允許商品',
+        max_order_quantity: '單筆最大數量', max_order_notional: '單筆最大名目金額',
+    } as Record<string, string>)[key] ?? key;
 }
 
 function Badge({ label, value, tone }: { label: string; value: string; tone: string }) {

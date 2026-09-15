@@ -41,6 +41,19 @@ describe('normalizeAutotradeOverview', () => {
         })]);
     });
 
+    it('keeps Gateway-enforced static limits as read-only facts', () => {
+        const overview = normalizeAutotradeOverview({
+            risk: {
+                mode: 'ENFORCING', limits_source: 'gateway_static_simulation_v1',
+                limits: { max_order_quantity: 10000, max_order_notional: '5000000' },
+            },
+        });
+        expect(overview.risk).toMatchObject({
+            limits_source: 'gateway_static_simulation_v1',
+            limits: { max_order_quantity: 10000, max_order_notional: '5000000' },
+        });
+    });
+
     it('preserves a target-order change as immutable observation data', () => {
         const overview = normalizeAutotradeOverview({
             health: { environment: 'SIM', trading_gate: 'DISARMED' },

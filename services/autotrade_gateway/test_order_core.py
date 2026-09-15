@@ -53,6 +53,20 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
 
+    def test_static_simulation_limits_apply_even_when_the_gate_is_armed(self) -> None:
+        cases = (
+            (Intent(Source.MANUAL_UI, "SIM-999", "2330", "BUY", 1, "1000"), "simulation_account_not_allowed"),
+            (Intent(Source.MANUAL_UI, "SIM-001", "9999", "BUY", 1, "1000"), "symbol_not_allowed"),
+            (Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 10_001, "1"), "quantity_limit_exceeded"),
+            (Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 6_000, "1000"), "notional_limit_exceeded"),
+        )
+        for intent, expected_reason in cases:
+            with self.subTest(reason=expected_reason):
+                status, verdict = OrderCoordinator(self.store, Gate.ARMED).accept(intent)
+                self.assertEqual(status, Status.RISK_REJECTED)
+                self.assertIn(expected_reason, verdict.reasons)
+                self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
     def test_restart_marks_pending_delivery_unknown_and_forbids_blind_resend(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         status, _ = OrderCoordinator(self.store, Gate.ARMED).accept(intent)

@@ -97,7 +97,11 @@ def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str
     }
 
 
-def overview_document(store: Any = None, strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
+def overview_document(
+    store: Any = None,
+    strategy_runtime: StrategyRuntime | None = None,
+    coordinator: OrderCoordinator | None = None,
+) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
     This seed deliberately reports only durable facts it owns.  It must not
@@ -112,7 +116,8 @@ def overview_document(store: Any = None, strategy_runtime: StrategyRuntime | Non
         "orders": orders,
         "risk": {
             "mode": "ENFORCING",
-            "limits_source": "not_configured",
+            "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
+            "limits": coordinator.risk.limits.document() if coordinator else {},
             "last_verdict": None,
         },
         "reconciliation": [item for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}],
@@ -363,6 +368,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 overview_document(
                     getattr(self.server, "order_store"),
                     getattr(self.server, "strategy_runtime", None),
+                    getattr(self.server, "order_coordinator", None),
                 ),
             )
             return

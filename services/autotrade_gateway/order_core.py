@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -80,8 +81,34 @@ class Verdict:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class RiskLimits:
+    """Portable first slice of the legacy simulation risk policy.
+
+    Position, quote freshness, daily loss, and frequency budgets require their
+    own durable read models and are intentionally not implied by this static
+    policy.  These baseline limits still apply regardless of the trading gate.
+    """
+
+    allowed_accounts: tuple[str, ...] = ("SIM-001",)
+    allowed_symbols: tuple[str, ...] = ("2330", "2317", "0050", "11011", "TXFR1")
+    max_order_quantity: int = 10_000
+    max_order_notional: Decimal = Decimal("5000000")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "allowed_accounts": list(self.allowed_accounts),
+            "allowed_symbols": list(self.allowed_symbols),
+            "max_order_quantity": self.max_order_quantity,
+            "max_order_notional": str(self.max_order_notional),
+        }
+
+
 class RiskEngine:
-    """Small fail-closed policy seam; richer legacy limits plug in here later."""
+    """Fail-closed simulation risk policy shared by manual and strategy paths."""
+
+    def __init__(self, limits: RiskLimits | None = None) -> None:
+        self.limits = limits or RiskLimits()
 
     def evaluate(self, intent: Intent, gate: Gate) -> Verdict:
         reasons: list[str] = []
@@ -90,19 +117,28 @@ class RiskEngine:
         if intent.operation == "PLACE":
             if not intent.account_id.startswith("SIM-"):
                 reasons.append("simulation_account_required")
+            elif intent.account_id not in self.limits.allowed_accounts:
+                reasons.append("simulation_account_not_allowed")
             if not intent.symbol or not intent.symbol.isalnum():
                 reasons.append("invalid_symbol")
+            elif intent.symbol not in self.limits.allowed_symbols and intent.symbol != "COMBO":
+                reasons.append("symbol_not_allowed")
             if intent.side not in {"BUY", "SELL"}:
                 reasons.append("invalid_side")
             if intent.quantity <= 0:
                 reasons.append("invalid_quantity")
+            elif intent.quantity > self.limits.max_order_quantity:
+                reasons.append("quantity_limit_exceeded")
             if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
                 reasons.append("invalid_order_price_type")
             elif intent.order_price_type == "LMT":
                 try:
-                    if float(intent.limit_price) <= 0:
+                    price = Decimal(intent.limit_price)
+                    if price <= 0:
                         reasons.append("invalid_limit_price")
-                except ValueError:
+                    elif price * intent.quantity > self.limits.max_order_notional:
+                        reasons.append("notional_limit_exceeded")
+                except (InvalidOperation, ValueError):
                     reasons.append("invalid_limit_price")
         elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:

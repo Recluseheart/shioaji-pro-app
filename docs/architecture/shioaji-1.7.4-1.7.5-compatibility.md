@@ -12,6 +12,7 @@ evidence 對應 1.7.4。未列為 verified 的項目不得由 component 自行�
 | Taiwan KBar time | market wall-clock is Asia/Taipei | existing UI displays market time | preserve timezone-aware value; never relabel wall-clock as UTC |
 | stock/CB/futures contract classification | 2330/11011 STK, TXFR1 FUT | UI supports stock/futures paths | map only through explicit stock/futures adapters |
 | order callback schema | sanitized fake-event contract only | sanitized 1.7.5 OpenAPI fixture | mock/integration only; terminal callback requires persisted broker identity |
+| broker trade reconciliation read | SDK trade status query evidence | local 1.7.5 OpenAPI: `POST /order/trades` and `POST /order/order_deal_records` accept `AccountRequest`; `GET /stream/data/order_event` is SSE | implement a credential-free, account-scoped read adapter; parser must be fixture-tested before it can change local reconciliation state |
 | account signed / CA | not a development gate | no new live evidence | SIM/DISARMED only; CA and LIVE disabled |
 | broker order mutation | not executed | not authorized | immutable intent 可由 loopback-only HTTP adapter 送至隔離 mock worker；Gateway 未 wiring，真實 sidecar／simulation dispatch 禁止 |
 
@@ -20,5 +21,7 @@ evidence 對應 1.7.4。未列為 verified 的項目不得由 component 自行�
 - A dedicated, isolated PostgreSQL schema must run the terminal callback integration test.
 - A read-only 1.7.5 sidecar fixture must cover status/error and stale/reconnect shapes before
   a version transformer is claimed complete.
+- Reconciliation parser fixtures must include a matching order identity, broker-only order,
+  local-only UNKNOWN, duplicate and out-of-order terminal event; a refresh must never resend.
 - Any real simulation order, signed-account check, CA action, or LIVE behavior requires a
   separate user authorization and is outside this matrix.

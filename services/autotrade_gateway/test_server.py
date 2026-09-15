@@ -352,6 +352,7 @@ class GatewayServerTest(unittest.TestCase):
             "strategy_id": "reference-fixture", "version": "v1",
             "config_checksum": "reference-fixture-v1", "state": "DISABLED",
             "enabled": False, "allowed_symbols": ["2330"],
+            "lifecycle_enabled": False,
             "last_event_id": None, "last_intent_id": None, "last_status": None,
         }])
         self.assertEqual(overview["risk"]["limits_source"], "gateway_static_simulation_v1")

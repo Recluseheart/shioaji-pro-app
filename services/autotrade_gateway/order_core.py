@@ -292,6 +292,9 @@ class IntentStore(Protocol):
     def record_strategy_run(self, run: StrategyRun) -> None: ...
     def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None: ...
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None: ...
+    def record_strategy_intent_result(
+        self, run_id: str, intent_id: str, status: Status, observed_at: datetime,
+    ) -> None: ...
     def observation_strategy_runs(self) -> list[dict[str, object]]: ...
     def observation_reconciliation_cases(self) -> list[dict[str, object]]: ...
     def close(self) -> None: ...
@@ -1078,6 +1081,34 @@ class SQLiteIntentStore:
                     updated_at=CASE WHEN updated_at < ? THEN ? ELSE updated_at END
                     WHERE run_id=?""",
                 (timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (?, ?)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def record_strategy_intent_result(
+        self, run_id: str, intent_id: str, status: Status, observed_at: datetime,
+    ) -> None:
+        """Attach one accepted strategy intent to its active durable run.
+
+        The same event may be replayed after a process restart.  Replaying its
+        already-recorded intent updates liveness but cannot inflate the run's
+        intent count or create a second run.
+        """
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection:
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET last_intent_id=?, last_status=?,
+                    intent_count=CASE WHEN last_intent_id IS ? THEN intent_count
+                        ELSE intent_count + 1 END,
+                    heartbeat_at=CASE WHEN heartbeat_at IS NULL OR heartbeat_at < ?
+                        THEN ? ELSE heartbeat_at END,
+                    updated_at=CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+                    WHERE run_id=?""",
+                (intent_id, status.value, intent_id, timestamp, timestamp, timestamp, timestamp, run_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(run_id)

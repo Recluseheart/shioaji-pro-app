@@ -649,6 +649,33 @@ class PostgresIntentStore:
                 ON CONFLICT DO NOTHING""", (run_id, timestamp),
             )
 
+    def record_strategy_intent_result(
+        self, run_id: str, intent_id: str, status: Status, observed_at: datetime,
+    ) -> None:
+        """Attach one accepted strategy intent to its active durable run.
+
+        The comparison is NULL-safe so a replay of the same intent never
+        increments ``intent_count`` while still recording a fresh heartbeat.
+        """
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET last_intent_id=%s, last_status=%s,
+                    intent_count=CASE WHEN last_intent_id IS NOT DISTINCT FROM %s
+                        THEN intent_count ELSE intent_count + 1 END,
+                    heartbeat_at=CASE WHEN heartbeat_at IS NULL OR heartbeat_at < %s
+                        THEN %s ELSE heartbeat_at END,
+                    updated_at=CASE WHEN updated_at < %s THEN %s ELSE updated_at END
+                    WHERE run_id=%s""",
+                (intent_id, status.value, intent_id, timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
     def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None:
         """Move a durable run without creating, changing, or dispatching orders."""
         timestamp = observed_at.isoformat()

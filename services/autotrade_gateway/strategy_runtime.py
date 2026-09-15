@@ -216,7 +216,6 @@ class StrategyRuntime:
                 tuple(reason for reason in reasons if isinstance(reason, str))
                 if isinstance(reasons, list) else (),
             )
-            self._record_fixture_run(existing, self._coordinator.store.status(intent.intent_id))
             self._last_event_id = event_id
             self._last_intent_id = existing.intent_id
             self._last_status = self._coordinator.store.status(intent.intent_id)
@@ -260,6 +259,11 @@ class StrategyRuntime:
         run_id = intent.run_id
         if run_id is None:
             raise ValueError("fixture intent must have a run id")
+        if run_id == self._active_run_id:
+            self._coordinator.store.record_strategy_intent_result(
+                run_id, intent.intent_id, status, intent.created_at,
+            )
+            return
         self._coordinator.store.record_strategy_run(StrategyRun(
             run_id=run_id,
             strategy_id=self.strategy_id,
@@ -284,7 +288,8 @@ class StrategyRuntime:
             quantity=1,
             limit_price="1000",
             strategy_id=self.strategy_id,
-            run_id=f"fixture:{event_id}",
+            run_id=(self._active_run_id if self._require_running_for_fixture and self._active_run_id
+                    else f"fixture:{event_id}"),
             intent_id=str(uuid5(NAMESPACE_URL, f"{self.strategy_id}:{self.version}:{event_id}")),
             correlation_id=str(uuid5(NAMESPACE_URL, f"correlation:{event_id}")),
             created_at=created_at,

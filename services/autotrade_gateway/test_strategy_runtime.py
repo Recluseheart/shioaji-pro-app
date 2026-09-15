@@ -170,6 +170,32 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(self.store.observation_orders()[0]["source"], "STRATEGY")
         self.assertIsNone(self.store.outbox_state(str(self.store.observation_orders()[0]["intent_id"])))
 
+    def test_running_lifecycle_owns_fixture_intent_and_updates_its_single_run(self) -> None:
+        runtime = StrategyRuntime(
+            OrderCoordinator(self.store, Gate.DISARMED),
+            allow_reference_fixture=True,
+            allow_lifecycle=True,
+            require_running_for_fixture=True,
+        )
+        started = runtime.control("start")
+        run_id = started["run_id"]
+        self.assertIsInstance(run_id, str)
+
+        result = runtime.process_fixture_event({"reference_signal": True, "event_id": "attached"})
+
+        self.assertIsNotNone(result)
+        order = self.store.observation_orders()[0]
+        signal = self.store.observation_signals()[0]
+        runs = self.store.observation_strategy_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(order["run_id"], run_id)
+        self.assertEqual(signal["run_id"], run_id)
+        self.assertEqual(runs[0]["run_id"], run_id)
+        self.assertEqual(runs[0]["state"], "RUNNING")
+        self.assertEqual(runs[0]["last_intent_id"], order["intent_id"])
+        self.assertEqual(runs[0]["last_status"], "RISK_REJECTED")
+        self.assertEqual(runs[0]["intent_count"], 1)
+
     def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
         runtime = StrategyRuntime(armed_coordinator(self.store), allow_reference_fixture=True)
         result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})

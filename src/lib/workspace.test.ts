@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     DEFAULT_WORKSPACE,
+    BLOCK_META,
     GRID_COLS,
     GRID_LEGACY_COLS,
     GRID_LEGACY_SCALE,
@@ -14,6 +15,18 @@ import {
 } from './workspace';
 
 describe('grid base upscale', () => {
+    it('gives every public panel a complete, renderable parity inventory entry', () => {
+        for (const [type, meta] of Object.entries(BLOCK_META)) {
+            expect(meta.label, type).not.toBe('');
+            expect(meta.description, type).not.toBe('');
+            expect(meta.defaultSize.w, type).toBeGreaterThanOrEqual(meta.defaultSize.minW);
+            expect(meta.defaultSize.h, type).toBeGreaterThanOrEqual(meta.defaultSize.minH);
+            expect(meta.defaultSize.minW, type).toBeGreaterThan(0);
+            expect(meta.defaultSize.minH, type).toBeGreaterThan(0);
+        }
+        expect(Object.keys(BLOCK_META)).toHaveLength(36);
+    });
+
     it('legacy 24-col workspace scales ×12 losslessly (x/w/minW only)', () => {
         const legacy: Workspace = {
             blocks: [{ id: 'a', type: 'watchlist', pin: null }],

@@ -27,8 +27,8 @@ human UAT completion.
   six catalogue categories and their current public/Autotrade counts are
   exposed by the panel library; it adds/removes every repeatable BlockType and
   contains add/locate/remove coverage for every singleton BlockType. The
-  singleton coverage has passed on desktop; mobile execution evidence remains
-  open. It also proves every pinnable panel can enter and leave its pinned
+  singleton coverage has passed on desktop and mobile (Playwright desktop and
+  mobile projects, 2026-09-15). It also proves every pinnable panel can enter and leave its pinned
   state using a non-real contract fixture, proves a workspace panel can be
   moved and resized in both layouts, proves the seven Autotrade panels can be
   added, and confirms these observer presentations do not emit broker mutation
@@ -48,8 +48,7 @@ converted to checkmarks without the named evidence:
   every repeatable BlockType's add/remove coverage, all singleton add/locate/
   remove scenarios, all applicable link → pin → link transitions, and
   representative move and resize transitions in both layouts are present.
-  Singleton mobile execution evidence and per-BlockType move/resize coverage
-  remain open.
+  Per-BlockType move/resize coverage remains open.
 - `PARITY-FIXTURE-01`: each public block has loading, empty, data, error and
   stale fixtures without contacting a broker.
 - `PARITY-VISUAL-01`: 1440p, 1080p and narrow-screen dark/black/light visual

@@ -175,6 +175,25 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
         self.assertNotIn("invalid_limit_price", receipt["risk_reasons"])
 
+    def test_combo_order_is_audited_without_contacting_the_sidecar(self) -> None:
+        body = json.dumps({
+            "combo_contract": {"legs": [{"code": "TXFZ6"}, {"code": "TXFY6"}]},
+            "order": {
+                "action": "Buy", "price": 0, "price_type": "MKT", "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/order/place_comboorder", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 409)
+        receipt = json.load(raised.exception)
+        self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        observation = getattr(self.server, "order_store").observation_orders()[0]
+        self.assertEqual(observation["instrument"], {
+            "kind": "COMBO", "legs": [{"code": "TXFZ6"}, {"code": "TXFY6"}],
+        })
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_intent_ingress_records_a_disarmed_risk_rejection_without_outbox(self) -> None:
         body = json.dumps({
             "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",

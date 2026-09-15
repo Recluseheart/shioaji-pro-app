@@ -283,6 +283,37 @@ class GatewayHandler(BaseHTTPRequestHandler):
             order_price_type=str(order.get("price_type", "LMT")).upper(),
         )
 
+    def _manual_combo_order_intent(self) -> Intent:
+        """Map an upstream combo request while retaining its leg identity."""
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 65_536:
+            raise ValueError("invalid combo order body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError("combo order body must be an object")
+        combo_contract = value.get("combo_contract")
+        order = value.get("order")
+        if not isinstance(combo_contract, dict) or not isinstance(order, dict):
+            raise ValueError("combo contract and order are required")
+        legs = combo_contract.get("legs")
+        if not isinstance(legs, list) or not legs or not all(isinstance(leg, dict) and leg.get("code") for leg in legs):
+            raise ValueError("combo legs are required")
+        account = order.get("account")
+        if not isinstance(account, dict):
+            raise ValueError("combo order account is required")
+        return Intent(
+            source=Source.MANUAL_UI,
+            account_id=str(account["account_id"]),
+            # The individual legs are retained below; COMBO is only the
+            # aggregate risk symbol used by the current common policy seam.
+            symbol="COMBO",
+            side=str(order["action"]).upper(),
+            quantity=int(order["quantity"]),
+            limit_price=str(order["price"]),
+            order_price_type=str(order.get("price_type", "LMT")).upper(),
+            instrument={"kind": "COMBO", "legs": legs},
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
@@ -322,6 +353,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        if path == "/api/v1/order/place_comboorder":
+            try:
+                intent = self._manual_combo_order_intent()
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid combo order"})
+                return
+            coordinator = getattr(self.server, "order_coordinator")
+            status, verdict = coordinator.accept(intent)
+            self._json(
+                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
+                {
+                    "intent_id": intent.intent_id,
+                    "correlation_id": intent.correlation_id,
+                    "status": status.value,
+                    "risk_reasons": list(verdict.reasons),
+                },
+            )
+            return
         if path == "/api/v1/order/place_order":
             try:
                 intent = self._manual_place_order_intent()

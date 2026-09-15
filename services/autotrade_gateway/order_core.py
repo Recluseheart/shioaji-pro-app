@@ -65,6 +65,7 @@ class Intent:
     strategy_id: str | None = None
     run_id: str | None = None
     order_price_type: str = "LMT"
+    instrument: dict[str, object] | None = None
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
@@ -234,15 +235,21 @@ class SQLiteIntentStore:
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:
-            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, payload_json, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC").fetchall()
         observations: list[dict[str, object]] = []
         for row in rows:
             observation = dict(row)
+            raw_payload = observation.pop("payload_json", "{}")
             raw_reasons = observation.pop("risk_reasons_json", "[]")
+            try:
+                parsed_payload = json.loads(str(raw_payload))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_payload = {}
             try:
                 parsed_reasons = json.loads(str(raw_reasons))
             except (TypeError, ValueError, json.JSONDecodeError):
                 parsed_reasons = []
+            observation["instrument"] = parsed_payload.get("instrument") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations

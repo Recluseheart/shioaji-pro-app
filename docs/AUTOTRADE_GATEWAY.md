@@ -11,8 +11,11 @@ broker-free 的稽核 ingress，在目前固定 `DISARMED` 的設定下只會持
 先映射到同一個 `MANUAL_UI` intent ingress；限價單才要求正的 limit price，市價
 形狀不會被誤報為無效限價。在 `DISARMED` 時仍只會得到 `409 RISK_REJECTED` 與
 intent/correlation receipt，絕不轉送 sidecar。這不是上游 Trade response
-compatibility 的完成宣告：cancel、update、close、combo 與實際 broker worker
-尚未接通。
+compatibility 的完成宣告：cancel、update、close 與實際 broker worker 尚未接通。
+
+`POST /api/v1/order/place_comboorder` 已同樣建立 `MANUAL_UI` intent，並把
+combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk
+receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍未接通。
 
 ## 啟動唯讀開發環境
 
@@ -34,7 +37,7 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   activity 來填滿 UI。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
-  是唯讀資料。
+  是唯讀資料。複合商品會同時帶回其持久化的 `instrument.legs` identity。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
   `MANUAL_REVIEW` 的 intent。此 API 用於人工對帳導覽，不提供重送功能。
 - allowlist 中的上游 `GET`（health、info、帳戶、data、monitor、活動委託／

@@ -139,7 +139,7 @@ read model 移植。
 ## 啟動唯讀開發環境
 
 ```sh
-python3 -m services.autotrade_gateway.server
+uv run python -m services.autotrade_gateway.server
 PATH=/opt/homebrew/opt/node@22/bin:$PATH PORT=4174 \
   VITE_API_TARGET=http://127.0.0.1:18082 pnpm dev
 ```

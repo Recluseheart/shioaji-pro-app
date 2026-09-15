@@ -167,7 +167,7 @@ shioaji server check          # 確認狀態
 ### 4. Run the app through the Gateway 啟動前端
 
 ```sh
-python3 -m services.autotrade_gateway.server
+uv run python -m services.autotrade_gateway.server
 pnpm install
 pnpm dev
 ```

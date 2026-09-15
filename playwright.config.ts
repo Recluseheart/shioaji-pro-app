@@ -15,7 +15,10 @@ export default defineConfig({
     ],
     webServer: [
         {
-            command: 'python3 -m services.autotrade_gateway.server',
+            // pyproject.toml requires Python 3.11+.  Use uv so browser E2E
+            // exercises the same pinned interpreter as Gateway unit and
+            // PostgreSQL integration tests, not an arbitrary system python.
+            command: 'uv run python -m services.autotrade_gateway.server',
             url: 'http://127.0.0.1:18082/api/v1/autotrade/health',
             reuseExistingServer: !process.env.CI,
         },

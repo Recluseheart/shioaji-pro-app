@@ -38,10 +38,14 @@ class StrategyRuntime:
         *,
         allow_reference_fixture: bool = False,
         allow_lifecycle: bool = False,
+        reference_account_id: str = "SIM-001",
+        reference_broker_id: str = "SIM-BROKER",
     ) -> None:
         self._coordinator = coordinator
         self._allow_reference_fixture = allow_reference_fixture
         self._allow_lifecycle = allow_lifecycle
+        self.reference_account_id = reference_account_id
+        self.reference_broker_id = reference_broker_id
         self._active_run_id: str | None = None
         self._processed_event_ids: set[str] = set()
         self._last_event_id: str | None = None

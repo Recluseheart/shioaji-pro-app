@@ -138,6 +138,9 @@ class GatewayServerTest(unittest.TestCase):
             coordinator.gate = Gate.ARMED
             status, verdict = coordinator.accept(Intent(Source.MANUAL_UI, "paper-account-1", "2330", "BUY", 1, "1000"))
             self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+            fixture = getattr(server, "strategy_runtime")._fixture_intent("test", datetime.now(timezone.utc))
+            self.assertEqual(fixture.account_id, "paper-account-1")
+            self.assertEqual(fixture.broker_request["body"]["stock_order"]["account"]["broker_id"], "B")
             self.assertEqual(getattr(server, "execution_worker"), None)
         finally:
             server.server_close()

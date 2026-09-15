@@ -114,7 +114,7 @@ def configured_simulation_execution_worker(
 
 def configured_simulation_risk_context(
     upstream_origin: str,
-) -> tuple[RiskEngine, Any] | None:
+) -> tuple[RiskEngine, Any, Any] | None:
     """Build per-intent risk facts from a fresh, verified SIM sidecar read."""
     if os.getenv("AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT") != "1":
         return None
@@ -140,7 +140,9 @@ def configured_simulation_risk_context(
             account, intent.symbol, exchange="OTC" if intent.symbol == "11011" else "TSE",
         )
 
-    return engine, context_for
+    # A reference fixture is single-account by design.  It receives this
+    # verified identity in memory only; it is never sent to an observer API.
+    return engine, context_for, next(iter(by_id.values()))
 
 
 RISK_REASON_LABELS = {
@@ -1143,6 +1145,8 @@ def create_server(
     server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]
         getattr(server, "order_coordinator"),
         allow_lifecycle=os.getenv("AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE") == "1",
+        reference_account_id=risk_configuration[2].account_id if risk_configuration else "SIM-001",
+        reference_broker_id=risk_configuration[2].broker_id if risk_configuration else "SIM-BROKER",
     )
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server

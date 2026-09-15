@@ -54,7 +54,27 @@ READ_PROXY_EXACT_PATHS = frozenset({
     "/api/v1/order/stock_reserve_detail",
     "/api/v1/order/earmarking_detail",
 })
-READ_PROXY_PREFIXES = ("/api/v1/data/", "/api/v1/monitor/")
+# Keep GET reads as narrow as POST reads.  The Web client route inventory is
+# intentionally enumerated here instead of forwarding every future /data or
+# /monitor endpoint a sidecar might expose.  Dynamic contract identifiers and
+# tick-band symbols are the only variable GET path segments currently used by
+# the public app.
+READ_PROXY_GET_EXACT_PATHS = frozenset({
+    "/api/v1/data/contracts",
+    "/api/v1/data/contracts/futures",
+    "/api/v1/data/contracts/futures/roots",
+    "/api/v1/data/contracts/options",
+    "/api/v1/data/contracts/options/roots",
+    "/api/v1/data/contracts/warrants",
+    "/api/v1/data/contracts/warrants/underlyings",
+    "/api/v1/data/contracts/combo/futures",
+    "/api/v1/data/regulatory_punish",
+    "/api/v1/monitor/metrics",
+    "/api/v1/monitor/subscriptions",
+})
+_CONTRACT_GET_PATH = re.compile(r"/api/v1/data/contracts/([A-Za-z0-9_.-]+)(?:/info)?")
+_TICK_BANDS_GET_PATH = re.compile(r"/api/v1/data/contracts/tick-bands/[A-Za-z0-9_.-]+")
+_CONTRACT_COLLECTION_SEGMENTS = frozenset({"futures", "options", "warrants", "combo", "tick-bands"})
 READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/auth/usage",
     "/api/v1/data/credit_enquire",
@@ -267,7 +287,13 @@ class AutotradeEventHub:
 
 def is_allowed_read_path(path: str) -> bool:
     """Return whether a path belongs to the deliberately narrow GET proxy."""
-    return path in READ_PROXY_EXACT_PATHS or path.startswith(READ_PROXY_PREFIXES)
+    contract = _CONTRACT_GET_PATH.fullmatch(path)
+    return (
+        path in READ_PROXY_EXACT_PATHS
+        or path in READ_PROXY_GET_EXACT_PATHS
+        or (contract is not None and contract.group(1) not in _CONTRACT_COLLECTION_SEGMENTS)
+        or _TICK_BANDS_GET_PATH.fullmatch(path) is not None
+    )
 
 
 def is_allowed_market_stream_post(path: str) -> bool:

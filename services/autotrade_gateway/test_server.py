@@ -562,8 +562,8 @@ class GatewayServerTest(unittest.TestCase):
     def test_web_get_read_contract_inventory_stays_gateway_reachable(self) -> None:
         """Cover each upstream client GET family with a concrete safe shape.
 
-        Dynamic `/data/` and `/monitor/` paths are deliberate read-only
-        prefixes, unlike `/order/` or `/portfolio/`.  These representatives
+        Dynamic contract identifiers are individually validated rather than
+        giving `/data/` or `/monitor/` a broad prefix. These representatives
         come directly from `src/lib/shioaji.ts` and its consumers, so a future
         allowlist tightening cannot quietly send the Web back to a sidecar.
         """
@@ -582,6 +582,7 @@ class GatewayServerTest(unittest.TestCase):
             "/api/v1/data/contracts/warrants?underlying_code=2330&region=TW",
             "/api/v1/data/contracts/warrants/underlyings?region=TW&include_name=true",
             "/api/v1/data/contracts/tick-bands/TXF?security_type=FUT&region=TW",
+            "/api/v1/data/contracts/combo/futures?root=TXF&region=TW",
             "/api/v1/data/regulatory_punish",
             "/api/v1/monitor/metrics",
             "/api/v1/monitor/subscriptions",
@@ -1379,9 +1380,16 @@ class GatewayServerTest(unittest.TestCase):
         self.assertNotIn("Cookie", headers)
 
     def test_unlisted_read_route_is_not_forwarded_to_the_sidecar(self) -> None:
-        with self.assertRaises(HTTPError) as raised:
-            urlopen(f"{self.base}/api/v1/order/place_order")
-        self.assertEqual(raised.exception.code, 404)
+        for path in (
+            "/api/v1/order/place_order",
+            "/api/v1/data/not_an_upstream_web_read",
+            "/api/v1/monitor/not_an_upstream_web_read",
+            "/api/v1/data/contracts/combo",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(f"{self.base}{path}")
+                self.assertEqual(raised.exception.code, 404)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_upstream_timeouts_return_controlled_credential_free_gateway_errors(self) -> None:

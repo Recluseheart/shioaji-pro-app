@@ -484,7 +484,7 @@ Exit：所有公開 Web 顯示功能在不連真實券商時可由 deterministic
 
 ### Phase 2：Gateway read compatibility
 
-- [ ] 建立 Gateway reverse proxy 與 explicit route allowlist。
+- [x] 建立 Gateway reverse proxy 與 explicit route allowlist（固定 read route、受限 contract/tick-band segment；未知 data/monitor route fail closed）。
 - [ ] 完成 Shioaji 1.7.5 read API contract tests。
 - [ ] 接通 accounts、contracts、market、portfolio、watchlist、monitor 與 SSE。
 - [ ] 實作 version transformers 與 timeout／error mapping。

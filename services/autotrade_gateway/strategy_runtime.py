@@ -91,6 +91,7 @@ class StrategyRuntime:
         return [
             {
                 **definition,
+                "lifecycle_enabled": self._allow_lifecycle,
                 "last_event_id": self._last_event_id,
                 "last_intent_id": self._last_intent_id,
                 "last_status": self._last_status.value if self._last_status else None,

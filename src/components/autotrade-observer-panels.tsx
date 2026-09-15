@@ -176,6 +176,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
         : kind === 'auto_orders' && overview
             ? (showAllOrders ? overview.orders : automatedOrderObservations(overview.orders))
             : undefined;
+    const lifecycleEnabled = overview?.strategies.some((item) =>
+        Boolean(item && typeof item === 'object' && (item as { lifecycle_enabled?: unknown }).lifecycle_enabled === true),
+    ) ?? false;
     const runPreview = (action: 'validate' | 'dry-run') => {
         void previewReferenceStrategy(action)
             .then((result) => setStrategyPreview(result.message))
@@ -298,10 +301,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
                         <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
-                        <button onClick={() => runStrategyControl('start')} title='只建立 durable strategy run；不會 ARM 或送單'>開始</button>
-                        <button onClick={() => runStrategyControl('pause')} title='暫停新策略訊號；既有委託不變'>暫停</button>
-                        <button onClick={() => runStrategyControl('resume')} title='恢復策略 lifecycle；不會 ARM 或送單'>恢復</button>
-                        <button onClick={() => runStrategyControl('stop')} title='停止策略；既有委託與持倉不變'>停止</button>
+                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('start')} title={lifecycleEnabled ? '只建立 durable strategy run；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>開始</button>
+                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('pause')} title={lifecycleEnabled ? '暫停新策略訊號；既有委託不變' : 'Gateway 未啟用 SIM lifecycle'}>暫停</button>
+                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('resume')} title={lifecycleEnabled ? '恢復策略 lifecycle；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>恢復</button>
+                        <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('stop')} title={lifecycleEnabled ? '停止策略；既有委託與持倉不變' : 'Gateway 未啟用 SIM lifecycle'}>停止</button>
                         <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
                     </div>
                     {killSwitchMessage && <div role='status' style={{ color: '#ef4444' }}>{killSwitchMessage}</div>}

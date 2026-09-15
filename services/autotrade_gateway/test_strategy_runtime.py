@@ -99,6 +99,7 @@ class StrategyRuntimeTest(unittest.TestCase):
             "strategy_id": "reference-fixture", "version": "v1",
             "config_checksum": "reference-fixture-v1", "state": "DISABLED",
             "enabled": False, "allowed_symbols": ["2330"],
+            "lifecycle_enabled": False,
             "last_event_id": "event-after-restart",
             "last_intent_id": self.store.observation_orders()[0]["intent_id"],
             "last_status": "RISK_REJECTED",

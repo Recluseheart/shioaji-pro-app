@@ -8,6 +8,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
+from services.autotrade_gateway.simulation_execution_window import SimulationExecutionWindow
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -46,7 +47,9 @@ class PostgresIntentStoreTest(unittest.TestCase):
         # Each test shares the per-class disposable schema but must not share
         # durable observations. CASCADE is constrained to this UUID schema's
         # order and strategy graphs, including outbox/signal dependents.
-        self.store.connection.execute("TRUNCATE strategy_definitions, order_intents CASCADE")
+        self.store.connection.execute(
+            "TRUNCATE strategy_definitions, order_intents, gateway_controls CASCADE"
+        )
 
     def test_atomic_outbox_and_unknown_recovery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -134,6 +137,35 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertEqual(self.store.observation_audit_events()[0]["details"], {
             "reason": "dispatch_uncertain:TimeoutError",
         })
+
+    def test_controlled_window_keeps_postgres_gate_disarmed_after_one_dispatch(self) -> None:
+        class Dispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "POSTGRES-CONTROLLED-WINDOW-1"
+
+        window = SimulationExecutionWindow(
+            self.store,
+            ExecutionWorker(self.store, Dispatcher()),
+            authorization="postgres-window-authorization",
+            risk_context_provider=lambda _intent: RiskContext(
+                Decimal("1000"), datetime.now(timezone.utc)
+            ),
+        )
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        result = window.execute(
+            intent,
+            authorization="postgres-window-authorization",
+            reason="postgres controlled-window contract",
+        )
+
+        self.assertTrue(result.dispatched)
+        self.assertEqual(result.status, Status.PENDING_SUBMIT)
+        self.assertEqual(self.store.trading_gate(), Gate.DISARMED)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
+        self.assertEqual(
+            self.store.observation_audit_events()[0]["event_type"],
+            "SIMULATION_WINDOW_FINISHED",
+        )
 
     def test_broker_identity_is_persisted_with_pending_submit(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

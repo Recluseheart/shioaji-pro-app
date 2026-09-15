@@ -26,6 +26,7 @@ files = [
     "services/autotrade_gateway/order_core.py",
     "services/autotrade_gateway/postgres_intent_store.py",
     "services/autotrade_gateway/server.py",
+    "services/autotrade_gateway/simulation_execution_window.py",
     "services/autotrade_gateway/strategy_runtime.py",
     "services/autotrade_gateway/worker.py",
 ]

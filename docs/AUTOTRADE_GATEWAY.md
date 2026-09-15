@@ -14,6 +14,16 @@ broker-free 的稽核 ingress：在目前固定 `DISARMED` 的設定下只會持
 intent/correlation receipt，絕不轉送 sidecar。這不是上游 Trade response
 compatibility 的完成宣告：cancel、update、close 與實際 broker worker 尚未接通。
 
+`services.autotrade_gateway.simulation_execution_window.SimulationExecutionWindow`
+已提供一個尚未掛到 HTTP、scheduler 或 UI 的 in-process 單筆 SIM execution
+primitive。它需要呼叫端持有的 authorization、非空 reason、空的未結案 intent／
+reconciliation preflight，以及每筆最新 RiskContext；只會以記憶體中的 `ARMED`
+評估同一個 immutable intent，再交給唯一 `ExecutionWorker` 一次。durable gate
+不會寫成 `ARMED`，最後仍是 `DISARMED`；timeout、缺少 lease 或 process 中斷都會
+留下 `UNKNOWN`／對帳案例，不能重送。每個接受、結束或中斷都有 durable audit event。
+它目前沒有任何設定值或 browser route 可以建構／呼叫，故不是 simulation canary
+或下單功能，也不改變現行 Gateway 的 `DISARMED` 行為。
+
 `POST /api/v1/order/cancel_order` 也會建立 `CANCEL` intent，但在 durable
 broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，會 fail closed
 為 `RISK_REJECTED`，絕不轉送 sidecar。這是稽核入口，不是可用的取消功能。

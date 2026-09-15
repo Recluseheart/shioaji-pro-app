@@ -279,7 +279,11 @@ class PostgresIntentStore:
                 VALUES (%s,'OPEN',%s,%s,%s) ON CONFLICT DO NOTHING""",
                 (intent_id, reason, timestamp, timestamp),
             )
-            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s "
+                "WHERE intent_id=%s AND state IN ('PENDING','LEASED')",
+                (timestamp, intent_id),
+            )
             self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.UNKNOWN.value, timestamp, intent_id))
             self.connection.execute(
                 """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
@@ -503,6 +507,22 @@ class PostgresIntentStore:
             observation["details"] = details if isinstance(details, dict) else {}
             observations.append(observation)
         return observations
+
+    def record_audit_event(
+        self, intent_id: str | None, event_type: str, details: dict[str, object],
+    ) -> None:
+        """Append a non-broker lifecycle fact without changing delivery state."""
+        if not event_type:
+            raise ValueError("audit event type is required")
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, %s, %s, %s)""",
+                (
+                    str(uuid4()), intent_id, event_type,
+                    json.dumps(details, separators=(",", ":")), now().isoformat(),
+                ),
+            )
 
     def trading_gate(self) -> Gate:
         with self._lock:

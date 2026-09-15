@@ -286,6 +286,9 @@ class IntentStore(Protocol):
     def observation_orders(self) -> list[dict[str, object]]: ...
     def observation_risk_decisions(self) -> list[dict[str, object]]: ...
     def observation_audit_events(self) -> list[dict[str, object]]: ...
+    def record_audit_event(
+        self, intent_id: str | None, event_type: str, details: dict[str, object],
+    ) -> None: ...
     def trading_gate(self) -> Gate: ...
     def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]: ...
     def record_fill(self, fill: Fill) -> None: ...
@@ -718,7 +721,11 @@ class SQLiteIntentStore:
                 """INSERT OR IGNORE INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
                 VALUES (?,'OPEN',?,?,?)""", (intent_id, reason, timestamp, timestamp),
             )
-            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='UNKNOWN', updated_at=? "
+                "WHERE intent_id=? AND state IN ('PENDING','LEASED')",
+                (timestamp, intent_id),
+            )
             self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (Status.UNKNOWN.value, timestamp, intent_id))
             self.connection.execute(
                 """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
@@ -969,6 +976,22 @@ class SQLiteIntentStore:
             observation["details"] = details if isinstance(details, dict) else {}
             observations.append(observation)
         return observations
+
+    def record_audit_event(
+        self, intent_id: str | None, event_type: str, details: dict[str, object],
+    ) -> None:
+        """Append a non-broker lifecycle fact without changing delivery state."""
+        if not event_type:
+            raise ValueError("audit event type is required")
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (
+                    str(uuid4()), intent_id, event_type,
+                    json.dumps(details, separators=(",", ":")), now().isoformat(),
+                ),
+            )
 
     def trading_gate(self) -> Gate:
         with self._lock:

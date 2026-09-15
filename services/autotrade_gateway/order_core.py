@@ -341,9 +341,10 @@ class RiskEngine:
         if gate is not Gate.ARMED:
             reasons.append("trading_gate_not_armed")
         if intent.operation == "PLACE":
-            if not intent.account_id.startswith("SIM-"):
-                reasons.append("simulation_account_required")
-            elif intent.account_id not in self.limits.allowed_accounts:
+            # Account numbers do not encode their environment.  The caller
+            # must populate this allowlist only from a verified simulation
+            # sidecar discovery; a cosmetic `SIM-` prefix is not evidence.
+            if intent.account_id not in self.limits.allowed_accounts:
                 reasons.append("simulation_account_not_allowed")
             if not intent.symbol or not intent.symbol.isalnum():
                 reasons.append("invalid_symbol")

@@ -113,7 +113,6 @@ RISK_REASON_LABELS = {
     "trading_gate_not_armed": "交易閘門尚未啟用",
     "target_order_account_unverified": "目標委託的帳戶尚未驗證",
     "target_order_id_required": "缺少目標委託識別碼",
-    "simulation_account_required": "僅允許 simulation 帳戶",
     "simulation_account_not_allowed": "此 simulation 帳戶不在 allowlist",
     "symbol_not_allowed": "商品不在 allowlist",
     "quantity_limit_exceeded": "數量超過單筆限額",

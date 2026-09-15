@@ -90,6 +90,15 @@ class OrderCoreTest(unittest.TestCase):
         self.assertIn("risk_context_unavailable", verdict.reasons)
         self.assertIsNone(self.store.outbox_state(intent.intent_id))
 
+    def test_verified_simulation_allowlist_does_not_depend_on_account_id_prefix(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "paper-account-42", "2330", "BUY", 1, "1000")
+        verdict = RiskEngine(RiskLimits(allowed_accounts=("paper-account-42",))).evaluate(
+            intent,
+            Gate.ARMED,
+            RiskContext(quote_price=Decimal("1000"), quote_at=datetime.now(timezone.utc)),
+        )
+        self.assertTrue(verdict.allowed)
+
     def test_armed_intent_rejects_a_stale_market_snapshot_without_outbox(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         coordinator = OrderCoordinator(

@@ -108,6 +108,10 @@ export default defineConfig(({ mode, command }) => {
         },
         plugins: [vanillaExtractPlugin(), react()],
         test: {
+            // Node can expose a `localStorage` name backed by an unavailable
+            // file while running in a sandbox.  Tests need the browser
+            // Storage contract, not that host-specific partial object.
+            setupFiles: ['./test/vitest-setup.ts'],
             // The desktop overlay is mirrored here for Tauri dev/CI, but its
             // Rust-adjacent Node tests use node:test rather than Vitest.
             exclude: [

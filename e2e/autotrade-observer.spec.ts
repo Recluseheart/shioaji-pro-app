@@ -20,6 +20,13 @@ test('Autotrade control panel is visible but cannot start a strategy while disar
 });
 
 test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
+    let detailReads = 0;
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {
             health: {
@@ -42,6 +49,18 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
             ],
         } });
     });
+    await page.route('**/api/v1/autotrade/orders/automatic-intent', async (route) => {
+        detailReads += 1;
+        expect(route.request().method()).toBe('GET');
+        await route.fulfill({ json: {
+            intent_id: 'automatic-intent', correlation_id: 'automatic-correlation',
+            source: 'STRATEGY', status: 'SUBMITTED', symbol: '2330', side: 'BUY',
+            quantity: 2, limit_price: '1000', order_price_type: 'LMT',
+            strategy_id: 'reference', run_id: 'run-1', operation: 'PLACE',
+            broker_order_id: 'SIM-ORDER-1', risk_reasons: [],
+            updated_at: '2026-09-15T00:00:00+00:00',
+        } });
+    });
 
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
@@ -49,6 +68,11 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     await expect(page.getByText(/STRATEGY · 下單 · SUBMITTED · automati/)).toBeVisible();
     await expect(page.getByText('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1')).toBeVisible();
     await expect(page.getByText(/MANUAL_UI · 下單/)).toHaveCount(0);
+
+    await page.getByRole('button', { name: '查看可稽核詳情' }).first().click();
+    await expect(page.getByText(/intent automati · SUBMITTED · 更新 2026-09-15T00:00:00\+00:00 · broker SIM-ORDER-1/)).toBeVisible();
+    expect(detailReads).toBe(1);
+    expect(mutationRequests).toBe(0);
 
     await page.getByLabel('顯示全部委託（含手動）').check();
     await expect(page.getByText(/MANUAL_UI · 下單 · RISK_REJECTED · manual-c/)).toBeVisible();

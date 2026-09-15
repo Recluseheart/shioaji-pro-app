@@ -8,6 +8,7 @@ vi.mock('../lib/api', () => ({ apiGet: api.get, apiPost: api.post }));
 import { normalizeAutotradeOverview } from '../autotrade/client';
 import {
     automatedOrderObservations,
+    CopyableIdentity,
     DurableOrderDetail,
     filterTimeline,
     orderObservationText,
@@ -120,6 +121,18 @@ describe('Autotrade observer panel summaries', () => {
 });
 
 describe('DurableOrderDetail', () => {
+    it('shows a complete durable identity and offers a local clipboard action', async () => {
+        let renderer!: ReturnType<typeof create>;
+        await act(async () => {
+            renderer = create(createElement(CopyableIdentity, {
+                label: 'Correlation ID', value: 'correlation-1234567890',
+            }));
+        });
+        expect(JSON.stringify(renderer.toJSON())).toContain('correlation-1234567890');
+        expect(renderer.root.findByType('button').props.title).toContain('Correlation ID');
+        await act(async () => renderer.unmount());
+    });
+
     it('only reads the durable order endpoint after an explicit expansion', async () => {
         const loadObservation = vi.fn().mockResolvedValue({
             intent_id: 'intent-1', correlation_id: 'correlation-1', source: 'MANUAL_UI',

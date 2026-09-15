@@ -331,6 +331,27 @@ function SignalObservation({ signal }: { signal: AutotradeSignal }) {
 
 type LoadOrderObservation = (intentId: string) => Promise<AutotradeOrderObservation | null>;
 
+/** Displays an already-read identity in full; clipboard use stays entirely in the browser. */
+export function CopyableIdentity({ label, value }: { label: string; value: string }) {
+    const [copyState, setCopyState] = useState<'idle' | 'copied' | 'unavailable'>('idle');
+    const copy = () => {
+        const clipboard = globalThis.navigator?.clipboard;
+        if (!clipboard) {
+            setCopyState('unavailable');
+            return;
+        }
+        void clipboard.writeText(value)
+            .then(() => setCopyState('copied'))
+            .catch(() => setCopyState('unavailable'));
+    };
+    return <div style={{ overflowWrap: 'anywhere' }}>
+        {label}：<code>{value}</code>{' '}
+        <button onClick={copy} title={`複製完整 ${label}`}>複製</button>
+        {copyState === 'copied' && <span role='status'> 已複製</span>}
+        {copyState === 'unavailable' && <span role='status'> 無法存取 clipboard</span>}
+    </div>;
+}
+
 /**
  * An expandable, durable detail read.  This intentionally fetches no broker
  * data and contains no mutation action: an absent or failed observation is
@@ -375,8 +396,15 @@ export function DurableOrderDetail({
                     {!loading && detail === null && 'Gateway 未提供此 durable 記錄；未以本機資料補齊。'}
                     {!loading && detail && (
                         <>
-                            intent {detail.intent_id.slice(0, 8)} · {detail.status} · 更新 {detail.updated_at || '未知'}
-                            {detail.broker_order_id ? ` · broker ${detail.broker_order_id}` : ''}
+                            intent {detail.intent_id.slice(0, 8)} · {detail.status} · 更新 {detail.updated_at || '未知'}{detail.broker_order_id ? ` · broker ${detail.broker_order_id}` : ''}
+                            <div style={{ display: 'grid', gap: 2, marginTop: 3 }}>
+                                <CopyableIdentity label='Intent ID' value={detail.intent_id} />
+                                <CopyableIdentity label='Correlation ID' value={detail.correlation_id} />
+                                {detail.broker_order_id && <CopyableIdentity label='Broker order ID' value={detail.broker_order_id} />}
+                                {detail.target_order_id && <CopyableIdentity label='Target broker order ID' value={detail.target_order_id} />}
+                                {detail.strategy_id && <CopyableIdentity label='Strategy ID' value={detail.strategy_id} />}
+                                {detail.run_id && <CopyableIdentity label='Run ID' value={detail.run_id} />}
+                            </div>
                             {detail.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{detail.risk_reasons.map(riskReasonLabel).join('、')}</div> : null}
                         </>
                     )}

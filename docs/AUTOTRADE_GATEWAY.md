@@ -115,7 +115,8 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   同時帶回其持久化的 `instrument.legs` identity。
 - `GET /api/v1/autotrade/intents/{intent_id}` 與
   `GET /api/v1/autotrade/orders/{intent_id}`：同一 immutable observation 的 detail
-  projection，供 UI 顯示／複製 correlation、risk verdict 與 broker identity；不會
+  projection，供 UI 顯示短碼、並在展開的 detail drawer 以本機 clipboard 複製完整
+  intent、correlation、broker order、strategy 與 run identity；不會
   查 sidecar、改寫狀態或重送。未知 id 回傳 `404`。
 - `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
   projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，

@@ -156,6 +156,8 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
 
     await page.getByRole('button', { name: '查看可稽核詳情' }).first().click();
     await expect(page.getByText(/intent automati · SUBMITTED · 更新 2026-09-15T00:00:00\+00:00 · broker SIM-ORDER-1/)).toBeVisible();
+    await expect(page.getByText('Correlation ID：automatic-correlation')).toBeVisible();
+    await expect(page.getByRole('button', { name: '複製' }).first()).toHaveAttribute('title', /完整 Intent ID/);
     expect(detailReads).toBe(1);
     expect(mutationRequests).toBe(0);
 

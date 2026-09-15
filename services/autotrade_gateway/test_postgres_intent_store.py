@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status
+from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategySignal
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -41,6 +41,12 @@ class PostgresIntentStoreTest(unittest.TestCase):
         cls.store.close()
         with cls.psycopg.connect(cls.dsn, autocommit=True) as connection:
             connection.execute(f'DROP SCHEMA "{cls.schema}" CASCADE')
+
+    def setUp(self) -> None:
+        # Each test shares the per-class disposable schema but must not share
+        # durable observations. CASCADE is constrained to this UUID schema's
+        # order graph and clears its outbox/signal dependents as well.
+        self.store.connection.execute("TRUNCATE order_intents CASCADE")
 
     def test_atomic_outbox_and_unknown_recovery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
@@ -126,3 +132,21 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.store.record_terminal_callback(intent.intent_id, "POSTGRES-MOCK-TERMINAL-1", Status.FILLED)
         self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
         self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")
+
+    def test_signal_projection_is_durable_and_idempotent(self) -> None:
+        intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
+        status, _ = OrderCoordinator(self.store).accept(intent)
+        signal = StrategySignal(
+            signal_id="signal-1", strategy_id="reference", run_id="run-1", event_id="event-1",
+            signal_type="REFERENCE_SIGNAL", symbol="2330", side="BUY", intent_id=intent.intent_id,
+            correlation_id=intent.correlation_id, status=status, risk_reasons=("trading_gate_not_armed",),
+            observed_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+        )
+        self.store.record_signal(signal)
+        self.store.record_signal(signal)
+        self.assertEqual(self.store.observation_signals(), [{
+            "signal_id": "signal-1", "strategy_id": "reference", "run_id": "run-1", "event_id": "event-1",
+            "signal_type": "REFERENCE_SIGNAL", "symbol": "2330", "side": "BUY", "intent_id": intent.intent_id,
+            "correlation_id": intent.correlation_id, "status": "RISK_REJECTED",
+            "risk_reasons": ["trading_gate_not_armed"], "observed_at": "2026-09-15T00:00:00+00:00",
+        }])

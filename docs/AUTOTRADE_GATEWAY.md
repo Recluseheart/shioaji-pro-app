@@ -157,6 +157,10 @@ loop。暫時讀取失敗時，面板會保留最後一次成功的 durable proj
 而不是把資料顯示成空白、觸發 mutation 或嘗試重送 UNKNOWN。最後一個 observer
 panel 卸載後 refresh loop 會停止。支援 `EventSource` 的 Web UI 也會訂閱上述
 SSE；event 只觸發同一份 overview 的唯讀 reload，SSE 中斷時仍使用 polling fallback。
+在「自動委託與持倉」或「對帳佇列」展開某一筆資料的「查看可稽核詳情」時，Web
+只會以其 durable intent id 向 `GET /api/v1/autotrade/orders/{intent_id}` 重新讀取投影。
+按鈕不會呼叫 sidecar 或 broker；`404`、格式不符與網路失敗都明確顯示為沒有可用
+durable 詳情，不能用 overview 快取或瀏覽器資料補造委託。
 
 ## 訂單安全邊界
 

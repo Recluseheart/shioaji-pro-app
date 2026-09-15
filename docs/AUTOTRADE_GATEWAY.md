@@ -83,6 +83,12 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   activity 來填滿 UI。`risk.last_verdict` 只投影最新 durable ingress 的
   intent、correlation、status 與 reasons，方便 UI 說明最近一次風控結果；它不會
   自行重新評估、建立 signal 或補造 broker 狀態。
+- `GET /api/v1/autotrade/strategies` 與
+  `GET /api/v1/autotrade/strategies/{id}`：唯讀投影目前已註冊的策略 descriptor；
+  現階段僅有固定 `DISABLED` 的 `reference-fixture`，未知 id 為 `404`。這些 route
+  不提供 Start、Pause、Resume 或 Stop 能力。
+- `GET /api/v1/autotrade/signals`：只會回傳 durable signal records；目前 runtime
+  尚未有 signal store，因此明確回傳空陣列，絕不以 process memory 或假事件填滿。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
   是唯讀資料。每筆也投影已持久化的 `symbol`、`side`、`quantity`、`limit_price`

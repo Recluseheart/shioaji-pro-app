@@ -696,6 +696,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/v1/autotrade/strategies":
+            self._json(HTTPStatus.OK, {"items": getattr(self.server, "strategy_runtime").observations()})
+            return
+        if path.startswith("/api/v1/autotrade/strategies/"):
+            strategy_id = path.removeprefix("/api/v1/autotrade/strategies/")
+            strategies = getattr(self.server, "strategy_runtime").observations()
+            strategy = next((item for item in strategies if item.get("strategy_id") == strategy_id), None)
+            if strategy is None:
+                self._json(HTTPStatus.NOT_FOUND, {"message": "strategy not found"})
+            else:
+                self._json(HTTPStatus.OK, strategy)
+            return
+        if path == "/api/v1/autotrade/signals":
+            # No process-memory signal list is exposed: a future runtime must
+            # persist signals before this endpoint may report any activity.
+            self._json(HTTPStatus.OK, {"items": []})
+            return
         if path == "/api/v1/autotrade/intents":
             self._json(
                 HTTPStatus.OK,

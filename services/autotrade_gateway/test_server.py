@@ -234,6 +234,22 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(overview["orders"], [])
         self.assertEqual(overview["reconciliation"], [])
 
+    def test_strategy_and_signal_read_routes_project_only_durable_or_disabled_facts(self) -> None:
+        with urlopen(f"{self.base}/api/v1/autotrade/strategies") as response:
+            strategies = json.load(response)
+        self.assertEqual(strategies["items"][0]["strategy_id"], "reference-fixture")
+        self.assertFalse(strategies["items"][0]["enabled"])
+        with urlopen(f"{self.base}/api/v1/autotrade/strategies/reference-fixture") as response:
+            strategy = json.load(response)
+        self.assertEqual(strategy["strategy_id"], "reference-fixture")
+        self.assertEqual(strategy["state"], "DISABLED")
+        with urlopen(f"{self.base}/api/v1/autotrade/signals") as response:
+            self.assertEqual(json.load(response), {"items": []})
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(f"{self.base}/api/v1/autotrade/strategies/not-a-strategy")
+        self.assertEqual(raised.exception.code, 404)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_intents_endpoint_returns_durable_read_only_observations(self) -> None:
         body = json.dumps({
             "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",

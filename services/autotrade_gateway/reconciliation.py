@@ -102,10 +102,19 @@ def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Statu
     for order in store.observation_orders():
         if order.get("status") not in {Status.UNKNOWN.value, Status.RECONCILING.value}:
             continue
-        intent_id, broker_order_id = order.get("intent_id"), order.get("broker_order_id")
-        terminal = by_broker_id.get(broker_order_id) if isinstance(broker_order_id, str) else None
-        if isinstance(intent_id, str) and isinstance(broker_order_id, str) and terminal is not None:
-            store.record_reconciled_terminal(intent_id, broker_order_id, terminal)
+        intent_id = order.get("intent_id")
+        observed_broker_order_id = order.get("broker_order_id")
+        observed_terminal = (
+            by_broker_id.get(observed_broker_order_id)
+            if isinstance(observed_broker_order_id, str)
+            else None
+        )
+        if (
+            isinstance(intent_id, str)
+            and isinstance(observed_broker_order_id, str)
+            and observed_terminal is not None
+        ):
+            store.record_reconciled_terminal(intent_id, observed_broker_order_id, observed_terminal)
             resolved += 1
     return resolved
 

@@ -237,6 +237,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                         return <div key={order.intent_id} style={{ borderLeft: `3px solid ${order.status === 'UNKNOWN' ? '#ef4444' : '#8892a6'}`, paddingLeft: 7 }}>
                             {order.source} · {operationLabel(order.operation)} · {order.status} · {order.correlation_id?.slice(0, 8)}{order.broker_order_id ? ` · ${order.broker_order_id}` : ''}{order.target_order_id ? ` · 目標 ${order.target_order_id}` : ''}
                             {orderObservationText(order) && <div style={{ color: '#aeb7c6' }}>{orderObservationText(order)}</div>}
+                            {typeof order.filled_quantity === 'number' && order.filled_quantity > 0 && <div style={{ color: '#73c991' }}>已確認成交：{order.filled_quantity}{typeof order.fill_count === 'number' && order.fill_count > 1 ? `（${order.fill_count} 筆）` : ''}</div>}
                             {order.operation_payload && <div style={{ color: '#aeb7c6' }}>請求：{formatPayload(order.operation_payload)}</div>}
                             {order.instrument && <div style={{ color: '#aeb7c6' }}>商品：{formatPayload(order.instrument)}</div>}
                             {order.risk_reasons?.length ? <div style={{ color: '#f0b44d' }}>風控：{order.risk_reasons.join('、')}</div> : null}

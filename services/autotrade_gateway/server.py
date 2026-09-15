@@ -265,6 +265,23 @@ def decisions_document(store: IntentStore, orders: list[dict[str, object]]) -> l
     ]
 
 
+def orders_document(store: IntentStore) -> list[dict[str, object]]:
+    """Attach only broker-confirmed fill summaries to immutable order facts."""
+    summaries: dict[str, dict[str, int]] = {}
+    for fill in store.observation_fills():
+        intent_id = fill.get("intent_id")
+        quantity = fill.get("quantity")
+        if not isinstance(intent_id, str) or not isinstance(quantity, int) or quantity <= 0:
+            continue
+        summary = summaries.setdefault(intent_id, {"filled_quantity": 0, "fill_count": 0})
+        summary["filled_quantity"] += quantity
+        summary["fill_count"] += 1
+    return [
+        {**order, **summaries.get(str(order.get("intent_id")), {"filled_quantity": 0, "fill_count": 0})}
+        for order in store.observation_orders()
+    ]
+
+
 def overview_document(
     store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -276,7 +293,7 @@ def overview_document(
     manufacture strategy activity, orders, or broker callbacks merely to make
     a dashboard appear busy.
     """
-    orders = store.observation_orders() if store is not None else []
+    orders = orders_document(store) if store is not None else []
     fills = store.observation_fills() if store is not None else []
     audit_events = store.observation_audit_events() if store is not None else []
     runs = strategy_runs_document(store) if store is not None else []
@@ -763,7 +780,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/autotrade/intents":
             self._json(
                 HTTPStatus.OK,
-                {"items": getattr(self.server, "order_store").observation_orders()},
+                {"items": orders_document(getattr(self.server, "order_store"))},
             )
             return
         if path.startswith("/api/v1/autotrade/intents/"):
@@ -775,7 +792,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             # that is detached from its source, risk verdict, or correlation.
             self._json(
                 HTTPStatus.OK,
-                {"items": getattr(self.server, "order_store").observation_orders()},
+                {"items": orders_document(getattr(self.server, "order_store"))},
             )
             return
         if path == "/api/v1/autotrade/fills":
@@ -808,12 +825,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             store = getattr(self.server, "order_store")
             self._json(
                 HTTPStatus.OK,
-                {"items": decisions_document(store, store.observation_orders())},
+                {"items": decisions_document(store, orders_document(store))},
             )
             return
         if path == "/api/v1/autotrade/reconciliation":
             store = getattr(self.server, "order_store")
-            observations = store.observation_orders()
+            observations = orders_document(store)
             self._json(
                 HTTPStatus.OK,
                 {
@@ -840,7 +857,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def _durable_observation_detail(self, intent_id: str) -> None:
         """Return an immutable detail projection without a sidecar lookup."""
         observation = next(
-            (item for item in getattr(self.server, "order_store").observation_orders()
+            (item for item in orders_document(getattr(self.server, "order_store"))
              if item.get("intent_id") == intent_id),
             None,
         )

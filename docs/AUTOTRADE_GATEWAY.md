@@ -120,7 +120,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   查 sidecar、改寫狀態或重送。未知 id 回傳 `404`。
 - `GET /api/v1/autotrade/orders`：和 intent 使用同一個 durable journal 的 order
   projection；提供 source、correlation、risk verdict 與已持久化的 broker identity，
-  不會呼叫 sidecar、重送或偽造 broker status。
+  以及只由 immutable `fills` 加總的 `filled_quantity`／`fill_count`。沒有 durable
+  fill fact 時兩者為零，不會由 terminal status 推測成交；此 read 不會呼叫 sidecar、
+  重送或偽造 broker status。
 - `GET /api/v1/autotrade/fills`：只列出已通過 intent/broker identity 綁定與正數
   quantity/price validation 的 durable fill facts。terminal status 本身不會被當成 fill
   來補造；目前僅 mock／未來 callback seam 可寫入，Gateway production runtime 不會

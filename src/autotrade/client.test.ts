@@ -131,6 +131,17 @@ describe('normalizeAutotradeOverview', () => {
         expect(overview.decisions).toEqual([]);
     });
 
+    it('keeps broker-confirmed fill totals on their durable order projection', () => {
+        const overview = normalizeAutotradeOverview({
+            orders: [{
+                intent_id: 'intent-1', correlation_id: 'correlation-1', source: 'STRATEGY', status: 'FILLED',
+                filled_quantity: 3, fill_count: 2,
+            }],
+        });
+
+        expect(overview.orders[0]).toMatchObject({ filled_quantity: 3, fill_count: 2 });
+    });
+
     it('keeps durable reconciliation case evidence with its unknown intent', () => {
         const overview = normalizeAutotradeOverview({
             reconciliation: [{

@@ -92,6 +92,8 @@ export type AutotradeOrderObservation = {
     strategy_id: string | null;
     run_id: string | null;
     broker_order_id: string | null;
+    filled_quantity?: number;
+    fill_count?: number;
     operation: 'PLACE' | 'CANCEL' | 'UPDATE_PRICE' | 'UPDATE_QUANTITY';
     target_order_id: string | null;
     operation_payload: Record<string, unknown> | null;
@@ -174,6 +176,10 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             limit_price: typeof order.limit_price === 'string' ? order.limit_price : '',
             order_price_type: typeof order.order_price_type === 'string' ? order.order_price_type : 'LMT',
             broker_order_id: typeof order.broker_order_id === 'string' ? order.broker_order_id : null,
+            filled_quantity: typeof order.filled_quantity === 'number' && Number.isInteger(order.filled_quantity) && order.filled_quantity > 0
+                ? order.filled_quantity : 0,
+            fill_count: typeof order.fill_count === 'number' && Number.isInteger(order.fill_count) && order.fill_count > 0
+                ? order.fill_count : 0,
             operation, target_order_id: typeof order.target_order_id === 'string' ? order.target_order_id : null,
             operation_payload: objectOrNull(order.operation_payload), instrument: objectOrNull(order.instrument),
             risk_reasons: Array.isArray(order.risk_reasons) ? order.risk_reasons.filter((reason): reason is string => typeof reason === 'string') : [],

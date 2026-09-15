@@ -124,6 +124,7 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
                     source: 'STRATEGY', status: 'SUBMITTED', symbol: '2330', side: 'BUY',
                     quantity: 2, limit_price: '1000', order_price_type: 'LMT',
                     strategy_id: 'reference', run_id: 'run-1', operation: 'PLACE', risk_reasons: [],
+                    filled_quantity: 2, fill_count: 2,
                 },
                 {
                     intent_id: 'manual-intent', correlation_id: 'manual-correlation',
@@ -152,6 +153,7 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     await page.getByText('自動委託與持倉', { exact: true }).click();
     await expect(page.getByText(/STRATEGY · 下單 · SUBMITTED · automati/)).toBeVisible();
     await expect(page.getByText('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1')).toBeVisible();
+    await expect(page.getByText('已確認成交：2（2 筆）')).toBeVisible();
     await expect(page.getByText(/MANUAL_UI · 下單/)).toHaveCount(0);
 
     await page.getByRole('button', { name: '查看可稽核詳情' }).first().click();

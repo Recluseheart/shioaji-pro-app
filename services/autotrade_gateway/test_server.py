@@ -392,6 +392,8 @@ class GatewayServerTest(unittest.TestCase):
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)
         self.assertEqual(overview["performance"]["filled_order_count"], 1)
+        self.assertEqual(overview["orders"][0]["filled_quantity"], 1)
+        self.assertEqual(overview["orders"][0]["fill_count"], 1)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:

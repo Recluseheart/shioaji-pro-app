@@ -17,6 +17,9 @@ compatibility 的完成宣告：cancel、update、close 與實際 broker worker 
 broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，會 fail closed
 為 `RISK_REJECTED`，絕不轉送 sidecar。這是稽核入口，不是可用的取消功能。
 
+`POST /api/v1/order/update_price` 與 `update_qty` 使用相同 target-order audit
+模型，並持久化 requested price／quantity；同樣因目標帳戶尚未驗證而 fail closed。
+
 `POST /api/v1/order/place_comboorder` 已同樣建立 `MANUAL_UI` intent，並把
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk
 receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍未接通。

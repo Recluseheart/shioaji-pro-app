@@ -315,15 +315,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
         )
 
     def _manual_cancel_intent(self) -> Intent:
+        return self._manual_target_order_intent("CANCEL", ())
+
+    def _manual_target_order_intent(self, operation: str, change_fields: tuple[str, ...]) -> Intent:
         size = int(self.headers.get("Content-Length", "0"))
         if size <= 0 or size > 8_192:
-            raise ValueError("invalid cancel order body size")
+            raise ValueError("invalid target order body size")
         value = json.loads(self.rfile.read(size))
         if not isinstance(value, dict):
-            raise ValueError("cancel order body must be an object")
+            raise ValueError("target order body must be an object")
         target_order_id = value.get("trade_id")
         if not isinstance(target_order_id, str) or not target_order_id:
             raise ValueError("trade_id is required")
+        changes: dict[str, object] = {}
+        for field in change_fields:
+            if field not in value:
+                raise ValueError(f"{field} is required")
+            changes[field] = value[field]
         return Intent(
             source=Source.MANUAL_UI,
             account_id="SIM-UNVERIFIED",
@@ -331,8 +339,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             side="CANCEL",
             quantity=0,
             limit_price="0",
-            operation="CANCEL",
+            operation=operation,
             target_order_id=target_order_id,
+            operation_payload=changes or None,
         )
 
     def do_GET(self) -> None:  # noqa: N802
@@ -379,6 +388,28 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 intent = self._manual_cancel_intent()
             except (TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid cancel order"})
+                return
+            coordinator = getattr(self.server, "order_coordinator")
+            status, verdict = coordinator.accept(intent)
+            self._json(
+                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
+                {
+                    "intent_id": intent.intent_id,
+                    "correlation_id": intent.correlation_id,
+                    "status": status.value,
+                    "risk_reasons": list(verdict.reasons),
+                },
+            )
+            return
+        target_operation = {
+            "/api/v1/order/update_price": ("UPDATE_PRICE", ("price",)),
+            "/api/v1/order/update_qty": ("UPDATE_QUANTITY", ("quantity",)),
+        }.get(path)
+        if target_operation:
+            try:
+                intent = self._manual_target_order_intent(*target_operation)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid target order mutation"})
                 return
             coordinator = getattr(self.server, "order_coordinator")
             status, verdict = coordinator.accept(intent)

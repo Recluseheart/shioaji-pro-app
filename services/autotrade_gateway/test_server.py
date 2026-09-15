@@ -135,7 +135,7 @@ class GatewayServerTest(unittest.TestCase):
 
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(f"{self.base}/api/v1/order/update_price", method="POST"))
+            urlopen(Request(f"{self.base}/api/v1/order/reserve_stock", method="POST"))
         self.assertEqual(raised.exception.code, 403)
 
     def test_cancel_order_is_audited_but_cannot_dispatch_without_target_account_lookup(self) -> None:
@@ -148,6 +148,25 @@ class GatewayServerTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
         self.assertIn("target_order_account_unverified", receipt["risk_reasons"])
         self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_update_order_mutations_are_audited_but_fail_closed(self) -> None:
+        for path, body, operation in (
+            ("update_price", {"trade_id": "BROKER-ORDER-1", "price": 1000}, "UPDATE_PRICE"),
+            ("update_qty", {"trade_id": "BROKER-ORDER-1", "quantity": 2}, "UPDATE_QUANTITY"),
+        ):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(
+                    f"{self.base}/api/v1/order/{path}",
+                    data=json.dumps(body).encode(), method="POST",
+                ))
+            self.assertEqual(raised.exception.code, 409)
+            receipt = json.load(raised.exception)
+            self.assertIn("target_order_account_unverified", receipt["risk_reasons"])
+            observation = getattr(self.server, "order_store").observation_orders()[0]
+            self.assertEqual(observation["operation"], operation)
+            expected_change = {"price": body["price"]} if "price" in body else {"quantity": body["quantity"]}
+            self.assertEqual(observation["operation_payload"], expected_change)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_manual_place_order_is_durably_rejected_while_disarmed(self) -> None:

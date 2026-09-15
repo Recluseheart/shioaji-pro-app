@@ -68,6 +68,7 @@ class Intent:
     instrument: dict[str, object] | None = None
     operation: str = "PLACE"
     target_order_id: str | None = None
+    operation_payload: dict[str, object] | None = None
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
@@ -103,7 +104,7 @@ class RiskEngine:
                         reasons.append("invalid_limit_price")
                 except ValueError:
                     reasons.append("invalid_limit_price")
-        elif intent.operation == "CANCEL":
+        elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:
                 reasons.append("target_order_id_required")
             reasons.append("target_order_account_unverified")
@@ -259,6 +260,9 @@ class SQLiteIntentStore:
             except (TypeError, ValueError, json.JSONDecodeError):
                 parsed_reasons = []
             observation["instrument"] = parsed_payload.get("instrument") if isinstance(parsed_payload, dict) else None
+            observation["operation"] = parsed_payload.get("operation", "PLACE") if isinstance(parsed_payload, dict) else "PLACE"
+            observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
+            observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations

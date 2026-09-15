@@ -74,6 +74,7 @@ MARKET_STREAM_POST_PATHS = frozenset({
     "/api/v1/stream/subscribe",
     "/api/v1/stream/unsubscribe",
 })
+TRADE_CALLBACK_SUBSCRIPTION_PATH = "/api/v1/auth/subscribe_trade"
 MARKET_STREAM_CAPABILITIES = frozenset({
     "calculated_index",
     "index_components",
@@ -677,7 +678,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             self._accept_or_reuse_intent(intent)
             return
-        if path in READ_QUERY_POST_PATHS or is_allowed_market_stream_post(path):
+        if (
+            path in READ_QUERY_POST_PATHS
+            or path == TRADE_CALLBACK_SUBSCRIPTION_PATH
+            or is_allowed_market_stream_post(path)
+        ):
             try:
                 body = self._read_query_body()
             except (TypeError, ValueError, json.JSONDecodeError):

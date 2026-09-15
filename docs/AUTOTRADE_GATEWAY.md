@@ -110,6 +110,11 @@ relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證）；它們只改變�
 `calculated_index`、`index_contribution`、`industry_contribution`、
 `index_components` 與 `scanner` 五個明確 suffix。
 
+`POST /api/v1/auth/subscribe_trade` 是另一條獨立 allowlist 的 callback
+subscription：它只把帳戶的 trade-event 訂閱 JSON 轉交本機 sidecar，移除 browser
+Authorization／Cookie，且不建立 intent、outbox 或 broker order。它不是取消、改價、
+下單或重送的例外通道。
+
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 
 Web 的 Autotrade overview 與七個 observer panels 共享單一 5 秒唯讀 refresh

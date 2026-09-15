@@ -562,6 +562,27 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertNotIn("Authorization", headers)
 
+    def test_trade_callback_subscription_is_allowlisted_without_broker_mutation(self) -> None:
+        body = b'{"broker_id":"9A95","account_id":"SIM-001","account_type":"S"}'
+        request = Request(
+            f"{self.base}/api/v1/auth/subscribe_trade",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer browser-secret",
+                "Cookie": "session=browser-secret",
+            },
+            method="POST",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        path, headers, upstream_body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/auth/subscribe_trade")
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("Cookie", headers)
+        self.assertEqual(upstream_body, body)
+        self.assertEqual(getattr(self.server, "order_store").observation_orders(), [])
+
     def test_market_sse_is_relayed_without_browser_credentials(self) -> None:
         request = Request(
             f"{self.base}/api/v1/stream/data?region=TW",

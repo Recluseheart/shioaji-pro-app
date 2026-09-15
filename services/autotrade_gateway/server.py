@@ -67,6 +67,7 @@ READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/portfolio/trading_limits",
 })
 MARKET_SSE_PATH = "/api/v1/stream/data"
+COMBO_CONTRACT_BUILD_PATH = "/api/v1/data/contracts/combo"
 MARKET_STREAM_POST_PATHS = frozenset({
     "/api/v1/stream/subscribe",
     "/api/v1/stream/unsubscribe",
@@ -163,6 +164,33 @@ def is_allowed_watchlist_mutation(path: str, method: str) -> bool:
         return False
     has_contracts = match.group(2) is not None
     return (method == "PUT" and not has_contracts) or (method == "POST" and has_contracts) or method == "DELETE"
+
+
+def is_valid_combo_contract_query(value: object) -> bool:
+    """Recognize the broker-free, two-leg futures contract resolver shape.
+
+    The Shioaji sidecar owns canonicalization of a futures spread's contract
+    identity. That is not an order or account mutation, but it still merits
+    its own narrow validation instead of joining the generic read-query set.
+    """
+    if not isinstance(value, dict) or set(value) != {"legs"}:
+        return False
+    legs = value.get("legs")
+    if not isinstance(legs, list) or len(legs) != 2:
+        return False
+    allowed_fields = {"security_type", "region", "exchange", "code", "target_code"}
+    for leg in legs:
+        if not isinstance(leg, dict) or set(leg) != allowed_fields:
+            return False
+        if leg.get("security_type") != "FUT" or leg.get("region") != "TW":
+            return False
+        if not isinstance(leg.get("exchange"), str) or not leg["exchange"]:
+            return False
+        if not isinstance(leg.get("code"), str) or not leg["code"]:
+            return False
+        if leg.get("target_code") is not None:
+            return False
+    return True
 
 
 def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
@@ -442,6 +470,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         parsed = json.loads(body)
         if not isinstance(parsed, (dict, list)):
             raise ValueError("read query must be a JSON object or array")
+        return body
+
+    def _combo_contract_query_body(self) -> bytes:
+        body = self._read_query_body()
+        if not is_valid_combo_contract_query(json.loads(body)):
+            raise ValueError("invalid futures combo contract query")
         return body
 
     def _watchlist_mutation_body(self) -> bytes | None:
@@ -744,6 +778,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid autotrade intent"})
                 return
             self._accept_or_reuse_intent(intent)
+            return
+        if path == COMBO_CONTRACT_BUILD_PATH:
+            try:
+                combo_body = self._combo_contract_query_body()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid futures combo contract query"})
+                return
+            self._proxy_read_query(combo_body)
             return
         if (
             path in READ_QUERY_POST_PATHS

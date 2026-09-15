@@ -126,6 +126,11 @@ subscription：它只把帳戶的 trade-event 訂閱 JSON 轉交本機 sidecar�
 Authorization／Cookie，且不建立 intent、outbox 或 broker order。它不是取消、改價、
 下單或重送的例外通道。
 
+期貨組合單的 `POST /api/v1/data/contracts/combo` 是另一個獨立的 broker-free
+contract resolver allowlist：只接受剛好兩個 TW `FUT` 腳，且每腳只能有 canonical
+contract identity 欄位。Gateway 只把這個經驗證的 JSON query 轉給 sidecar，不轉送
+browser credential，也不允許 option、額外欄位或任何 order payload 混入。
+
 上游 watchlist CRUD（建立清單、同步清單合約、增刪合約、刪除清單）同樣採用狹窄的
 `/api/v1/watchlist` path／method allowlist；這些是 UI 偏好資料，並非 broker order。
 Gateway 只接受 JSON object、限制 list id 字元、移除 browser credentials，且仍拒絕所有

@@ -141,6 +141,41 @@ class GatewayServerTest(unittest.TestCase):
                 self.assertNotIn("Authorization", headers)
                 self.assertNotIn("Cookie", headers)
 
+    def test_futures_combo_contract_resolver_is_narrowly_allowlisted_without_credentials(self) -> None:
+        body = json.dumps({"legs": [
+            {"security_type": "FUT", "region": "TW", "exchange": "TAIFEX", "code": "TXFZ6", "target_code": None},
+            {"security_type": "FUT", "region": "TW", "exchange": "TAIFEX", "code": "TXFY6", "target_code": None},
+        ]}).encode()
+        request = Request(
+            f"{self.base}/api/v1/data/contracts/combo", data=body, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer browser-secret",
+                "Cookie": "session=browser-secret",
+            },
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        received_path, headers, received_body = ReadServiceHandler.received[-1]
+        self.assertEqual(received_path, "/api/v1/data/contracts/combo")
+        self.assertEqual(received_body, body)
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("Cookie", headers)
+
+    def test_futures_combo_contract_resolver_rejects_non_futures_or_extra_input(self) -> None:
+        for body in (
+            {"legs": []},
+            {"legs": [{"security_type": "OPT", "region": "TW", "exchange": "TAIFEX", "code": "TXO", "target_code": None}] * 2},
+            {"legs": [{"security_type": "FUT", "region": "TW", "exchange": "TAIFEX", "code": "TXFZ6", "target_code": None, "side": "BUY"}] * 2},
+        ):
+            with self.subTest(body=body), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(
+                    f"{self.base}/api/v1/data/contracts/combo", data=json.dumps(body).encode(), method="POST",
+                    headers={"Content-Type": "application/json"},
+                ))
+            self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_overview_never_invents_broker_activity(self) -> None:
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)

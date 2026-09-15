@@ -98,6 +98,34 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
 
+    def test_explicit_simulation_execution_wires_only_the_worker_adapter(self) -> None:
+        """Opt-in may construct the loopback adapter, but must not arm or send."""
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_EXECUTION": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(
+                port=0,
+                upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
+            )
+        try:
+            self.assertIsNotNone(getattr(server, "execution_worker"))
+            self.assertEqual(getattr(server, "order_coordinator").gate, Gate.DISARMED)
+            self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.server_close()
+            getattr(server, "order_store").close()
+
+    def test_execution_adapter_refuses_non_simulation_environment(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_SIMULATION_EXECUTION": "1",
+            "AUTOTRADE_ENV": "LIVE",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "SIM only"):
+            create_server(
+                port=0,
+                upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
+            )
+
     def test_kill_switch_requires_a_reason_and_only_tightens_the_gate(self) -> None:
         with self.assertRaises(HTTPError) as missing_key:
             urlopen(Request(

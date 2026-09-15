@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -71,7 +71,7 @@ class ShioajiHttpDispatcher:
         origin: str,
         *,
         timeout_seconds: float = 5,
-        opener: HttpOpener = urlopen,
+        opener: HttpOpener | None = None,
     ) -> None:
         parsed = urlparse(origin)
         if (
@@ -88,7 +88,10 @@ class ShioajiHttpDispatcher:
             raise ValueError("HTTP dispatcher timeout must be positive")
         self.origin = origin.rstrip("/")
         self.timeout_seconds = timeout_seconds
-        self.opener = opener
+        # urllib.request.urlopen is overloaded in typeshed while this adapter
+        # deliberately uses its Request-only branch.  Keep that boundary
+        # explicit instead of weakening the injected test opener protocol.
+        self.opener = opener if opener is not None else cast(HttpOpener, urlopen)
 
     def dispatch(self, intent: Intent) -> str:
         path, body = durable_broker_request(intent)

@@ -1,4 +1,4 @@
-"""Fail-closed Gateway seed; it owns no broker session or mutation path."""
+"""Fail-closed Gateway seed with an explicitly opt-in SIM worker adapter."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 
+from .broker_http import ShioajiHttpDispatcher
 from .order_core import (
     DuplicateIntentError,
     Gate,
@@ -25,6 +26,7 @@ from .order_core import (
     Source,
 )
 from .strategy_runtime import StrategyRuntime
+from .worker import ExecutionWorker
 
 
 # These GET routes have no order-mutation semantics in the Shioaji HTTP
@@ -82,6 +84,31 @@ MARKET_STREAM_CAPABILITIES = frozenset({
     "industry_contribution",
     "scanner",
 })
+
+
+def configured_simulation_execution_worker(
+    store: IntentStore,
+    upstream_origin: str,
+) -> ExecutionWorker | None:
+    """Return the only broker-dispatch owner after an explicit SIM opt-in.
+
+    Construction alone never dispatches work.  The public HTTP handler has no
+    arming route and no dispatch route, so a process remains DISARMED until a
+    separately controlled execution window supplies both a fresh risk context
+    and an in-process worker invocation.  Reject any non-SIM configuration
+    before opening a listening socket, rather than trusting a caller's origin.
+    """
+    if os.getenv("AUTOTRADE_ENABLE_SIMULATION_EXECUTION") != "1":
+        return None
+    if os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
+        raise RuntimeError("simulation execution is SIM only")
+    try:
+        dispatcher = ShioajiHttpDispatcher(upstream_origin)
+    except ValueError as error:
+        raise RuntimeError("simulation execution requires a loopback sidecar") from error
+    return ExecutionWorker(store, dispatcher)
+
+
 RISK_REASON_LABELS = {
     "trading_gate_not_armed": "交易閘門尚未啟用",
     "target_order_account_unverified": "目標委託的帳戶尚未驗證",
@@ -1000,6 +1027,13 @@ def create_server(
     port: int = 18082,
     upstream_origin: str | None = None,
 ) -> ThreadingHTTPServer:
+    # Refuse a bad process configuration before binding a port.  The detailed
+    # loopback-origin validation happens when the worker adapter is built.
+    if (
+        os.getenv("AUTOTRADE_ENABLE_SIMULATION_EXECUTION") == "1"
+        and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
+    ):
+        raise RuntimeError("simulation execution is SIM only")
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
@@ -1022,6 +1056,14 @@ def create_server(
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
     server.order_coordinator = OrderCoordinator(store, gate=store.trading_gate())  # type: ignore[attr-defined]
+    # This object is deliberately inert: its only method is invoked by a
+    # future in-process execution window, never by a browser route or a
+    # background loop.  The default stays None and every server starts
+    # DISARMED even when an operator has opted into wiring validation.
+    server.execution_worker = configured_simulation_execution_worker(  # type: ignore[attr-defined]
+        store,
+        resolved_upstream_origin,
+    )
     server.strategy_runtime = StrategyRuntime(server.order_coordinator)  # type: ignore[attr-defined]
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server

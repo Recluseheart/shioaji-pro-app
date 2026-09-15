@@ -13,7 +13,7 @@ evidence 對應 1.7.4。未列為 verified 的項目不得由 component 自行�
 | stock/CB/futures contract classification | 2330/11011 STK, TXFR1 FUT | UI supports stock/futures paths | map only through explicit stock/futures adapters |
 | order callback schema | sanitized fake-event contract only | sanitized 1.7.5 OpenAPI fixture | mock/integration only; terminal callback requires persisted broker identity |
 | account signed / CA | not a development gate | no new live evidence | SIM/DISARMED only; CA and LIVE disabled |
-| broker order mutation | not executed | not authorized | no HTTP adapter dispatch; mock worker only |
+| broker order mutation | not executed | not authorized | immutable intent 可由 loopback-only HTTP adapter 送至隔離 mock worker；Gateway 未 wiring，真實 sidecar／simulation dispatch 禁止 |
 
 ## Required future evidence
 

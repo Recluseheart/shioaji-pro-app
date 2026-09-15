@@ -24,7 +24,7 @@ Legacy 工作樹的使用者檔案（包括未追蹤 `docs/.DS_Store`）不屬�
 | `packages/domain/models.py`、`state_machine.py` | 部分移植 | `order_core.py` 已提供 source、intent、outbox、UNKNOWN/reconciliation 不重送及 broker identity seam；durable observation 也投影 symbol/side/quantity/limit price 供唯讀 K 線自動單標記。instrument/unit/fill domain 仍待統一模型。 |
 | `packages/risk/engine.py` | 部分移植 | 現行 `RiskEngine` 已移植 gate／simulation baseline，並以 `RiskContext` fail-closed 檢查 quote freshness／偏離、position、daily loss 與 gross exposure；尚未有 PostgreSQL／sidecar 權威 context provider，frequency 與 cooldown limits 也仍待 durable read model。 |
 | `apps/execution_gateway/store.py` | 部分移植 | `PostgresIntentStore` 提供 schema-scoped intent/outbox、recovery 與 observation；fills、callback、strategy state 和 risk usage tables 尚待 migration。 |
-| `apps/execution_gateway/worker.py`、`service.py` | 待 adapter | 沒有 Shioaji session 的 `ExecutionWorker` seam 已存在；HTTP broker adapter、callback/reconciliation worker 仍未接入，不能視為可送 simulation order。 |
+| `apps/execution_gateway/worker.py`、`service.py` | 部分移植 | `ExecutionWorker` 會從 durable journal 重建 immutable intent；loopback-only `ShioajiHttpDispatcher` 已可對隔離 mock HTTP server dispatch，且缺少 broker identity 時轉 `UNKNOWN`。Gateway 尚未構造 adapter；callback/reconciliation worker、唯一 session owner 與真實 sidecar 都仍未接入，不能視為可送 simulation order。 |
 | `packages/broker_shioaji` | 暫不移植 | 需先取得另行授權才可建立任何 Shioaji simulation session 或 mutation；LIVE 與 CA 維持 disabled。 |
 
 ## 已驗證的不變量

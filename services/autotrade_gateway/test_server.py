@@ -135,8 +135,20 @@ class GatewayServerTest(unittest.TestCase):
 
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
         with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(f"{self.base}/api/v1/order/cancel_order", method="POST"))
+            urlopen(Request(f"{self.base}/api/v1/order/update_price", method="POST"))
         self.assertEqual(raised.exception.code, 403)
+
+    def test_cancel_order_is_audited_but_cannot_dispatch_without_target_account_lookup(self) -> None:
+        body = json.dumps({"trade_id": "BROKER-ORDER-1"}).encode()
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(f"{self.base}/api/v1/order/cancel_order", data=body, method="POST"))
+        self.assertEqual(raised.exception.code, 409)
+        receipt = json.load(raised.exception)
+        self.assertEqual(receipt["status"], "RISK_REJECTED")
+        self.assertIn("trading_gate_not_armed", receipt["risk_reasons"])
+        self.assertIn("target_order_account_unverified", receipt["risk_reasons"])
+        self.assertIsNone(getattr(self.server, "order_store").outbox_state(receipt["intent_id"]))
+        self.assertEqual(ReadServiceHandler.received, [])
 
     def test_manual_place_order_is_durably_rejected_while_disarmed(self) -> None:
         body = json.dumps({

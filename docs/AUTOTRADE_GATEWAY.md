@@ -13,6 +13,10 @@ broker-free 的稽核 ingress，在目前固定 `DISARMED` 的設定下只會持
 intent/correlation receipt，絕不轉送 sidecar。這不是上游 Trade response
 compatibility 的完成宣告：cancel、update、close 與實際 broker worker 尚未接通。
 
+`POST /api/v1/order/cancel_order` 也會建立 `CANCEL` intent，但在 durable
+broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，會 fail closed
+為 `RISK_REJECTED`，絕不轉送 sidecar。這是稽核入口，不是可用的取消功能。
+
 `POST /api/v1/order/place_comboorder` 已同樣建立 `MANUAL_UI` intent，並把
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk
 receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍未接通。

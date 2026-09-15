@@ -314,6 +314,27 @@ class GatewayHandler(BaseHTTPRequestHandler):
             instrument={"kind": "COMBO", "legs": legs},
         )
 
+    def _manual_cancel_intent(self) -> Intent:
+        size = int(self.headers.get("Content-Length", "0"))
+        if size <= 0 or size > 8_192:
+            raise ValueError("invalid cancel order body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError("cancel order body must be an object")
+        target_order_id = value.get("trade_id")
+        if not isinstance(target_order_id, str) or not target_order_id:
+            raise ValueError("trade_id is required")
+        return Intent(
+            source=Source.MANUAL_UI,
+            account_id="SIM-UNVERIFIED",
+            symbol="CANCEL",
+            side="CANCEL",
+            quantity=0,
+            limit_price="0",
+            operation="CANCEL",
+            target_order_id=target_order_id,
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
@@ -353,6 +374,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        if path == "/api/v1/order/cancel_order":
+            try:
+                intent = self._manual_cancel_intent()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid cancel order"})
+                return
+            coordinator = getattr(self.server, "order_coordinator")
+            status, verdict = coordinator.accept(intent)
+            self._json(
+                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
+                {
+                    "intent_id": intent.intent_id,
+                    "correlation_id": intent.correlation_id,
+                    "status": status.value,
+                    "risk_reasons": list(verdict.reasons),
+                },
+            )
+            return
         if path == "/api/v1/order/place_comboorder":
             try:
                 intent = self._manual_combo_order_intent()

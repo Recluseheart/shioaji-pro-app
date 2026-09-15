@@ -66,6 +66,8 @@ class Intent:
     run_id: str | None = None
     order_price_type: str = "LMT"
     instrument: dict[str, object] | None = None
+    operation: str = "PLACE"
+    target_order_id: str | None = None
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
@@ -84,22 +86,29 @@ class RiskEngine:
         reasons: list[str] = []
         if gate is not Gate.ARMED:
             reasons.append("trading_gate_not_armed")
-        if not intent.account_id.startswith("SIM-"):
-            reasons.append("simulation_account_required")
-        if not intent.symbol or not intent.symbol.isalnum():
-            reasons.append("invalid_symbol")
-        if intent.side not in {"BUY", "SELL"}:
-            reasons.append("invalid_side")
-        if intent.quantity <= 0:
-            reasons.append("invalid_quantity")
-        if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
-            reasons.append("invalid_order_price_type")
-        elif intent.order_price_type == "LMT":
-            try:
-                if float(intent.limit_price) <= 0:
+        if intent.operation == "PLACE":
+            if not intent.account_id.startswith("SIM-"):
+                reasons.append("simulation_account_required")
+            if not intent.symbol or not intent.symbol.isalnum():
+                reasons.append("invalid_symbol")
+            if intent.side not in {"BUY", "SELL"}:
+                reasons.append("invalid_side")
+            if intent.quantity <= 0:
+                reasons.append("invalid_quantity")
+            if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
+                reasons.append("invalid_order_price_type")
+            elif intent.order_price_type == "LMT":
+                try:
+                    if float(intent.limit_price) <= 0:
+                        reasons.append("invalid_limit_price")
+                except ValueError:
                     reasons.append("invalid_limit_price")
-            except ValueError:
-                reasons.append("invalid_limit_price")
+        elif intent.operation == "CANCEL":
+            if not intent.target_order_id:
+                reasons.append("target_order_id_required")
+            reasons.append("target_order_account_unverified")
+        else:
+            reasons.append("invalid_operation")
         if intent.source is Source.STRATEGY and (not intent.strategy_id or not intent.run_id):
             reasons.append("strategy_identity_required")
         return Verdict(not reasons, tuple(reasons))

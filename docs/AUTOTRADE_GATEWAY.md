@@ -115,7 +115,8 @@ relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證）；它們只改變�
 Web 的 Autotrade overview 與七個 observer panels 共享單一 5 秒唯讀 refresh
 loop。暫時讀取失敗時，面板會保留最後一次成功的 durable projection，明確標為 stale，
 而不是把資料顯示成空白、觸發 mutation 或嘗試重送 UNKNOWN。最後一個 observer
-panel 卸載後 refresh loop 會停止。
+panel 卸載後 refresh loop 會停止。支援 `EventSource` 的 Web UI 也會訂閱上述
+SSE；event 只觸發同一份 overview 的唯讀 reload，SSE 中斷時仍使用 polling fallback。
 
 ## 訂單安全邊界
 

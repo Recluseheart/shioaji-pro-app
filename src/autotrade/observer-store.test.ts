@@ -38,4 +38,24 @@ describe('AutotradeObserverStore', () => {
         unsubscribeFirst();
         unsubscribeSecond();
     });
+
+    it('uses a durable-observation SSE event only to refresh the read model', async () => {
+        const fetchOverview = vi.fn().mockResolvedValue(overview);
+        let onOrder: (() => void) | undefined;
+        const source = {
+            addEventListener: vi.fn((type: string, listener: () => void) => {
+                if (type === 'autotrade-order') onOrder = listener;
+            }),
+            close: vi.fn(),
+        };
+        const store = new AutotradeObserverStore(fetchOverview, 60_000, () => source);
+        const unsubscribe = store.subscribe(vi.fn());
+
+        await vi.waitFor(() => expect(fetchOverview).toHaveBeenCalledTimes(1));
+        onOrder?.();
+        await vi.waitFor(() => expect(fetchOverview).toHaveBeenCalledTimes(2));
+
+        unsubscribe();
+        expect(source.close).toHaveBeenCalledOnce();
+    });
 });

@@ -11,6 +11,11 @@ export type AutotradeObserverState = {
 
 type Listener = (state: AutotradeObserverState) => void;
 type FetchOverview = () => Promise<AutotradeOverview>;
+type EventSourceLike = {
+    addEventListener: (type: string, listener: () => void) => void;
+    close: () => void;
+};
+type EventSourceFactory = () => EventSourceLike | null;
 
 const initialState: AutotradeObserverState = {
     overview: null,
@@ -18,6 +23,11 @@ const initialState: AutotradeObserverState = {
     lastUpdatedAt: null,
     stale: false,
 };
+
+function createAutotradeEventSource(): EventSourceLike | null {
+    if (typeof EventSource === 'undefined') return null;
+    return new EventSource('/api/v1/autotrade/events');
+}
 
 /**
  * Shared observer-only refresh loop for all Autotrade panels.
@@ -32,10 +42,13 @@ export class AutotradeObserverStore {
     private readonly listeners = new Set<Listener>();
     private timer: ReturnType<typeof setInterval> | null = null;
     private refreshInFlight: Promise<void> | null = null;
+    private refreshRequested = false;
+    private eventSource: EventSourceLike | null = null;
 
     constructor(
         private readonly fetchOverview: FetchOverview = fetchAutotradeOverview,
         private readonly refreshMs = AUTOTRADE_OBSERVER_REFRESH_MS,
+        private readonly eventSourceFactory: EventSourceFactory = createAutotradeEventSource,
     ) {}
 
     subscribe(listener: Listener): () => void {
@@ -53,7 +66,13 @@ export class AutotradeObserverStore {
     }
 
     refresh(): Promise<void> {
-        if (this.refreshInFlight) return this.refreshInFlight;
+        if (this.refreshInFlight) {
+            // An SSE event can arrive while a snapshot began before its
+            // durable write.  Queue exactly one follow-up read rather than
+            // losing that edge or starting unbounded concurrent requests.
+            this.refreshRequested = true;
+            return this.refreshInFlight;
+        }
         this.refreshInFlight = this.fetchOverview()
             .then((overview) => {
                 this.state = {
@@ -76,6 +95,10 @@ export class AutotradeObserverStore {
             })
             .finally(() => {
                 this.refreshInFlight = null;
+                if (this.refreshRequested) {
+                    this.refreshRequested = false;
+                    void this.refresh();
+                }
             });
         return this.refreshInFlight;
     }
@@ -83,11 +106,19 @@ export class AutotradeObserverStore {
     private start(): void {
         void this.refresh();
         this.timer = setInterval(() => { void this.refresh(); }, this.refreshMs);
+        this.eventSource = this.eventSourceFactory();
+        this.eventSource?.addEventListener('autotrade-order', () => {
+            // The event has no authority to mutate a local order.  It only
+            // tells the shared observer to reload the durable read model.
+            void this.refresh();
+        });
     }
 
     private stop(): void {
         if (this.timer !== null) clearInterval(this.timer);
         this.timer = null;
+        this.eventSource?.close();
+        this.eventSource = null;
     }
 
     private notify(): void {

@@ -5,6 +5,8 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import select
+import socket
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -33,12 +35,28 @@ def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
 
 class ReadServiceHandler(BaseHTTPRequestHandler):
     received: list[tuple[str, dict[str, str], bytes]] = []
+    market_hold_started = threading.Event()
+    market_hold_client_closed = threading.Event()
+    market_hold_release = threading.Event()
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
 
     def do_GET(self) -> None:  # noqa: N802
         type(self).received.append((self.path, dict(self.headers.items()), b""))
+        if self.path.startswith("/api/v1/stream/data?hold=1"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b": upstream-ready\n\n")
+            self.wfile.flush()
+            type(self).market_hold_started.set()
+            while not type(self).market_hold_release.is_set():
+                readable, _, _ = select.select([self.connection], [], [], 0.05)
+                if readable and self.connection.recv(1, socket.MSG_PEEK) == b"":
+                    type(self).market_hold_client_closed.set()
+                    return
+            return
         if self.path.startswith("/api/v1/stream/data"):
             payload = b"id: cursor-1\nevent: tick\ndata: {\"code\":\"2330\"}\n\n"
             self.send_response(200)
@@ -73,6 +91,9 @@ class ReadServiceHandler(BaseHTTPRequestHandler):
 class GatewayServerTest(unittest.TestCase):
     def setUp(self) -> None:
         ReadServiceHandler.received.clear()
+        ReadServiceHandler.market_hold_started.clear()
+        ReadServiceHandler.market_hold_client_closed.clear()
+        ReadServiceHandler.market_hold_release.clear()
         self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), ReadServiceHandler)
         self.upstream_thread = threading.Thread(target=self.upstream.serve_forever)
         self.upstream_thread.start()
@@ -85,6 +106,7 @@ class GatewayServerTest(unittest.TestCase):
         self.base = f"http://127.0.0.1:{self.server.server_port}"
 
     def tearDown(self) -> None:
+        ReadServiceHandler.market_hold_release.set()
         self.server.shutdown()
         self.thread.join()
         self.server.server_close()
@@ -1478,6 +1500,19 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Accept"], "text/event-stream")
         self.assertEqual(headers["Last-Event-Id"], "cursor-0")
         self.assertNotIn("Authorization", headers)
+
+    def test_market_sse_disconnect_closes_quiet_upstream_stream(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/stream/data?hold=1",
+            headers={"Accept": "text/event-stream"},
+        )
+        with urlopen(request, timeout=2) as response:
+            self.assertEqual(response.readline(), b": upstream-ready\n")
+        self.assertTrue(ReadServiceHandler.market_hold_started.wait(1))
+        self.assertTrue(
+            ReadServiceHandler.market_hold_client_closed.wait(2),
+            "downstream disconnect must close the quiet upstream SSE connection",
+        )
 
     def test_market_subscription_is_allowlisted_but_order_mutations_remain_denied(self) -> None:
         body = b'{"contracts":[{"code":"2330"}],"quote_type":"tick"}'

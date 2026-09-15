@@ -738,9 +738,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_response(response.status)
                 self.send_header("Content-Type", response.headers.get_content_type())
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
                 self.send_header("X-Accel-Buffering", "no")
                 self.end_headers()
-                while chunk := response.read(4_096):
+                self.close_connection = True
+                upstream_socket = response.fp.raw._sock  # type: ignore[union-attr]
+                upstream_socket.setblocking(False)
+                while True:
+                    if self._sse_client_disconnected():
+                        return
+                    try:
+                        chunk = response.read1(4_096)
+                    except BlockingIOError:
+                        select.select([upstream_socket], [], [], 1)
+                        continue
+                    if not chunk:
+                        return
                     self.wfile.write(chunk)
                     self.wfile.flush()
         except HTTPError as error:

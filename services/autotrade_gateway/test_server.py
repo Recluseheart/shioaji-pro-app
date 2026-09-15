@@ -156,6 +156,16 @@ class GatewayServerTest(unittest.TestCase):
                 upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
             )
 
+    def test_broker_callback_refuses_non_simulation_environment(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_BROKER_CALLBACK_SECRET": "test-only-callback-secret",
+            "AUTOTRADE_ENV": "LIVE",
+        }, clear=False), self.assertRaisesRegex(RuntimeError, "SIM only"):
+            create_server(
+                port=0,
+                upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
+            )
+
     def test_reference_strategy_signals_require_verified_risk_context(self) -> None:
         with patch.dict(os.environ, {
             "AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS": "1",

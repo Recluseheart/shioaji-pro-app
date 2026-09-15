@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .broker_http import HttpOpener
-from .order_core import Status
+from .order_core import IntentStore, Status
 from .simulation_snapshot import SimulationSnapshotProvider, SimulationStockAccount
 
 
@@ -57,3 +57,22 @@ class SimulationTradeProvider:
         if not isinstance(result, list):
             return ()
         return tuple(fact for item in result if (fact := terminal_callback_from_trade(item)) is not None)
+
+
+def apply_reconciled_terminals(store: IntentStore, facts: tuple[tuple[str, Status], ...]) -> int:
+    """Resolve only local UNKNOWN/RECONCILING orders with matching broker facts.
+
+    Broker-only facts and local orders without a matching terminal fact remain
+    untouched for operator review; this function never claims or creates outbox work.
+    """
+    by_broker_id = {broker_order_id: terminal for broker_order_id, terminal in facts}
+    resolved = 0
+    for order in store.observation_orders():
+        if order.get("status") not in {Status.UNKNOWN.value, Status.RECONCILING.value}:
+            continue
+        intent_id, broker_order_id = order.get("intent_id"), order.get("broker_order_id")
+        terminal = by_broker_id.get(broker_order_id) if isinstance(broker_order_id, str) else None
+        if isinstance(intent_id, str) and isinstance(broker_order_id, str) and terminal is not None:
+            store.record_reconciled_terminal(intent_id, broker_order_id, terminal)
+            resolved += 1
+    return resolved

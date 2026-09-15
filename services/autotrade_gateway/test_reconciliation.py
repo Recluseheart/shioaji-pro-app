@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import unittest
 
-from services.autotrade_gateway.order_core import Status
-from services.autotrade_gateway.reconciliation import SimulationTradeProvider, terminal_callback_from_trade
+from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
+from services.autotrade_gateway.reconciliation import apply_reconciled_terminals, SimulationTradeProvider, terminal_callback_from_trade
 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
 
 
 class ReconciliationParserTest(unittest.TestCase):
+    def test_apply_resolves_only_matching_unknown(self) -> None:
+        from datetime import datetime, timezone
+        from decimal import Decimal
+        store = SQLiteIntentStore(":memory:")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(store, Gate.ARMED, risk_context_provider=lambda _i: RiskContext(Decimal("1000"), datetime.now(timezone.utc))).accept(intent)
+        store.mark_pending_submit(intent.intent_id, "broker-1")
+        store.mark_delivery_unknown(intent.intent_id, "timeout")
+        self.assertEqual(apply_reconciled_terminals(store, (("broker-1", Status.FILLED), ("broker-only", Status.FILLED))), 1)
+        self.assertEqual(store.status(intent.intent_id), Status.FILLED)
+        store.close()
     def test_maps_only_matching_authoritative_terminal_trade_statuses(self) -> None:
         for source_status, expected in (
             ("Filled", Status.FILLED),

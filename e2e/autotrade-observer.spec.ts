@@ -587,6 +587,38 @@ test('Strategy control runs validate and dry-run through Gateway without an orde
     expect(orderMutations).toBe(0);
 });
 
+test('Autotrade observer preserves its last durable projection when refresh becomes stale', async ({ page }) => {
+    test.setTimeout(20_000);
+    let overviewReads = 0;
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        overviewReads += 1;
+        if (overviewReads === 1) {
+            await route.fulfill({ json: {
+                health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' },
+                risk: { limits: { max_order_quantity: 10000 }, limits_source: 'fixture' },
+            } });
+            return;
+        }
+        await route.fulfill({ status: 503, json: { message: 'fixture transient read failure' } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('風控與限額', { exact: true }).click();
+    await expect(page.getByText('單筆最大數量：10000')).toBeVisible();
+    await expect(page.getByRole('status').filter({
+        hasText: 'Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。',
+    })).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByText('單筆最大數量：10000')).toBeVisible();
+    expect(overviewReads).toBeGreaterThanOrEqual(2);
+    expect(orderMutations).toBe(0);
+});
+
 test('Signal Timeline renders a durable signal linked to its risk-rejected intent', async ({ page }) => {
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {

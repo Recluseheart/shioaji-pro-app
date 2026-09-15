@@ -238,6 +238,7 @@ uv run ruff check .
 uv run mypy
 python3 -m unittest services.autotrade_gateway.test_order_core \
   services.autotrade_gateway.test_server
+scripts/run_gateway_postgres_integration.sh
 PATH=/opt/homebrew/opt/node@22/bin:$PATH pnpm test
 PATH=/opt/homebrew/opt/node@22/bin:$PATH pnpm build
 PATH=/opt/homebrew/opt/node@22/bin:$PATH pnpm test:e2e

@@ -46,6 +46,66 @@ const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string 
     },
 };
 
+export type TimelineFilters = {
+    strategy: string;
+    symbol: string;
+    status: string;
+    from: string;
+    to: string;
+};
+
+const EMPTY_TIMELINE_FILTERS: TimelineFilters = {
+    strategy: '', symbol: '', status: '', from: '', to: '',
+};
+
+function matchesTimelineFilter(query: string, value: string | null | undefined): boolean {
+    return !query.trim() || Boolean(value && value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+}
+
+function detailString(details: Record<string, unknown>, field: string): string | null {
+    return typeof details[field] === 'string' ? details[field] as string : null;
+}
+
+function occursWithin(value: string | null | undefined, from: string, to: string): boolean {
+    if (!from && !to) return true;
+    if (!value) return false;
+    const occurredAt = Date.parse(value);
+    if (!Number.isFinite(occurredAt)) return false;
+    if (from) {
+        const fromAt = Date.parse(from);
+        if (!Number.isFinite(fromAt) || occurredAt < fromAt) return false;
+    }
+    if (to) {
+        const toAt = Date.parse(to);
+        if (!Number.isFinite(toAt) || occurredAt > toAt) return false;
+    }
+    return true;
+}
+
+/** Filters durable facts locally; it never changes a cursor, broker query, or order state. */
+export function filterTimeline(overview: AutotradeOverview, filters: TimelineFilters) {
+    const signalMatches = (signal: AutotradeSignal) =>
+        matchesTimelineFilter(filters.strategy, signal.strategy_id)
+        && matchesTimelineFilter(filters.symbol, signal.symbol)
+        && matchesTimelineFilter(filters.status, signal.status)
+        && occursWithin(signal.observed_at, filters.from, filters.to);
+    const decisionMatches = (decision: AutotradeOrderObservation) =>
+        matchesTimelineFilter(filters.strategy, decision.strategy_id)
+        && matchesTimelineFilter(filters.symbol, decision.symbol)
+        && matchesTimelineFilter(filters.status, decision.status)
+        && occursWithin(decision.decided_at ?? decision.updated_at, filters.from, filters.to);
+    const eventMatches = (event: AutotradeOverview['audit_events'][number]) =>
+        matchesTimelineFilter(filters.strategy, detailString(event.details, 'strategy_id'))
+        && matchesTimelineFilter(filters.symbol, detailString(event.details, 'symbol'))
+        && matchesTimelineFilter(filters.status, detailString(event.details, 'status') ?? event.event_type)
+        && occursWithin(event.occurred_at, filters.from, filters.to);
+    return {
+        signals: overview.signals.filter(signalMatches),
+        decisions: overview.decisions.filter(decisionMatches),
+        auditEvents: overview.audit_events.filter(eventMatches),
+    };
+}
+
 function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): number {
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
@@ -96,13 +156,18 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     const [killSwitchMessage, setKillSwitchMessage] = useState<string | null>(null);
     const [showAllOrders, setShowAllOrders] = useState(false);
+    const [timelineFilters, setTimelineFilters] = useState<TimelineFilters>(EMPTY_TIMELINE_FILTERS);
     useEffect(() => {
         return autotradeObserverStore.subscribe(setObserver);
     }, []);
     const { overview, error } = observer;
     const copy = PANEL_COPY[kind];
+    const timeline = overview ? filterTimeline(overview, timelineFilters) : null;
     const count = overview
-        ? kind === 'auto_orders' && showAllOrders ? overview.orders.length : countFor(kind, overview)
+        ? kind === 'auto_orders' && showAllOrders ? overview.orders.length
+            : kind === 'signal_timeline' && timeline
+                ? timeline.signals.length + timeline.decisions.length + timeline.auditEvents.length
+                : countFor(kind, overview)
         : 0;
     const displayedOrders = kind === 'reconciliation'
         ? overview?.reconciliation
@@ -153,6 +218,16 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     /> 顯示全部委託（含手動）
                 </label>
             )}
+            {kind === 'signal_timeline' && overview && timeline && (
+                <div role='group' aria-label='時間線篩選' style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <label>策略 <input aria-label='篩選策略' value={timelineFilters.strategy} onChange={(event) => setTimelineFilters((current) => ({ ...current, strategy: event.target.value }))} /></label>
+                    <label>商品 <input aria-label='篩選商品' value={timelineFilters.symbol} onChange={(event) => setTimelineFilters((current) => ({ ...current, symbol: event.target.value }))} /></label>
+                    <label>狀態 <input aria-label='篩選狀態' value={timelineFilters.status} onChange={(event) => setTimelineFilters((current) => ({ ...current, status: event.target.value }))} /></label>
+                    <label>起始時間 <input aria-label='篩選起始時間' type='datetime-local' value={timelineFilters.from} onChange={(event) => setTimelineFilters((current) => ({ ...current, from: event.target.value }))} /></label>
+                    <label>結束時間 <input aria-label='篩選結束時間' type='datetime-local' value={timelineFilters.to} onChange={(event) => setTimelineFilters((current) => ({ ...current, to: event.target.value }))} /></label>
+                    {(timelineFilters.strategy || timelineFilters.symbol || timelineFilters.status || timelineFilters.from || timelineFilters.to) && <button onClick={() => setTimelineFilters(EMPTY_TIMELINE_FILTERS)}>清除篩選</button>}
+                </div>
+            )}
             {(kind === 'auto_orders' || kind === 'reconciliation') && displayedOrders && displayedOrders.length > 0 && (
                 <div style={{ display: 'grid', gap: 5 }}>
                     {displayedOrders.map((item) => {
@@ -171,10 +246,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     })}
                 </div>
             )}
-            {kind === 'signal_timeline' && overview && (overview.signals.length > 0 || overview.decisions.length > 0 || overview.audit_events.length > 0) ? (
+            {kind === 'signal_timeline' && overview && timeline && (timeline.signals.length > 0 || timeline.decisions.length > 0 || timeline.auditEvents.length > 0) ? (
                 <div style={{ display: 'grid', gap: 5 }}>
-                    {overview.signals.map((signal) => <SignalObservation key={signal.signal_id} signal={signal} />)}
-                    {overview.decisions.map((decision) => (
+                    {timeline.signals.map((signal) => <SignalObservation key={signal.signal_id} signal={signal} />)}
+                    {timeline.decisions.map((decision) => (
                         <div key={decision.intent_id} style={{ borderLeft: '3px solid #f0b44d', paddingLeft: 7 }}>
                             {decision.source} · {operationLabel(decision.operation)} · {decision.status} · {decision.correlation_id.slice(0, 8)}
                             {decision.risk_decision_missing ? <div style={{ color: '#ef4444' }}>風控判定 journal 缺失；不得據此重送</div> : null}
@@ -182,7 +257,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {decision.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{decision.risk_reasons.join('、')}</div> : null}
                         </div>
                     ))}
-                    {overview.audit_events.map((event) => (
+                    {timeline.auditEvents.map((event) => (
                         <div key={event.event_id} style={{ borderLeft: '3px solid #4aa3ff', paddingLeft: 7 }}>
                             執行事件 · {event.event_type} · {event.intent_id ? `intent ${event.intent_id.slice(0, 8)}` : '全域'} · {event.occurred_at}
                             {Object.keys(event.details).length > 0 && <div style={{ color: '#aeb7c6' }}>細節：{formatPayload(event.details)}</div>}
@@ -190,6 +265,11 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     ))}
                 </div>
             ) : null}
+            {kind === 'signal_timeline' && overview && timeline
+                && overview.signals.length + overview.decisions.length + overview.audit_events.length > 0
+                && timeline.signals.length + timeline.decisions.length + timeline.auditEvents.length === 0 && (
+                    <div role='status' style={{ color: '#aeb7c6' }}>沒有符合目前篩選條件的 durable 事件。</div>
+                )}
             {kind === 'strategy_control' && (
                 <>
                     {overview?.strategies.map((item, index) => {

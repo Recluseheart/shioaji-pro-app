@@ -9,6 +9,7 @@ import { normalizeAutotradeOverview } from '../autotrade/client';
 import {
     automatedOrderObservations,
     DurableOrderDetail,
+    filterTimeline,
     orderObservationText,
     panelSummary,
     riskVerdictText,
@@ -18,6 +19,40 @@ beforeEach(() => vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true));
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Autotrade observer panel summaries', () => {
+    it('filters signals, decisions, and immutable events by strategy, product, status, and time', () => {
+        const overview = normalizeAutotradeOverview({
+            signals: [{
+                signal_id: 'signal-match', strategy_id: 'alpha', run_id: 'run-1', event_id: 'event-1',
+                signal_type: 'ENTRY', symbol: '2330', side: 'BUY', intent_id: 'intent-1',
+                correlation_id: 'correlation-1', status: 'RISK_REJECTED', risk_reasons: [],
+                observed_at: '2026-09-15T00:00:00+00:00',
+            }, {
+                signal_id: 'signal-other', strategy_id: 'beta', run_id: 'run-2', event_id: 'event-2',
+                signal_type: 'ENTRY', symbol: '2317', side: 'BUY', intent_id: 'intent-2',
+                correlation_id: 'correlation-2', status: 'SUBMITTED', risk_reasons: [],
+                observed_at: '2026-09-15T00:01:00+00:00',
+            }],
+            decisions: [{
+                intent_id: 'intent-1', correlation_id: 'correlation-1', source: 'STRATEGY', status: 'RISK_REJECTED',
+                strategy_id: 'alpha', symbol: '2330', decided_at: '2026-09-15T00:00:10+00:00', risk_reasons: [],
+            }],
+            audit_events: [{
+                event_id: 'audit-match', intent_id: 'intent-1', event_type: 'INTENT_EVALUATED',
+                details: { strategy_id: 'alpha', symbol: '2330', status: 'RISK_REJECTED' },
+                occurred_at: '2026-09-15T00:00:20+00:00',
+            }],
+        });
+
+        expect(filterTimeline(overview, {
+            strategy: 'alpha', symbol: '2330', status: 'RISK_REJECTED',
+            from: '2026-09-15T00:00:00+00:00', to: '2026-09-15T00:00:20+00:00',
+        })).toEqual({
+            signals: [overview.signals[0]],
+            decisions: [overview.decisions[0]],
+            auditEvents: [overview.audit_events[0]],
+        });
+    });
+
     it('does not describe populated simulation limits as unavailable', () => {
         const overview = normalizeAutotradeOverview({
             risk: { limits: { max_order_quantity: 10000 } },

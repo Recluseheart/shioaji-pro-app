@@ -46,6 +46,11 @@ test('Signal Timeline renders a durable signal linked to its risk-rejected inten
     await expect(page.getByText('event event-1 · run run-1 · 2026-09-15T00:00:00+00:00')).toBeVisible();
     await expect(page.getByText('風控：交易閘門尚未啟用')).toBeVisible();
     await expect(page.getByText('執行事件 · INTENT_EVALUATED · intent intent-1 · 2026-09-15T00:00:01+00:00')).toBeVisible();
+    await page.getByRole('textbox', { name: '篩選商品' }).fill('2317');
+    await expect(page.getByText(/訊號 · reference-fixture/)).toHaveCount(0);
+    await expect(page.getByText('沒有符合目前篩選條件的 durable 事件。')).toBeVisible();
+    await page.getByRole('button', { name: '清除篩選' }).click();
+    await expect(page.getByText(/訊號 · reference-fixture/)).toBeVisible();
     await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
 });
 

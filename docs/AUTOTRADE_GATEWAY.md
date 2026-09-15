@@ -61,6 +61,11 @@ outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／St
 即使舊版或遠端 UI 直接呼叫其 API，Gateway 也會回傳 `403 strategy runtime is disabled`，
 不會建立 intent 或連接 sidecar。
 
+「訊號與決策時間線」會在 browser 端以策略、商品、狀態與時間範圍篩選 durable
+signal、intent/risk decision 與 immutable audit event。篩選只縮小已取得的 read
+model，不會改變 SSE cursor、發起 broker query、重送委託或寫入任何狀態；沒有可用時間戳
+的資料在指定時間範圍內不會被當成匹配。
+
 `POST /api/v1/autotrade/kill-switch` 是唯一可用的 control mutation，但它只能加嚴：
 request 必須提供非空 `reason` 與有效 `Idempotency-Key`，並將 durable gate 從
 `DISARMED` 轉為 `KILLED`。本 Gateway 沒有 unkill 或 arm route；重啟後仍維持

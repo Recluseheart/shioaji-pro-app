@@ -297,6 +297,25 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
 
+    def test_limit_price_must_be_finite_and_positive(self) -> None:
+        for price in ("0", "NaN", "Infinity", "-Infinity"):
+            with self.subTest(price=price):
+                intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, price)
+                status, verdict = armed_coordinator(self.store).accept(intent)
+                self.assertEqual(status, Status.RISK_REJECTED)
+                self.assertIn("invalid_limit_price", verdict.reasons)
+                self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
+    def test_nonfinite_quote_is_stale_for_an_armed_intent(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        verdict = RiskEngine().evaluate(
+            intent,
+            Gate.ARMED,
+            RiskContext(Decimal("NaN"), datetime.now(timezone.utc)),
+        )
+        self.assertFalse(verdict.allowed)
+        self.assertIn("stale_quote", verdict.reasons)
+
     def test_static_simulation_limits_apply_even_when_the_gate_is_armed(self) -> None:
         cases = (
             (Intent(Source.MANUAL_UI, "SIM-999", "2330", "BUY", 1, "1000"), "simulation_account_not_allowed"),

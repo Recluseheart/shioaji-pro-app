@@ -389,7 +389,7 @@ class RiskEngine:
             elif intent.order_price_type == "LMT":
                 try:
                     price = Decimal(intent.limit_price)
-                    if price <= 0:
+                    if not price.is_finite() or price <= 0:
                         reasons.append("invalid_limit_price")
                     elif price * intent.quantity > self.limits.max_order_notional:
                         reasons.append("notional_limit_exceeded")
@@ -430,12 +430,24 @@ class RiskEngine:
         """
         if context is None:
             return ["risk_context_unavailable"]
+        limit_price: Decimal | None = None
+        if intent.order_price_type == "LMT":
+            try:
+                limit_price = Decimal(intent.limit_price)
+            except (InvalidOperation, ValueError):
+                # Static validation records the user-visible reason.  Do not
+                # let an invalid durable payload crash this second line of
+                # defence while the Gate is ARMED.
+                return []
+            if not limit_price.is_finite() or limit_price <= 0:
+                return []
         reasons: list[str] = []
         timestamp = now()
         quote_price = context.quote_price
         quote_at = context.quote_at
         if (
             quote_price is None
+            or not quote_price.is_finite()
             or quote_price <= 0
             or quote_at is None
             or (timestamp - quote_at).total_seconds() > self.limits.max_quote_age_seconds
@@ -443,15 +455,18 @@ class RiskEngine:
             reasons.append("stale_quote")
         else:
             if intent.order_price_type == "LMT":
+                assert limit_price is not None
                 try:
-                    deviation = abs(Decimal(intent.limit_price) - quote_price) / quote_price
+                    deviation = abs(limit_price - quote_price) / quote_price
                     if deviation > self.limits.max_price_deviation:
                         reasons.append("price_deviation_exceeded")
                 except InvalidOperation:
                     reasons.append("invalid_limit_price")
-            proposed_notional = Decimal(intent.quantity) * (
-                quote_price if intent.order_price_type != "LMT" else Decimal(intent.limit_price)
-            )
+            if intent.order_price_type == "LMT":
+                assert limit_price is not None
+                proposed_notional = Decimal(intent.quantity) * limit_price
+            else:
+                proposed_notional = Decimal(intent.quantity) * quote_price
             current_quantity = context.positions.get(intent.symbol, RiskPosition()).quantity
             projected_quantity = current_quantity + (intent.quantity if intent.side == "BUY" else -intent.quantity)
             if abs(projected_quantity) > self.limits.max_position_per_symbol:

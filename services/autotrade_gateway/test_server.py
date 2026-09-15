@@ -505,9 +505,11 @@ class GatewayServerTest(unittest.TestCase):
                 getattr(restarted, "order_store").close()
 
     def test_every_mutation_is_denied_before_broker_access(self) -> None:
-        with self.assertRaises(HTTPError) as raised:
-            urlopen(Request(f"{self.base}/api/v1/order/reserve_stock", method="POST"))
-        self.assertEqual(raised.exception.code, 403)
+        for path in ("/api/v1/order/reserve_stock", "/api/v1/paper/update_status"):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(f"{self.base}{path}", method="POST"))
+            self.assertEqual(raised.exception.code, 403)
+        self.assertEqual(ReadServiceHandler.received, [])
 
     def test_cancel_order_is_audited_but_cannot_dispatch_without_target_account_lookup(self) -> None:
         body = json.dumps({"trade_id": "BROKER-ORDER-1"}).encode()

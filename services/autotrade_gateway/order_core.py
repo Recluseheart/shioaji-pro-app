@@ -275,6 +275,9 @@ class IntentStore(Protocol):
     def record_terminal_callback(
         self, intent_id: str, broker_order_id: str, terminal: Status,
     ) -> None: ...
+    def record_reconciled_terminal(
+        self, intent_id: str, broker_order_id: str, terminal: Status,
+    ) -> None: ...
     def observation_orders(self) -> list[dict[str, object]]: ...
     def observation_risk_decisions(self) -> list[dict[str, object]]: ...
     def observation_audit_events(self) -> list[dict[str, object]]: ...
@@ -769,6 +772,22 @@ class SQLiteIntentStore:
                     timestamp,
                 ),
             )
+
+    def record_reconciled_terminal(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+            raise ValueError("reconciled status must be terminal")
+        with self._lock, self.connection:
+            row = self.connection.execute("SELECT status, broker_order_id FROM order_intents WHERE intent_id=?", (intent_id,)).fetchone()
+            if row is None or row["broker_order_id"] != broker_order_id:
+                raise ValueError("reconciliation identity does not match intent")
+            if Status(row["status"]) not in {Status.UNKNOWN, Status.RECONCILING}:
+                raise ValueError("reconciliation is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute("UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?", (terminal.value, timestamp, intent_id))
+            self.connection.execute("UPDATE execution_outbox SET state='TERMINAL', updated_at=? WHERE intent_id=?", (timestamp, intent_id))
+            self.connection.execute("UPDATE reconciliation_cases SET state='RESOLVED', updated_at=? WHERE intent_id=?", (timestamp, intent_id))
+            self.connection.execute("""INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, ?, 'BROKER_RECONCILED_TERMINAL', ?, ?)""", (str(uuid4()), intent_id, json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")), timestamp))
 
     def observation_orders(self) -> list[dict[str, object]]:
         with self._lock:

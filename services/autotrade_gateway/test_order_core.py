@@ -374,6 +374,18 @@ class OrderCoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "current intent status"):
             self.store.record_terminal_callback(intent.intent_id, "MOCK-ORDER-1", Status.CANCELLED)
 
+    def test_reconciled_terminal_resolves_unknown_with_bound_identity(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(self.store).accept(intent)
+        self.store.mark_pending_submit(intent.intent_id, "RECONCILE-1")
+        self.store.mark_delivery_unknown(intent.intent_id, "timeout")
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.store.record_reconciled_terminal(intent.intent_id, "OTHER", Status.FILLED)
+        self.store.record_reconciled_terminal(intent.intent_id, "RECONCILE-1", Status.FILLED)
+        self.assertEqual(self.store.status(intent.intent_id), Status.FILLED)
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "TERMINAL")
+        self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "BROKER_RECONCILED_TERMINAL")
+
     def test_existing_sqlite_journal_gains_broker_identity_without_rebuild(self) -> None:
         self.store.close()
         journal = Path(self.temp_dir.name) / "gateway-test.db"

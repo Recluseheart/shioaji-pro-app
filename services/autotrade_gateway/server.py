@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 
-from .order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
+from .order_core import DuplicateIntentError, Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
 from .strategy_runtime import StrategyRuntime
 
 
@@ -203,16 +203,44 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def _accept_or_reuse_intent(self, intent: Intent) -> None:
         store = getattr(self.server, "order_store")
         if store.has_intent(intent.intent_id):
-            existing = next(item for item in store.observation_orders() if item["intent_id"] == intent.intent_id)
-            self._json(HTTPStatus.CONFLICT, {
-                "intent_id": existing["intent_id"], "correlation_id": existing["correlation_id"],
-                "status": existing["status"], "risk_reasons": existing["risk_reasons"],
-            })
+            self._emit_existing_or_collision(intent)
             return
-        status, verdict = getattr(self.server, "order_coordinator").accept(intent)
+        try:
+            status, verdict = getattr(self.server, "order_coordinator").accept(intent)
+        except DuplicateIntentError:
+            # A second worker may have observed the id before the first worker
+            # committed it.  The unique constraint is the arbiter; now return
+            # the durable receipt rather than leaking a database error or
+            # creating another intent.
+            self._emit_existing_or_collision(intent)
+            return
         self._json(HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT, {
             "intent_id": intent.intent_id, "correlation_id": intent.correlation_id,
             "status": status.value, "risk_reasons": list(verdict.reasons),
+        })
+
+    def _emit_existing_or_collision(self, intent: Intent) -> None:
+        """Return a retry receipt only when it represents this exact request."""
+        store = getattr(self.server, "order_store")
+        if not store.has_intent(intent.intent_id):
+            # This can only happen if an out-of-process store was replaced
+            # between conflict detection and the read.  Do not manufacture a
+            # receipt or retry it implicitly.
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "message": "idempotency receipt is not available; retry with the same key",
+                "intent_id": intent.intent_id,
+            })
+            return
+        if not store.request_matches(intent):
+            self._json(HTTPStatus.CONFLICT, {
+                "message": "idempotency key is already used by a different request",
+                "intent_id": intent.intent_id,
+            })
+            return
+        existing = next(item for item in store.observation_orders() if item["intent_id"] == intent.intent_id)
+        self._json(HTTPStatus.CONFLICT, {
+            "intent_id": existing["intent_id"], "correlation_id": existing["correlation_id"],
+            "status": existing["status"], "risk_reasons": existing["risk_reasons"],
         })
 
     def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
@@ -383,7 +411,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         account = order.get("account")
         if not isinstance(account, dict):
             raise ValueError("combo order account is required")
-        return Intent(
+        return self._with_idempotency_key(Intent(
             source=Source.MANUAL_UI,
             account_id=str(account["account_id"]),
             # The individual legs are retained below; COMBO is only the
@@ -394,7 +422,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
             instrument={"kind": "COMBO", "legs": legs},
-        )
+        ))
 
     def _manual_cancel_intent(self) -> Intent:
         return self._manual_target_order_intent("CANCEL", ())
@@ -414,7 +442,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if field not in value:
                 raise ValueError(f"{field} is required")
             changes[field] = value[field]
-        return Intent(
+        return self._with_idempotency_key(Intent(
             source=Source.MANUAL_UI,
             account_id="SIM-UNVERIFIED",
             symbol="CANCEL",
@@ -424,7 +452,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             operation=operation,
             target_order_id=target_order_id,
             operation_payload=changes or None,
-        )
+        ))
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
@@ -521,17 +549,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid target order mutation"})
                 return
-            coordinator = getattr(self.server, "order_coordinator")
-            status, verdict = coordinator.accept(intent)
-            self._json(
-                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
-                {
-                    "intent_id": intent.intent_id,
-                    "correlation_id": intent.correlation_id,
-                    "status": status.value,
-                    "risk_reasons": list(verdict.reasons),
-                },
-            )
+            self._accept_or_reuse_intent(intent)
             return
         if path == "/api/v1/order/place_comboorder":
             try:
@@ -539,17 +557,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid combo order"})
                 return
-            coordinator = getattr(self.server, "order_coordinator")
-            status, verdict = coordinator.accept(intent)
-            self._json(
-                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
-                {
-                    "intent_id": intent.intent_id,
-                    "correlation_id": intent.correlation_id,
-                    "status": status.value,
-                    "risk_reasons": list(verdict.reasons),
-                },
-            )
+            self._accept_or_reuse_intent(intent)
             return
         if path == "/api/v1/order/place_order":
             try:
@@ -557,25 +565,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid manual order"})
                 return
-            store = getattr(self.server, "order_store")
-            if store.has_intent(intent.intent_id):
-                existing = next(item for item in store.observation_orders() if item["intent_id"] == intent.intent_id)
-                self._json(HTTPStatus.CONFLICT, {
-                    "intent_id": existing["intent_id"], "correlation_id": existing["correlation_id"],
-                    "status": existing["status"], "risk_reasons": existing["risk_reasons"],
-                })
-                return
-            coordinator = getattr(self.server, "order_coordinator")
-            status, verdict = coordinator.accept(intent)
-            self._json(
-                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
-                {
-                    "intent_id": intent.intent_id,
-                    "correlation_id": intent.correlation_id,
-                    "status": status.value,
-                    "risk_reasons": list(verdict.reasons),
-                },
-            )
+            self._accept_or_reuse_intent(intent)
             return
         if path == "/api/v1/autotrade/intents":
             try:
@@ -583,17 +573,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid autotrade intent"})
                 return
-            coordinator = getattr(self.server, "order_coordinator")
-            status, verdict = coordinator.accept(intent)
-            self._json(
-                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
-                {
-                    "intent_id": intent.intent_id,
-                    "correlation_id": intent.correlation_id,
-                    "status": status.value,
-                    "risk_reasons": list(verdict.reasons),
-                },
-            )
+            self._accept_or_reuse_intent(intent)
             return
         if path in READ_QUERY_POST_PATHS or is_allowed_market_stream_post(path):
             try:

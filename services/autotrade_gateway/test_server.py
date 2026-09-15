@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -282,6 +283,103 @@ class GatewayServerTest(unittest.TestCase):
             receipts.append(json.load(raised.exception))
         self.assertEqual(receipts[0]["intent_id"], receipts[1]["intent_id"])
         self.assertEqual(len(getattr(self.server, "order_store").observation_orders()), 1)
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_idempotency_key_cannot_be_reused_for_a_different_order(self) -> None:
+        first_body = {
+            "contract": {"code": "2330"},
+            "stock_order": {
+                "action": "Buy", "price": 1000, "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }
+        changed_body = {
+            **first_body,
+            "stock_order": {**first_body["stock_order"], "quantity": 2},
+        }
+        headers = {"Idempotency-Key": "manual-retry-conflict"}
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(
+                f"{self.base}/api/v1/order/place_order", data=json.dumps(first_body).encode(), method="POST",
+                headers=headers,
+            ))
+        first_receipt = json.load(raised.exception)
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(Request(
+                f"{self.base}/api/v1/order/place_order", data=json.dumps(changed_body).encode(), method="POST",
+                headers=headers,
+            ))
+        self.assertEqual(raised.exception.code, 409)
+        collision = json.load(raised.exception)
+        self.assertEqual(collision["intent_id"], first_receipt["intent_id"])
+        self.assertEqual(collision["message"], "idempotency key is already used by a different request")
+        self.assertEqual(len(getattr(self.server, "order_store").observation_orders()), 1)
+
+    def test_all_manual_mutation_ingresses_reuse_their_idempotent_receipts(self) -> None:
+        requests = (
+            ("cancel_order", {"trade_id": "BROKER-ORDER-1"}),
+            ("update_price", {"trade_id": "BROKER-ORDER-1", "price": 1000}),
+            ("update_qty", {"trade_id": "BROKER-ORDER-1", "quantity": 2}),
+            ("place_comboorder", {
+                "combo_contract": {"legs": [{"code": "TXFZ6"}, {"code": "TXFY6"}]},
+                "order": {
+                    "action": "Buy", "price": 0, "price_type": "MKT", "quantity": 1,
+                    "account": {"account_id": "SIM-001"},
+                },
+            }),
+        )
+        for index, (path, body) in enumerate(requests):
+            with self.subTest(path=path):
+                headers = {"Idempotency-Key": f"manual-mutation-retry-{index}"}
+                receipts = []
+                for _ in range(2):
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(Request(
+                            f"{self.base}/api/v1/order/{path}", data=json.dumps(body).encode(), method="POST",
+                            headers=headers,
+                        ))
+                    self.assertEqual(raised.exception.code, 409)
+                    receipts.append(json.load(raised.exception))
+                self.assertEqual(receipts[0]["intent_id"], receipts[1]["intent_id"])
+        self.assertEqual(len(getattr(self.server, "order_store").observation_orders()), len(requests))
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_concurrent_same_key_replays_the_durable_receipt_without_a_500(self) -> None:
+        body = json.dumps({
+            "contract": {"code": "2330"},
+            "stock_order": {
+                "action": "Buy", "price": 1000, "quantity": 1,
+                "account": {"account_id": "SIM-001"},
+            },
+        }).encode()
+        store = getattr(self.server, "order_store")
+        original_has_intent = store.has_intent
+        first_reads = threading.Barrier(2)
+        calls = 0
+
+        def synchronize_initial_reads(intent_id: str) -> bool:
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                first_reads.wait(timeout=5)
+            return original_has_intent(intent_id)
+
+        def post() -> tuple[int, dict[str, object]]:
+            try:
+                urlopen(Request(
+                    f"{self.base}/api/v1/order/place_order", data=body, method="POST",
+                    headers={"Idempotency-Key": "concurrent-manual-retry"},
+                ))
+            except HTTPError as error:
+                return error.code, json.load(error)
+            self.fail("DISARMED mutation unexpectedly returned success")
+
+        with patch.object(store, "has_intent", side_effect=synchronize_initial_reads):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _unused: post(), range(2)))
+        self.assertEqual([status for status, _receipt in results], [409, 409])
+        self.assertEqual(results[0][1]["intent_id"], results[1][1]["intent_id"])
+        self.assertEqual(len(store.observation_orders()), 1)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_market_order_shape_is_audited_without_a_fake_limit_price_error(self) -> None:

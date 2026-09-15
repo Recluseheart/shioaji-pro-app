@@ -50,6 +50,10 @@ class Status(str, Enum):
     MANUAL_REVIEW = "MANUAL_REVIEW"
 
 
+class DuplicateIntentError(Exception):
+    """A durable intent id was already recorded by a concurrent retry."""
+
+
 _UNCERTAIN = {
     Status.APPROVED,
     Status.SENDING,
@@ -76,6 +80,39 @@ class Intent:
     intent_id: str = field(default_factory=lambda: str(uuid4()))
     correlation_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(default_factory=now)
+
+
+_REQUEST_IDENTITY_EXCLUSIONS = frozenset({"intent_id", "correlation_id", "created_at"})
+
+
+def intent_request_fingerprint(intent: Intent) -> str:
+    """Return the stable semantic request identity used for safe retries.
+
+    Transport retries receive a deterministic intent id from their
+    ``Idempotency-Key``.  The id itself, correlation id, and creation time
+    must not decide whether a later request is the same mutation; every
+    broker-relevant field must.  Keeping this canonical representation beside
+    ``Intent`` makes the SQLite and PostgreSQL audit stores enforce identical
+    retry semantics.
+    """
+    payload = asdict(intent)
+    payload["source"] = intent.source.value
+    for field_name in _REQUEST_IDENTITY_EXCLUSIONS:
+        payload.pop(field_name, None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def persisted_request_matches(intent: Intent, payload_json: str) -> bool:
+    """Compare an incoming intent to a stored payload without exposing it."""
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    for field_name in _REQUEST_IDENTITY_EXCLUSIONS:
+        payload.pop(field_name, None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str) == intent_request_fingerprint(intent)
 
 
 @dataclass(frozen=True)
@@ -199,17 +236,20 @@ class SQLiteIntentStore:
         payload["created_at"] = intent.created_at.isoformat()
         timestamp = now().isoformat()
         with self._lock, self.connection:
-            self.connection.execute(
+            cursor = self.connection.execute(
                 """INSERT INTO order_intents(
                     intent_id, correlation_id, source, strategy_id, run_id, payload_json,
                     status, risk_reasons_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(intent_id) DO NOTHING""",
                 (
                     intent.intent_id, intent.correlation_id, intent.source.value,
                     intent.strategy_id, intent.run_id, json.dumps(payload, separators=(",", ":")),
                     status.value, json.dumps(verdict.reasons), intent.created_at.isoformat(), timestamp,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise DuplicateIntentError(intent.intent_id)
             if verdict.allowed:
                 self.connection.execute(
                     "INSERT INTO execution_outbox(intent_id, state, created_at, updated_at) VALUES (?, 'PENDING', ?, ?)",
@@ -230,6 +270,14 @@ class SQLiteIntentStore:
                 "SELECT 1 FROM order_intents WHERE intent_id=?", (intent_id,),
             ).fetchone()
         return row is not None
+
+    def request_matches(self, intent: Intent) -> bool:
+        """Return true only when an existing durable retry has identical input."""
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=?", (intent.intent_id,),
+            ).fetchone()
+        return row is not None and persisted_request_matches(intent, str(row["payload_json"]))
 
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:

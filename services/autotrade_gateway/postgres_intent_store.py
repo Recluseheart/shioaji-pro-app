@@ -7,7 +7,15 @@ import re
 from dataclasses import asdict
 from threading import Lock
 
-from .order_core import Intent, Status, Verdict, _UNCERTAIN, now
+from .order_core import (
+    _UNCERTAIN,
+    DuplicateIntentError,
+    Intent,
+    Status,
+    Verdict,
+    now,
+    persisted_request_matches,
+)
 
 
 class PostgresIntentStore:
@@ -54,15 +62,18 @@ class PostgresIntentStore:
         payload["created_at"] = intent.created_at.isoformat()
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
-            self.connection.execute(
+            cursor = self.connection.execute(
                 """INSERT INTO order_intents(
                     intent_id, correlation_id, source, strategy_id, run_id, payload_json,
                     status, risk_reasons_json, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(intent_id) DO NOTHING""",
                 (intent.intent_id, intent.correlation_id, intent.source.value, intent.strategy_id,
                  intent.run_id, json.dumps(payload, separators=(",", ":")), status.value,
                  json.dumps(verdict.reasons), intent.created_at.isoformat(), timestamp),
             )
+            if cursor.rowcount != 1:
+                raise DuplicateIntentError(intent.intent_id)
             if verdict.allowed:
                 self.connection.execute(
                     "INSERT INTO execution_outbox(intent_id,state,created_at,updated_at) VALUES (%s,'PENDING',%s,%s)",
@@ -83,6 +94,14 @@ class PostgresIntentStore:
                 "SELECT 1 FROM order_intents WHERE intent_id=%s", (intent_id,),
             ).fetchone()
         return row is not None
+
+    def request_matches(self, intent: Intent) -> bool:
+        """Return true only when an existing durable retry has identical input."""
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=%s", (intent.intent_id,),
+            ).fetchone()
+        return row is not None and persisted_request_matches(intent, str(row["payload_json"]))
 
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:

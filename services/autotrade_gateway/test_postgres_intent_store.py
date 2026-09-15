@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import unittest
+from dataclasses import replace
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, Source, Status
+from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, OrderCoordinator, Source, Status
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -38,6 +39,24 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
+
+    def test_request_match_requires_every_broker_relevant_field_to_match(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store).accept(intent)
+        self.assertTrue(self.store.request_matches(replace(
+            intent,
+            correlation_id="postgres-retry-correlation",
+        )))
+        self.assertFalse(self.store.request_matches(replace(intent, quantity=2)))
+        self.assertFalse(self.store.request_matches(replace(intent, operation="CANCEL")))
+
+    def test_duplicate_persist_is_an_explicit_atomic_retry_signal(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        coordinator = OrderCoordinator(self.store)
+        coordinator.accept(intent)
+        with self.assertRaises(DuplicateIntentError):
+            coordinator.accept(intent)
+        self.assertEqual(len(self.store.observation_orders()), 1)
 
     def test_worker_timeout_is_unknown_without_retry(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

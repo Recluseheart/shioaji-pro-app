@@ -28,6 +28,12 @@ broker order identity 入口，因此不會另開一條未對帳的組合單 mut
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk
 receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍未接通。
 
+上述所有手動 audit ingress 都接受嚴格格式的 `Idempotency-Key`。相同 key 與
+完全相同的 broker-relevant request 只會重播第一筆 durable receipt；若 key 已經
+用於不同的商品、數量、價格、目標委託或操作內容，Gateway 會回傳 `409`，保留原始
+稽核紀錄且不建立第二筆 intent。這個保護同時適用 SQLite 開發 journal 與 PostgreSQL
+schema store，不是瀏覽器端去重。
+
 Gateway 也註冊一個從 legacy 來源移植的 `reference-fixture` strategy
 descriptor，供唯讀 UI 呈現策略生命週期。它固定為 `DISABLED`，沒有市場
 subscription、HTTP 啟動路由或 broker capability。僅隔離測試可明確啟用 fixture

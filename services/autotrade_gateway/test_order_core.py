@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -7,6 +8,7 @@ import unittest
 
 from services.autotrade_gateway.order_core import (
     Gate,
+    DuplicateIntentError,
     Intent,
     OrderCoordinator,
     Source,
@@ -32,6 +34,24 @@ class OrderCoreTest(unittest.TestCase):
         self.assertIn("trading_gate_not_armed", verdict.reasons)
         self.assertEqual(self.store.status(intent.intent_id), Status.RISK_REJECTED)
         self.assertIsNone(self.store.outbox_state(intent.intent_id))
+
+    def test_request_match_requires_every_broker_relevant_field_to_match(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store).accept(intent)
+        self.assertTrue(self.store.request_matches(replace(
+            intent,
+            correlation_id="retry-correlation",
+        )))
+        self.assertFalse(self.store.request_matches(replace(intent, quantity=2)))
+        self.assertFalse(self.store.request_matches(replace(intent, operation="CANCEL")))
+
+    def test_duplicate_persist_is_an_explicit_atomic_retry_signal(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        coordinator = OrderCoordinator(self.store)
+        coordinator.accept(intent)
+        with self.assertRaises(DuplicateIntentError):
+            coordinator.accept(intent)
+        self.assertEqual(len(self.store.observation_orders()), 1)
 
     def test_strategy_identity_and_source_are_required_for_common_ingress(self) -> None:
         incomplete = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000")

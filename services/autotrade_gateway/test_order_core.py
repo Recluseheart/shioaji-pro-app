@@ -29,7 +29,7 @@ def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
     return OrderCoordinator(
         store,
         Gate.ARMED,
-        risk_context_provider=lambda: RiskContext(
+        risk_context_provider=lambda _intent: RiskContext(
             quote_price=Decimal("1000"),
             quote_at=datetime.now(timezone.utc),
         ),
@@ -90,6 +90,21 @@ class OrderCoreTest(unittest.TestCase):
         self.assertIn("risk_context_unavailable", verdict.reasons)
         self.assertIsNone(self.store.outbox_state(intent.intent_id))
 
+    def test_risk_context_provider_receives_the_immutable_intent(self) -> None:
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        seen: list[str] = []
+        coordinator = OrderCoordinator(
+            self.store,
+            Gate.ARMED,
+            risk_context_provider=lambda received: (
+                seen.append(received.intent_id) or RiskContext(
+                    quote_price=Decimal("1000"), quote_at=datetime.now(timezone.utc),
+                )
+            ),
+        )
+        self.assertEqual(coordinator.accept(intent)[0], Status.APPROVED)
+        self.assertEqual(seen, [intent.intent_id])
+
     def test_verified_simulation_allowlist_does_not_depend_on_account_id_prefix(self) -> None:
         intent = Intent(Source.MANUAL_UI, "paper-account-42", "2330", "BUY", 1, "1000")
         verdict = RiskEngine(RiskLimits(allowed_accounts=("paper-account-42",))).evaluate(
@@ -104,7 +119,7 @@ class OrderCoreTest(unittest.TestCase):
         coordinator = OrderCoordinator(
             self.store,
             Gate.ARMED,
-            risk_context_provider=lambda: RiskContext(
+            risk_context_provider=lambda _intent: RiskContext(
                 quote_price=Decimal("1000"),
                 quote_at=datetime.now(timezone.utc) - timedelta(seconds=6),
             ),

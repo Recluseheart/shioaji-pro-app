@@ -23,7 +23,7 @@ def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
     return OrderCoordinator(
         store,
         Gate.ARMED,
-        risk_context_provider=lambda: RiskContext(
+        risk_context_provider=lambda _intent: RiskContext(
             quote_price=Decimal("1000"),
             quote_at=datetime.now(timezone.utc),
         ),

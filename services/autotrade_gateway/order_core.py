@@ -1128,7 +1128,7 @@ class OrderCoordinator:
         store: IntentStore,
         gate: Gate = Gate.DISARMED,
         risk: RiskEngine | None = None,
-        risk_context_provider: Callable[[], RiskContext | None] | None = None,
+        risk_context_provider: Callable[[Intent], RiskContext | None] | None = None,
     ) -> None:
         self.store = store
         self.gate = gate
@@ -1136,6 +1136,6 @@ class OrderCoordinator:
         self.risk_context_provider = risk_context_provider
 
     def accept(self, intent: Intent) -> tuple[Status, Verdict]:
-        context = self.risk_context_provider() if self.risk_context_provider else None
+        context = self.risk_context_provider(intent) if self.risk_context_provider else None
         verdict = self.risk.evaluate(intent, self.gate, context)
         return self.store.persist(intent, verdict), verdict

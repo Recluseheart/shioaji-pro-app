@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
 from services.autotrade_gateway.server import create_server
+from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
 
 def armed_coordinator(store: SQLiteIntentStore) -> OrderCoordinator:
@@ -248,6 +249,26 @@ class GatewayServerTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             urlopen(f"{self.base}/api/v1/autotrade/strategies/not-a-strategy")
         self.assertEqual(raised.exception.code, 404)
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_signals_route_projects_a_durable_fixture_signal_without_a_sidecar_call(self) -> None:
+        store = getattr(self.server, "order_store")
+        runtime = StrategyRuntime(OrderCoordinator(store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertIsNotNone(runtime.process_fixture_event({
+            "reference_signal": True,
+            "event_id": "durable-signal-read",
+            "observed_at": "2026-09-15T00:00:00+00:00",
+        }))
+        self.server.strategy_runtime = runtime  # type: ignore[attr-defined]
+
+        with urlopen(f"{self.base}/api/v1/autotrade/signals") as response:
+            signals = json.load(response)["items"]
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["event_id"], "durable-signal-read")
+        self.assertEqual(signals[0]["status"], "RISK_REJECTED")
+        self.assertEqual(signals[0]["risk_reasons"], ["trading_gate_not_armed"])
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            self.assertEqual(json.load(response)["signals"], signals)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_intents_endpoint_returns_durable_read_only_observations(self) -> None:

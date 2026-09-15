@@ -11,6 +11,7 @@ from .order_core import (
     _UNCERTAIN,
     DuplicateIntentError,
     Intent,
+    StrategySignal,
     Status,
     Verdict,
     intent_from_persisted_payload,
@@ -48,6 +49,17 @@ class PostgresIntentStore:
                 state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
+            CREATE TABLE IF NOT EXISTS strategy_signals (
+                signal_id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL,
+                signal_type TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
+                correlation_id TEXT NOT NULL, status TEXT NOT NULL,
+                risk_reasons_json TEXT NOT NULL, observed_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(strategy_id, event_id)
+            );
+            CREATE INDEX IF NOT EXISTS strategy_signals_observed_idx
+                ON strategy_signals(observed_at DESC, signal_id DESC);
             """
         )
         self.connection.execute("ALTER TABLE order_intents ADD COLUMN IF NOT EXISTS broker_order_id TEXT")
@@ -214,5 +226,44 @@ class PostgresIntentStore:
             observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
             observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def record_signal(self, signal: StrategySignal) -> None:
+        """Persist a signal once; it never changes a broker delivery state."""
+        recorded_at = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_signals(
+                    signal_id, strategy_id, run_id, event_id, signal_type, symbol, side,
+                    intent_id, correlation_id, status, risk_reasons_json, observed_at, created_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING""",
+                (
+                    signal.signal_id, signal.strategy_id, signal.run_id, signal.event_id,
+                    signal.signal_type, signal.symbol, signal.side, signal.intent_id,
+                    signal.correlation_id, signal.status.value, json.dumps(signal.risk_reasons),
+                    signal.observed_at.isoformat(), recorded_at,
+                ),
+            )
+
+    def observation_signals(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT signal_id, strategy_id, run_id, event_id, signal_type, symbol, side,
+                    intent_id, correlation_id, status, risk_reasons_json, observed_at
+                    FROM strategy_signals ORDER BY observed_at DESC, signal_id DESC""",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("risk_reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["risk_reasons"] = [
+                reason for reason in parsed_reasons if isinstance(reason, str)
+            ] if isinstance(parsed_reasons, list) else []
             observations.append(observation)
         return observations

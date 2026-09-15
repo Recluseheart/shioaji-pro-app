@@ -87,8 +87,10 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   `GET /api/v1/autotrade/strategies/{id}`：唯讀投影目前已註冊的策略 descriptor；
   現階段僅有固定 `DISABLED` 的 `reference-fixture`，未知 id 為 `404`。這些 route
   不提供 Start、Pause、Resume 或 Stop 能力。
-- `GET /api/v1/autotrade/signals`：只會回傳 durable signal records；目前 runtime
-  尚未有 signal store，因此明確回傳空陣列，絕不以 process memory 或假事件填滿。
+- `GET /api/v1/autotrade/signals`：只會回傳 durable signal records，包含 event、
+  strategy/run、intent/correlation、risk verdict 與觀測時間。現階段只有隔離測試
+  fixture 能建立此資料；production runtime 固定 disabled 時會正確回傳空陣列，絕不
+  以 process memory 或假事件填滿。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
   是唯讀資料。每筆也投影已持久化的 `symbol`、`side`、`quantity`、`limit_price`

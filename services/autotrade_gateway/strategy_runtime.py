@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
-from .order_core import Intent, OrderCoordinator, Source, Status, Verdict
+from .order_core import Intent, OrderCoordinator, Source, Status, StrategySignal, Verdict
 
 
 def utc_now() -> datetime:
@@ -128,13 +128,52 @@ class StrategyRuntime:
         # a revived runtime from creating a second broker delivery attempt.
         if self._coordinator.store.has_intent(intent.intent_id):
             self._processed_event_ids.add(event_id)
+            existing = self._coordinator.store.load_intent(intent.intent_id)
+            observation = next((
+                item for item in self._coordinator.store.observation_orders()
+                if item.get("intent_id") == intent.intent_id
+            ), {})
+            reasons = observation.get("risk_reasons")
+            self._record_fixture_signal(
+                event_id,
+                existing,
+                self._coordinator.store.status(intent.intent_id),
+                tuple(reason for reason in reasons if isinstance(reason, str))
+                if isinstance(reasons, list) else (),
+            )
             return None
         self._processed_event_ids.add(event_id)
         status, verdict = self._coordinator.accept(intent)
+        self._record_fixture_signal(event_id, intent, status, verdict.reasons)
         self._last_event_id = event_id
         self._last_intent_id = intent.intent_id
         self._last_status = status
         return status, verdict
+
+    def _record_fixture_signal(
+        self,
+        event_id: str,
+        intent: Intent,
+        status: Status,
+        reasons: tuple[str, ...],
+    ) -> None:
+        """Link the event to an existing immutable intent without dispatching."""
+        self._coordinator.store.record_signal(StrategySignal(
+            signal_id=str(uuid5(
+                NAMESPACE_URL, f"signal:{self.strategy_id}:{self.version}:{event_id}",
+            )),
+            strategy_id=self.strategy_id,
+            run_id=intent.run_id or f"fixture:{event_id}",
+            event_id=event_id,
+            signal_type="REFERENCE_SIGNAL",
+            symbol=intent.symbol,
+            side=intent.side,
+            intent_id=intent.intent_id,
+            correlation_id=intent.correlation_id,
+            status=status,
+            risk_reasons=reasons,
+            observed_at=intent.created_at,
+        ))
 
     def _fixture_intent(self, event_id: str, created_at: datetime) -> Intent:
         return Intent(

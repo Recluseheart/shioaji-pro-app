@@ -260,7 +260,7 @@ def overview_document(
     return {
         "health": health_document(strategy_runtime),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
-        "signals": [],
+        "signals": store.observation_signals() if store is not None else [],
         "runs": runs,
         "decisions": orders,
         "orders": orders,
@@ -709,9 +709,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, strategy)
             return
         if path == "/api/v1/autotrade/signals":
-            # No process-memory signal list is exposed: a future runtime must
-            # persist signals before this endpoint may report any activity.
-            self._json(HTTPStatus.OK, {"items": []})
+            # Signals are immutable store projections.  No process-memory
+            # event list is exposed, so a restart cannot fabricate activity.
+            self._json(HTTPStatus.OK, {
+                "items": getattr(self.server, "order_store").observation_signals(),
+            })
             return
         if path == "/api/v1/autotrade/intents":
             self._json(

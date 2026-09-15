@@ -50,6 +50,12 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(observation["source"], "STRATEGY")
         self.assertEqual(observation["strategy_id"], "reference-fixture")
         self.assertIsNone(self.store.outbox_state(str(observation["intent_id"])))
+        signals = self.store.observation_signals()
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["event_id"], "event-1")
+        self.assertEqual(signals[0]["intent_id"], observation["intent_id"])
+        self.assertEqual(signals[0]["status"], "RISK_REJECTED")
+        self.assertEqual(signals[0]["risk_reasons"], ["trading_gate_not_armed"])
 
     def test_fixture_event_is_deduplicated_deterministically(self) -> None:
         runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
@@ -67,6 +73,19 @@ class StrategyRuntimeTest(unittest.TestCase):
         restarted_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
         self.assertIsNone(restarted_runtime.process_fixture_event(event))
         self.assertEqual(len(self.store.observation_orders()), 1)
+
+    def test_restart_repairs_a_missing_durable_signal_without_creating_another_intent(self) -> None:
+        event = {"reference_signal": True, "event_id": "signal-repair"}
+        first_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertIsNotNone(first_runtime.process_fixture_event(event))
+        self.store.connection.execute("DELETE FROM strategy_signals")
+        self.store.connection.commit()
+
+        restarted_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertIsNone(restarted_runtime.process_fixture_event(event))
+        self.assertEqual(len(self.store.observation_orders()), 1)
+        self.assertEqual(len(self.store.observation_signals()), 1)
+        self.assertEqual(self.store.observation_signals()[0]["event_id"], "signal-repair")
 
     def test_dry_run_exposes_disarmed_verdict_without_persistence_or_outbox(self) -> None:
         runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))

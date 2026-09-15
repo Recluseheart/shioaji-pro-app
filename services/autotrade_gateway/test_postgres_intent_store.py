@@ -58,6 +58,8 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "UNKNOWN")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
+        self.store.transition(intent.intent_id, Status.RECONCILING)
+        self.assertEqual(self.store.observation_reconciliation_cases()[0]["state"], "RECONCILING")
 
     def test_request_match_requires_every_broker_relevant_field_to_match(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

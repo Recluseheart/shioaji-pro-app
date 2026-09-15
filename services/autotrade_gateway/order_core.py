@@ -555,10 +555,16 @@ class SQLiteIntentStore:
         if current is Status.RECONCILING and target is Status.APPROVED:
             raise ValueError("reconciliation cannot enqueue a fresh order")
         with self._lock, self.connection:
+            timestamp = now().isoformat()
             self.connection.execute(
                 "UPDATE order_intents SET status=?, updated_at=? WHERE intent_id=?",
-                (target.value, now().isoformat(), intent_id),
+                (target.value, timestamp, intent_id),
             )
+            if target is Status.RECONCILING:
+                self.connection.execute(
+                    "UPDATE reconciliation_cases SET state='RECONCILING', updated_at=? WHERE intent_id=? AND state='OPEN'",
+                    (timestamp, intent_id),
+                )
 
     def recover(self) -> int:
         """Mark every delivery-ambiguous row UNKNOWN without re-enqueueing it."""

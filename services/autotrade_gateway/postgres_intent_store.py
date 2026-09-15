@@ -167,7 +167,13 @@ class PostgresIntentStore:
         if current is Status.RECONCILING and target is Status.APPROVED:
             raise ValueError("reconciliation cannot enqueue a fresh order")
         with self._lock, self.connection.transaction():
-            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (target.value, now().isoformat(), intent_id))
+            timestamp = now().isoformat()
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (target.value, timestamp, intent_id))
+            if target is Status.RECONCILING:
+                self.connection.execute(
+                    "UPDATE reconciliation_cases SET state='RECONCILING', updated_at=%s WHERE intent_id=%s AND state='OPEN'",
+                    (timestamp, intent_id),
+                )
 
     def recover(self) -> int:
         uncertain = tuple(status.value for status in _UNCERTAIN)

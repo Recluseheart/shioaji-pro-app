@@ -173,6 +173,8 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.observation_reconciliation_cases()[0]["reason"], "restart_recovery")
         with self.assertRaisesRegex(ValueError, "require reconciliation"):
             self.store.transition(intent.intent_id, Status.SUBMITTED)
+        self.store.transition(intent.intent_id, Status.RECONCILING)
+        self.assertEqual(self.store.observation_reconciliation_cases()[0]["state"], "RECONCILING")
 
     def test_timeout_claim_becomes_unknown_and_is_not_retried(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

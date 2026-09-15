@@ -200,6 +200,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
             correlation_id=str(uuid5(NAMESPACE_URL, f"manual-correlation:{key}")),
         )
 
+    def _accept_or_reuse_intent(self, intent: Intent) -> None:
+        store = getattr(self.server, "order_store")
+        if store.has_intent(intent.intent_id):
+            existing = next(item for item in store.observation_orders() if item["intent_id"] == intent.intent_id)
+            self._json(HTTPStatus.CONFLICT, {
+                "intent_id": existing["intent_id"], "correlation_id": existing["correlation_id"],
+                "status": existing["status"], "risk_reasons": existing["risk_reasons"],
+            })
+            return
+        status, verdict = getattr(self.server, "order_coordinator").accept(intent)
+        self._json(HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT, {
+            "intent_id": intent.intent_id, "correlation_id": intent.correlation_id,
+            "status": status.value, "risk_reasons": list(verdict.reasons),
+        })
+
     def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -494,17 +509,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid cancel order"})
                 return
-            coordinator = getattr(self.server, "order_coordinator")
-            status, verdict = coordinator.accept(intent)
-            self._json(
-                HTTPStatus.ACCEPTED if verdict.allowed else HTTPStatus.CONFLICT,
-                {
-                    "intent_id": intent.intent_id,
-                    "correlation_id": intent.correlation_id,
-                    "status": status.value,
-                    "risk_reasons": list(verdict.reasons),
-                },
-            )
+            self._accept_or_reuse_intent(intent)
             return
         target_operation = {
             "/api/v1/order/update_price": ("UPDATE_PRICE", ("price",)),

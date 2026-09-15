@@ -36,9 +36,12 @@ receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍�
 schema store，不是瀏覽器端去重。
 
 Gateway 也註冊一個從 legacy 來源移植的 `reference-fixture` strategy
-descriptor，供唯讀 UI 呈現策略生命週期。它固定為 `DISABLED`，沒有市場
-subscription、HTTP 啟動路由或 broker capability。僅隔離測試可明確啟用 fixture
-event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固定
+descriptor，供唯讀 UI 呈現策略生命週期。它預設為 `DISABLED`，沒有市場
+subscription 或 broker capability。只有 `AUTOTRADE_ENV=SIM` 與
+`AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE=1` 同時設定時，明確 allowlist 的
+Start／Pause／Resume／Stop HTTP control 才會建立或轉換 durable run；它們不會 ARM、
+建立 intent、啟動 worker 或呼叫 sidecar。fixture event 沒有 browser HTTP route，僅可由
+另行明確啟用的 process-internal ingress 送入；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固定
 `DISARMED` 時只產生 `RISK_REJECTED` audit receipt，永不建立 outbox。
 
 策略 descriptor 與 version metadata 會存入 `strategy_definitions`／
@@ -57,9 +60,10 @@ event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固
 策略控制面板可呼叫 `reference-fixture` 的 `validate` 與 `dry-run` preview。
 兩者是明確 allowlist 的 broker-free routes：Validate 只回傳 descriptor 與 warnings；
 Dry Run 只回傳共同 Risk Engine 的 hypothetical verdict，永不持久化 intent、建立
-outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 仍為 disabled；
-即使舊版或遠端 UI 直接呼叫其 API，Gateway 也會回傳 `403 strategy runtime is disabled`，
-不會建立 intent 或連接 sidecar。
+outbox、啟動 strategy runtime 或呼叫 sidecar。Start／Pause／Resume／Stop 預設 disabled；
+只有前述 SIM lifecycle opt-in 時才接受帶 `reason` 與 `Idempotency-Key` 的 control
+request，並只持久化 lifecycle/run/heartbeat。未啟用時（含舊版或遠端 UI）一律回傳
+`403 strategy runtime is disabled`，不會建立 intent 或連接 sidecar。
 
 「訊號與決策時間線」會在 browser 端以策略、商品、狀態與時間範圍篩選 durable
 signal、intent/risk decision 與 immutable audit event。篩選只縮小已取得的 read
@@ -76,8 +80,11 @@ intent、啟動 worker 或聯絡 sidecar。
 固定帳戶／商品 allowlist、單筆最大數量（10,000）與單筆最大名目金額（5,000,000）。
 這些限制透過 overview 的 `risk.limits` 唯讀顯示。若未來 gate 進入 `ARMED`，每筆
 `PLACE` 還必須取得最新的 `RiskContext`；缺少 context、行情過期、價格偏離、預估部位、
-每日損失或總曝險超限都會 fail closed，且不建立 outbox。現階段尚未有 PostgreSQL／sidecar
-提供權威 context，因此不宣稱這些動態限制可用；frequency 與 cooldown 也仍待 durable
+每日損失或總曝險超限都會 fail closed，且不建立 outbox。若明確設定
+`AUTOTRADE_ENABLE_SIMULATION_RISK_CONTEXT=1`，Gateway 會以 loopback sidecar 的
+verified SIM stock account、position 與 fresh snapshot 建立每筆 intent 的權威
+`RiskContext`；讀取失敗或帳戶不在 verified allowlist 時仍 fail closed。這個 read-only
+opt-in 不會 ARM、dispatch 或建立 broker session；frequency 與 cooldown 仍待 durable
 read model 移植。
 
 ## 啟動唯讀開發環境
@@ -104,12 +111,13 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   `authoritative_remaining_available=false`，UI 不得推測剩餘部位、日損或總曝險額度。
 - `GET /api/v1/autotrade/strategies` 與
   `GET /api/v1/autotrade/strategies/{id}`：唯讀投影目前已註冊的策略 descriptor；
-  現階段僅有固定 `DISABLED` 的 `reference-fixture`，未知 id 為 `404`。這些 route
-  不提供 Start、Pause、Resume 或 Stop 能力。
+  現階段僅有預設 `DISABLED` 的 `reference-fixture`，未知 id 為 `404`。只有顯式
+  SIM lifecycle opt-in 時才有 Start、Pause、Resume 或 Stop control；該 control 不具
+  broker capability。
 - `GET /api/v1/autotrade/signals`：只會回傳 durable signal records，包含 event、
-  strategy/run、intent/correlation、risk verdict 與觀測時間。現階段只有隔離測試
-  fixture 能建立此資料；production runtime 固定 disabled 時會正確回傳空陣列，絕不
-  以 process memory 或假事件填滿。
+  strategy/run、intent/correlation、risk verdict 與觀測時間。只有顯式 process-internal
+  fixture ingress 能建立此資料；browser 無法呼叫 signal route。預設 runtime disabled
+  時會正確回傳空陣列，絕不以 process memory 或假事件填滿。
 - `GET /api/v1/autotrade/intents`：直接列出 durable intent observations；包含
   source、correlation、status、broker identity（若有）與 risk reasons，且永遠
   是唯讀資料。每筆也投影已持久化的 `symbol`、`side`、`quantity`、`limit_price`
@@ -135,7 +143,9 @@ Vite 只綁 `127.0.0.1`，並透過同源 `/api` proxy 連到 Gateway。
   與 overview projection 均不會呼叫 sidecar、重送 broker mutation 或改寫任何狀態。
 - `GET /api/v1/autotrade/runs`：從獨立的 durable `strategy_runs` journal 回報策略
   lifecycle、heartbeat、intent count 與最近 intent/status；不會從 order 猜測一個 run。
-  目前 production runner 仍 disabled，只有隔離 fixture harness 會寫入 `FIXTURE_COMPLETED` 記錄。
+  預設 runtime disabled；顯式 SIM lifecycle opt-in 可寫入 RUNNING／PAUSED／STOPPED
+  lifecycle facts，而 fixture ingress 若被啟用則把 signal intent 綁定到同一個 active run，
+  不會另建第二個 fixture run。
 - `GET /api/v1/autotrade/reconciliation`：只列出 `UNKNOWN`、`RECONCILING` 與
   `MANUAL_REVIEW` 的 intent，並附上 durable case 的開案原因與時間。此 API 用於人工
   對帳導覽，不提供重送功能。
@@ -215,8 +225,8 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 單。Gateway 建立持久化 store 後立即執行此 recovery，再開始接受 HTTP request。
 
 reference fixture 以 event id 產生 deterministic intent id，並在接受前查詢 durable
-store。runtime 重啟後收到同一 event 只會被辨識為重複事件，不能重新建立 intent、outbox
-或 broker delivery。
+store。runtime 重啟後會恢復 active durable run；收到同一 event 只會被辨識為重複事件，
+不能重新建立 intent、outbox、broker delivery 或第二個 fixture run。
 
 worker 只有在 adapter 回傳不可空的 broker order identity 後，才可把 leased
 outbox 標為 `DISPATCHED` 並將 intent 前進為 `PENDING_SUBMIT`；identity 會和
@@ -227,7 +237,7 @@ intent 一起持久化並出現在唯讀 observation。`broker_orders` journal �
 journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
 內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。
 
-Execution Worker 在呼叫未來的 HTTP adapter 前，會從 durable journal 重建最初被
+Execution Worker 在呼叫 HTTP adapter 前，會從 durable journal 重建最初被
 Risk Engine 接受的 immutable intent，而不是使用瀏覽器重送的 payload 或由欄位猜測
 新 request。若 journal payload 無法嚴格重建，該 leased outbox 直接進入 `UNKNOWN`，
 adapter 不會被呼叫；這與 network timeout 相同，必須經 reconciliation 才能處理。
@@ -235,10 +245,12 @@ adapter 不會被呼叫；這與 network timeout 相同，必須經 reconciliati
 `services/autotrade_gateway/broker_http.py` 現有一個只允許 credential-free loopback
 origin 的 HTTP dispatch seam。它只接受 intent 內持久化且與操作相符的 request，並且
 只有回應含有非空 `order.id` 時才回傳 broker identity；缺少 identity、無效回應或
-timeout 一律由 worker 標為 `UNKNOWN`。Gateway server 現在**不會構造或啟用**這個
-adapter；測試僅連接本機 mock HTTP server，沒有 Shioaji session、API key、CA 或任何
-simulation broker mutation。未來若要啟用，仍須另行完成唯一 session owner、target
-account lookup、callback/reconciliation 與明確 simulation 授權。
+timeout 一律由 worker 標為 `UNKNOWN`。只有顯式
+`AUTOTRADE_ENABLE_SIMULATION_EXECUTION=1` 且 `AUTOTRADE_ENV=SIM` 時 Gateway 才會
+構造此 adapter；它仍沒有 browser arm/dispatch route 或 background loop，因此 construction
+不會送單。測試僅連接本機 mock HTTP server；本文件不宣稱有任何 simulation broker mutation。
+未來受控 execution window 仍須完成 target account lookup、callback/reconciliation 與明確
+simulation 授權。
 
 mock 或未來 adapter 的 terminal callback 必須同時帶入 intent 與已持久化的 broker
 identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CANCELLED`
@@ -278,10 +290,9 @@ market intent 都不會被畫成價格線，以避免把觀察資料誤解為可
 
 ## 現在尚未具備的能力
 
-- 唯一 Shioaji HTTP session owner、實際 adapter wiring 與 1.7.4/1.7.5 end-to-end
-  compatibility（目前僅有未啟用的 loopback adapter seam）。
-- 任何實際或 simulation broker mutation、策略啟動、取消、平倉或自動平倉。
-- callback、SSE、reconciliation snapshot 與完整 UI event chain。
+- 自動 market feed runner、實際 strategy signal scheduler 與任何 background dispatch loop。
+- 任何實際或 simulation broker mutation、取消、平倉或自動平倉。
+- broker callback／reconciliation snapshot 與完整 broker-to-UI event chain。
 
 因此本階段的 UI 是可操作的安全觀察介面，而不是交易啟動器。狀態固定為
 `SIM`、`DISARMED`、CA disabled。

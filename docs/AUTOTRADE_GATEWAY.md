@@ -232,10 +232,11 @@ operator capability/idempotency、broker callback/reconciliation 與 finally
 不是擴大 generic proxy 或例外放行 mutation namespace：已支援 snapshots、K 線、
 ticks、scanner、data lookup、trades、portfolio／風控、保留庫存與 usage；body
 最大 64 KiB，且只接受 JSON object 或 array；其餘 POST query 仍未接通。市場的
-aggregate SSE `GET /api/v1/stream/data`
-與明確列舉的 `POST /api/v1/stream/subscribe`／`unsubscribe` 已可透過 Gateway
-relay（保留 `Last-Event-ID`，不轉送瀏覽器憑證）；它們只改變行情 subscription，
-不會建立 order intent 或呼叫交易 mutation。上游 capability subscriptions 也只允許
+aggregate SSE `GET /api/v1/stream/data` 與唯讀交易回報 SSE
+`GET /api/v1/stream/data/order_event` 已可透過 Gateway relay（保留
+`Last-Event-ID`，不轉送瀏覽器憑證）。明確列舉的
+`POST /api/v1/stream/subscribe`／`unsubscribe` 只改變行情 subscription；兩種
+SSE read 都不會建立 order intent 或呼叫交易 mutation。上游 capability subscriptions 也只允許
 `calculated_index`、`index_contribution`、`industry_contribution`、
 `index_components` 與 `scanner` 五個明確 suffix。
 

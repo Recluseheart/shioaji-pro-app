@@ -79,6 +79,7 @@ READ_QUERY_POST_PATHS = frozenset({
     "/api/v1/portfolio/trading_limits",
 })
 MARKET_SSE_PATH = "/api/v1/stream/data"
+TRADE_EVENT_SSE_PATH = "/api/v1/stream/data/order_event"
 COMBO_CONTRACT_BUILD_PATH = "/api/v1/data/contracts/combo"
 MARKET_STREAM_POST_PATHS = frozenset({
     "/api/v1/stream/subscribe",
@@ -735,8 +736,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except (HTTPException, URLError, TimeoutError):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji watchlist service unavailable"})
 
-    def _relay_market_sse(self) -> None:
-        """Relay the single upstream market stream without credentials or buffering."""
+    def _relay_sse(self, unavailable_message: str) -> None:
+        """Relay an explicitly allowlisted upstream SSE stream without credentials."""
         upstream = getattr(self.server, "upstream_origin")
         headers = {
             key: value
@@ -790,7 +791,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except HTTPError as error:
             self._bytes(error.code, error.read(), error.headers.get_content_type())
         except (HTTPException, URLError, TimeoutError):
-            self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji market stream unavailable"})
+            self._json(HTTPStatus.BAD_GATEWAY, {"message": unavailable_message})
         except (BrokenPipeError, ConnectionResetError):
             # The browser can leave a stream at any time; upstream state is
             # intentionally not changed because subscribe lifecycle is still
@@ -1172,7 +1173,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._autotrade_events()
             return
         if path == MARKET_SSE_PATH:
-            self._relay_market_sse()
+            self._relay_sse("Shioaji market stream unavailable")
+            return
+        if path == TRADE_EVENT_SSE_PATH:
+            self._relay_sse("Shioaji trade event stream unavailable")
             return
         if is_allowed_read_path(path):
             self._proxy_read()

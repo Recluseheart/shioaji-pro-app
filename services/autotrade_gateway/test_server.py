@@ -260,6 +260,20 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(path, "/api/v1/order/order_deal_records")
             self.assertNotIn("Authorization", headers)
             self.assertNotIn("Cookie", headers)
+            with urlopen(Request(
+                f"{base}/api/v1/stream/data/order_event?account_type=S",
+                headers={
+                    "Accept": "text/event-stream",
+                    "Authorization": "Bearer browser-secret",
+                    "Cookie": "session=browser-secret",
+                },
+            )) as response:
+                self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+                self.assertIn(b"event: tick", response.read())
+            path, headers, _body = ReadServiceHandler.received[-1]
+            self.assertEqual(path, "/api/v1/stream/data/order_event?account_type=S")
+            self.assertNotIn("Authorization", headers)
+            self.assertNotIn("Cookie", headers)
             for path in (
                 "/api/v1/autotrade/intents",
                 "/api/v1/autotrade/kill-switch",
@@ -271,7 +285,7 @@ class GatewayServerTest(unittest.TestCase):
                     urlopen(Request(f"{base}{path}", data=b"not-json", method="POST"))
                 self.assertEqual(denied.exception.code, 403)
             self.assertEqual(getattr(server, "order_store").observation_orders(), [])
-            self.assertEqual(len(ReadServiceHandler.received), 1)
+            self.assertEqual(len(ReadServiceHandler.received), 2)
         finally:
             server.shutdown()
             thread.join()
@@ -1531,6 +1545,27 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(headers["Accept"], "text/event-stream")
         self.assertEqual(headers["Last-Event-Id"], "cursor-0")
         self.assertNotIn("Authorization", headers)
+
+    def test_trade_event_sse_is_relayed_without_browser_credentials(self) -> None:
+        request = Request(
+            f"{self.base}/api/v1/stream/data/order_event?account_type=S",
+            headers={
+                "Accept": "text/event-stream",
+                "Last-Event-ID": "trade-cursor-0",
+                "Authorization": "Bearer browser-secret",
+                "Cookie": "session=browser-secret",
+            },
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
+            self.assertIn(b"event: tick", response.read())
+        path, headers, body = ReadServiceHandler.received[-1]
+        self.assertEqual(path, "/api/v1/stream/data/order_event?account_type=S")
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["Accept"], "text/event-stream")
+        self.assertEqual(headers["Last-Event-Id"], "trade-cursor-0")
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("Cookie", headers)
 
     def test_market_sse_disconnect_closes_quiet_upstream_stream(self) -> None:
         request = Request(

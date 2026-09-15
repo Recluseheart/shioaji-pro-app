@@ -8,6 +8,12 @@ event subscription 與 watchlist 偏好 CRUD。`POST /api/v1/autotrade/intents` 
 broker-free 的稽核 ingress：在目前固定 `DISARMED` 的設定下只會持久化
 `RISK_REJECTED` receipt，絕不建立 outbox 或觸碰 broker。
 
+Web 與 Tauri WebView 的 `getApiBase()` 都指向 Gateway（Web 版走同源 `/api`
+proxy，Desktop 固定 loopback Gateway port），不可再直接以 sidecar port 發起 API
+或 order request。Shioaji sidecar origin 僅供 native process-management 與其既有
+session-owner 職責使用；`VITE_API_BASE` 不再提供 sidecar override，尚未移植的
+Agent-originated mutation 在 WebView 直接拒絕。
+
 `POST /api/v1/order/place_order` 的 stock／futures `LMT`、`MKT`、`MKP` 形狀也已
 先映射到同一個 `MANUAL_UI` intent ingress；限價單才要求有限且正的 limit price，市價
 形狀不會被誤報為無效限價。在 `DISARMED` 時仍只會得到 `409 RISK_REJECTED` 與

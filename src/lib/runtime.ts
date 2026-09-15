@@ -8,6 +8,10 @@ export const isTauri =
 // far from 8080/8000/3000-style dev defaults and below every OS ephemeral
 // range, so it's essentially never taken by another service.
 export const DEFAULT_PORT = 21322;
+// The WebView is never allowed to talk to the broker-session sidecar
+// directly.  The local Gateway is the single API and mutation boundary; the
+// sidecar port remains available only to native process-management code.
+export const GATEWAY_PORT = 18082;
 // The shioaji CLI itself still defaults to 8080 — a user-run daemon lives
 // there, so it stays a probe candidate for attach.
 export const LEGACY_PORT = 8080;
@@ -123,9 +127,12 @@ export function setServerPid(pid: number | null) {
 // with 本機 HTTPS enabled the mkcert certificate covers it alongside
 // localhost and ::1.
 export function getApiBase(): string {
-    const env = import.meta.env.VITE_API_BASE as string | undefined;
-    if (env) return env;
-    return isTauri ? `${getApiScheme()}://127.0.0.1:${getApiPort()}` : '';
+    return isTauri ? `http://127.0.0.1:${GATEWAY_PORT}` : '';
+}
+
+/** Native shell-only origin for managing the Shioaji session owner. */
+export function getSidecarApiBase(): string {
+    return `${getApiScheme()}://127.0.0.1:${getApiPort()}`;
 }
 
 // Since shioaji 1.7.2 every event family rides ONE aggregate SSE

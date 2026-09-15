@@ -10,7 +10,7 @@ import {
     DEFAULT_PORT,
     EXPECTED_SERVER_VERSION,
     LEGACY_PORT,
-    getApiBase,
+    getSidecarApiBase,
     getApiPort,
     getApiScheme,
     getServerPid,
@@ -1070,7 +1070,7 @@ export async function setAgentHarnessEnabled(
     const recovered = enabled ? await ensureHarnessOwnedServer() : null;
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('agent_harness_set_enabled', {
-        origin: new URL(getApiBase()).origin,
+        origin: new URL(getSidecarApiBase()).origin,
         enabled,
     });
     const settings = await loadDesktopSettings();

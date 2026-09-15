@@ -14,14 +14,14 @@ describe('agent harness mutation routing', () => {
         ).toBe(false);
     });
 
-    it('uses the native capability proxy only for enabled desktop mutations', () => {
+    it('never lets an enabled desktop harness bypass the Gateway', () => {
         expect(
             shouldProxyAgentHarnessMutation(
                 true,
                 true,
                 '/api/v1/order/place_order',
             ),
-        ).toBe(true);
+        ).toBe(false);
         expect(
             shouldProxyAgentHarnessMutation(
                 true,

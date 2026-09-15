@@ -35,6 +35,11 @@ class StrategyRuntimeTest(unittest.TestCase):
         runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))
         self.assertEqual(runtime.observations()[0]["state"], "DISABLED")
         self.assertFalse(runtime.observations()[0]["enabled"])
+        self.assertEqual(self.store.observation_strategy_definitions(), [{
+            "strategy_id": "reference-fixture", "version": "v1",
+            "config_checksum": "reference-fixture-v1", "state": "DISABLED",
+            "enabled": False, "allowed_symbols": ["2330"],
+        }])
         self.assertIsNone(runtime.process_fixture_event({"reference_signal": True, "event_id": "event-1"}))
         self.assertEqual(self.store.observation_orders(), [])
 

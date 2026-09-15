@@ -7,41 +7,14 @@ strategy lifecycle before a separately-authorized execution worker is added.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
-from .order_core import Intent, OrderCoordinator, Source, Status, StrategyRun, StrategySignal, Verdict
+from .order_core import Intent, OrderCoordinator, Source, Status, StrategyDefinition, StrategyRun, StrategySignal, Verdict
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-@dataclass(frozen=True)
-class StrategyObservation:
-    strategy_id: str
-    version: str
-    config_checksum: str
-    state: str
-    enabled: bool
-    allowed_symbols: tuple[str, ...]
-    last_event_id: str | None = None
-    last_intent_id: str | None = None
-    last_status: str | None = None
-
-    def document(self) -> dict[str, object]:
-        return {
-            "strategy_id": self.strategy_id,
-            "version": self.version,
-            "config_checksum": self.config_checksum,
-            "state": self.state,
-            "enabled": self.enabled,
-            "allowed_symbols": list(self.allowed_symbols),
-            "last_event_id": self.last_event_id,
-            "last_intent_id": self.last_intent_id,
-            "last_status": self.last_status,
-        }
 
 
 class StrategyRuntime:
@@ -64,6 +37,11 @@ class StrategyRuntime:
         self._last_event_id: str | None = None
         self._last_intent_id: str | None = None
         self._last_status: Status | None = None
+        self._coordinator.store.record_strategy_definition(StrategyDefinition(
+            strategy_id=self.strategy_id, version=self.version,
+            config_checksum=self.config_checksum, state="DISABLED", enabled=False,
+            allowed_symbols=self.allowed_symbols,
+        ))
         self._restore_latest_durable_signal()
 
     def _restore_latest_durable_signal(self) -> None:
@@ -90,18 +68,16 @@ class StrategyRuntime:
             self._last_status = None
 
     def observations(self) -> list[dict[str, object]]:
+        definitions = self._coordinator.store.observation_strategy_definitions()
         return [
-            StrategyObservation(
-                strategy_id=self.strategy_id,
-                version=self.version,
-                config_checksum=self.config_checksum,
-                state="DISABLED",
-                enabled=False,
-                allowed_symbols=self.allowed_symbols,
-                last_event_id=self._last_event_id,
-                last_intent_id=self._last_intent_id,
-                last_status=self._last_status.value if self._last_status else None,
-            ).document()
+            {
+                **definition,
+                "last_event_id": self._last_event_id,
+                "last_intent_id": self._last_intent_id,
+                "last_status": self._last_status.value if self._last_status else None,
+            }
+            for definition in definitions
+            if definition.get("strategy_id") == self.strategy_id
         ]
 
     def validate_document(self) -> dict[str, object]:

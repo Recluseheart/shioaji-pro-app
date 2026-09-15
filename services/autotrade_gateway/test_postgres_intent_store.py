@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyRun, StrategySignal
+from services.autotrade_gateway.order_core import DuplicateIntentError, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
 from services.autotrade_gateway.worker import ExecutionWorker
 
 
@@ -201,3 +201,14 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "ended_at": None, "updated_at": heartbeat_at.isoformat(),
         }])
         self.assertEqual(self.store.observation_orders(), [])
+
+    def test_strategy_definition_and_version_are_durable_without_enabling_a_runner(self) -> None:
+        self.store.record_strategy_definition(StrategyDefinition(
+            strategy_id="reference-fixture", version="v1", config_checksum="fixture-checksum",
+            state="DISABLED", enabled=False, allowed_symbols=("2330",),
+        ))
+        self.assertEqual(self.store.observation_strategy_definitions(), [{
+            "strategy_id": "reference-fixture", "version": "v1",
+            "config_checksum": "fixture-checksum", "state": "DISABLED",
+            "enabled": False, "allowed_symbols": ["2330"],
+        }])

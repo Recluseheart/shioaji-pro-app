@@ -13,6 +13,7 @@ from .order_core import (
     DuplicateIntentError,
     Intent,
     StrategyRun,
+    StrategyDefinition,
     StrategySignal,
     Status,
     Verdict,
@@ -74,6 +75,15 @@ class PostgresIntentStore:
             );
             CREATE INDEX IF NOT EXISTS strategy_signals_observed_idx
                 ON strategy_signals(observed_at DESC, signal_id DESC);
+            CREATE TABLE IF NOT EXISTS strategy_definitions (
+                strategy_id TEXT PRIMARY KEY, state TEXT NOT NULL, enabled BOOLEAN NOT NULL,
+                allowed_symbols_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS strategy_versions (
+                strategy_id TEXT NOT NULL REFERENCES strategy_definitions(strategy_id),
+                version TEXT NOT NULL, config_checksum TEXT NOT NULL,
+                PRIMARY KEY(strategy_id, version)
+            );
             CREATE TABLE IF NOT EXISTS strategy_runs (
                 run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
                 version TEXT NOT NULL, config_checksum TEXT NOT NULL,
@@ -349,6 +359,45 @@ class PostgresIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def record_strategy_definition(self, definition: StrategyDefinition) -> None:
+        """Persist a descriptor without starting, pausing, or dispatching it."""
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_definitions(strategy_id, state, enabled, allowed_symbols_json)
+                VALUES (%s, %s, %s, %s) ON CONFLICT(strategy_id) DO NOTHING""",
+                (definition.strategy_id, definition.state, definition.enabled,
+                 json.dumps(definition.allowed_symbols)),
+            )
+            self.connection.execute(
+                """INSERT INTO strategy_versions(strategy_id, version, config_checksum)
+                VALUES (%s, %s, %s) ON CONFLICT(strategy_id, version) DO NOTHING""",
+                (definition.strategy_id, definition.version, definition.config_checksum),
+            )
+
+    def observation_strategy_definitions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT definition.strategy_id, version.version, version.config_checksum,
+                    definition.state, definition.enabled, definition.allowed_symbols_json
+                    FROM strategy_definitions AS definition
+                    JOIN strategy_versions AS version ON version.strategy_id = definition.strategy_id
+                    ORDER BY definition.strategy_id, version.version""",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_symbols = observation.pop("allowed_symbols_json", "[]")
+            try:
+                symbols = json.loads(str(raw_symbols))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                symbols = []
+            observation["enabled"] = bool(observation["enabled"])
+            observation["allowed_symbols"] = [
+                symbol for symbol in symbols if isinstance(symbol, str)
+            ] if isinstance(symbols, list) else []
             observations.append(observation)
         return observations
 

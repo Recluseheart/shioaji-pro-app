@@ -127,6 +127,18 @@ class StrategyRun:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class StrategyDefinition:
+    """Durable metadata for a registered strategy, never a runner control."""
+
+    strategy_id: str
+    version: str
+    config_checksum: str
+    state: str
+    enabled: bool
+    allowed_symbols: tuple[str, ...]
+
+
 def intent_from_persisted_payload(payload_json: str) -> Intent:
     """Reconstruct the exact durable request for the execution owner.
 
@@ -255,6 +267,8 @@ class IntentStore(Protocol):
     def observation_risk_decisions(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
+    def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
+    def observation_strategy_definitions(self) -> list[dict[str, object]]: ...
     def record_strategy_run(self, run: StrategyRun) -> None: ...
     def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None: ...
     def observation_strategy_runs(self) -> list[dict[str, object]]: ...
@@ -452,6 +466,15 @@ class SQLiteIntentStore:
             );
             CREATE INDEX IF NOT EXISTS strategy_signals_observed_idx
                 ON strategy_signals(observed_at DESC, signal_id DESC);
+            CREATE TABLE IF NOT EXISTS strategy_definitions (
+                strategy_id TEXT PRIMARY KEY, state TEXT NOT NULL, enabled INTEGER NOT NULL,
+                allowed_symbols_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS strategy_versions (
+                strategy_id TEXT NOT NULL REFERENCES strategy_definitions(strategy_id),
+                version TEXT NOT NULL, config_checksum TEXT NOT NULL,
+                PRIMARY KEY(strategy_id, version)
+            );
             CREATE TABLE IF NOT EXISTS strategy_runs (
                 run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
                 version TEXT NOT NULL, config_checksum TEXT NOT NULL,
@@ -752,6 +775,45 @@ class SQLiteIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observations.append(observation)
+        return observations
+
+    def record_strategy_definition(self, definition: StrategyDefinition) -> None:
+        """Persist a descriptor without starting, pausing, or dispatching it."""
+        with self._lock, self.connection:
+            self.connection.execute(
+                """INSERT INTO strategy_definitions(strategy_id, state, enabled, allowed_symbols_json)
+                VALUES (?, ?, ?, ?) ON CONFLICT(strategy_id) DO NOTHING""",
+                (definition.strategy_id, definition.state, int(definition.enabled),
+                 json.dumps(definition.allowed_symbols)),
+            )
+            self.connection.execute(
+                """INSERT INTO strategy_versions(strategy_id, version, config_checksum)
+                VALUES (?, ?, ?) ON CONFLICT(strategy_id, version) DO NOTHING""",
+                (definition.strategy_id, definition.version, definition.config_checksum),
+            )
+
+    def observation_strategy_definitions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT definition.strategy_id, version.version, version.config_checksum,
+                    definition.state, definition.enabled, definition.allowed_symbols_json
+                    FROM strategy_definitions AS definition
+                    JOIN strategy_versions AS version ON version.strategy_id = definition.strategy_id
+                    ORDER BY definition.strategy_id, version.version""",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_symbols = observation.pop("allowed_symbols_json", "[]")
+            try:
+                symbols = json.loads(str(raw_symbols))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                symbols = []
+            observation["enabled"] = bool(observation["enabled"])
+            observation["allowed_symbols"] = [
+                symbol for symbol in symbols if isinstance(symbol, str)
+            ] if isinstance(symbols, list) else []
             observations.append(observation)
         return observations
 

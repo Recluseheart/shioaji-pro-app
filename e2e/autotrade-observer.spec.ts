@@ -52,7 +52,7 @@ test('Panel Library adds and removes every repeatable panel without a broker mut
     expect(mutationRequests).toBe(0);
 });
 
-test('A linked chart can be pinned and returned to linked mode without a broker mutation', async ({ page }) => {
+test('Every pinnable panel can enter and leave pinned mode without a broker mutation', async ({ page }) => {
     const fixtureContract = {
         region: 'TW', exchange: 'TSE', code: 'PARITY', security_type: 'STK',
         target_code: null, name: 'Parity fixture', currency: 'TWD',
@@ -92,6 +92,38 @@ test('A linked chart can be pinned and returned to linked mode without a broker 
     await expect(pinned).toBeVisible();
     await pinned.click();
     await expect(linked).toBeVisible();
+
+    const blocks = page.locator('[data-block-id]');
+    for (const label of [
+        'K 線圖', '當日走勢', '五檔', '下單面板', '成交明細', '閃電下單',
+        '籌碼資訊', '分價量表', '個股期選擇器', '行情回放', '委託簿熱圖',
+        '組合商品', '鋪單',
+    ]) {
+        const beforeIds = await blocks.evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute('data-block-id')),
+        );
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+        const addedId = (await blocks.evaluateAll((elements, ids) =>
+            elements
+                .map((element) => element.getAttribute('data-block-id'))
+                .find((id) => id && !ids.includes(id)),
+            beforeIds,
+        ));
+        expect(addedId).toBeTruthy();
+        const added = page.locator(`[data-block-id="${addedId}"]`);
+        const addedLinked = added.getByTitle('跟隨自選清單選擇；點擊鎖定目前商品');
+        await expect(addedLinked).toBeVisible();
+        await addedLinked.click();
+        const addedPinned = added.getByTitle('已鎖定；點擊恢復連動');
+        await expect(addedPinned).toBeVisible();
+        await addedPinned.click();
+        await expect(addedLinked).toBeVisible();
+        await added.getByTitle('移除此面板').click();
+    }
     expect(mutationRequests).toBe(0);
 });
 

@@ -29,6 +29,8 @@ class StrategyRuntime:
     version = "v1"
     config_checksum = "reference-fixture-v1"
     allowed_symbols = ("2330",)
+    reference_account_id = "SIM-001"
+    reference_broker_id = "SIM-BROKER"
 
     def __init__(
         self,
@@ -266,7 +268,7 @@ class StrategyRuntime:
     def _fixture_intent(self, event_id: str, created_at: datetime) -> Intent:
         return Intent(
             source=Source.STRATEGY,
-            account_id="SIM-001",
+            account_id=self.reference_account_id,
             symbol="2330",
             side="BUY",
             quantity=1,
@@ -276,6 +278,16 @@ class StrategyRuntime:
             intent_id=str(uuid5(NAMESPACE_URL, f"{self.strategy_id}:{self.version}:{event_id}")),
             correlation_id=str(uuid5(NAMESPACE_URL, f"correlation:{event_id}")),
             created_at=created_at,
+            broker_request={
+                "path": "/api/v1/order/place_order",
+                "body": {
+                    "contract": {"code": "2330"},
+                    "stock_order": {
+                        "action": "Buy", "price": 1000, "quantity": 1,
+                        "account": {"account_id": self.reference_account_id, "broker_id": self.reference_broker_id},
+                    },
+                },
+            },
         )
 
     @staticmethod

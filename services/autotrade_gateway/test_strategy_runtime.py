@@ -164,6 +164,17 @@ class StrategyRuntimeTest(unittest.TestCase):
         status, verdict = result or (None, None)
         self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
         observation = self.store.observation_orders()[0]
+        intent = self.store.load_intent(str(observation["intent_id"]))
+        self.assertEqual(intent.broker_request, {
+            "path": "/api/v1/order/place_order",
+            "body": {
+                "contract": {"code": "2330"},
+                "stock_order": {
+                    "action": "Buy", "price": 1000, "quantity": 1,
+                    "account": {"account_id": "SIM-001", "broker_id": "SIM-BROKER"},
+                },
+            },
+        })
 
         class MockDispatcher:
             def dispatch(self, intent) -> str:

@@ -43,6 +43,37 @@ test('Signal Timeline renders a durable signal linked to its risk-rejected inten
     await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
 });
 
+test('Run performance renders durable lifecycle facts without a trading request', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            performance: { realized_pnl: '0', unrealized_pnl: '0' },
+            runs: [{
+                run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
+                config_checksum: 'fixture-checksum', state: 'FIXTURE_COMPLETED',
+                last_status: 'RISK_REJECTED', intent_count: 1,
+                heartbeat_at: '2026-09-15T00:00:01+00:00',
+                ended_at: '2026-09-15T00:00:02+00:00', updated_at: '2026-09-15T00:00:02+00:00',
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('執行績效', { exact: true }).click();
+    await expect(page.getByText('狀態：FIXTURE_COMPLETED · 最近結果：RISK_REJECTED · 1 intents')).toBeVisible();
+    await expect(page.getByText('Heartbeat：2026-09-15T00:00:01+00:00 · 結束：2026-09-15T00:00:02+00:00')).toBeVisible();
+    expect(mutationRequests).toBe(0);
+});
+
 test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
     let detailReads = 0;
     let mutationRequests = 0;

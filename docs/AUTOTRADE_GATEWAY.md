@@ -136,6 +136,10 @@ browser credential，也不允許 option、額外欄位或任何 order payload �
 Gateway 只接受 JSON object、限制 list id 字元、移除 browser credentials，且仍拒絕所有
 未列舉的 mutation route。
 
+read proxy、POST-read query、watchlist 與行情 SSE 在 upstream connection 或 socket
+timeout 時都回傳不含 credential 的 `502` JSON 訊息；不會讓 handler exception 中斷
+回應、把 URL／header／request body 回送給瀏覽器，或將 timeout 解讀為下單結果。
+
 回應一律附 `Cache-Control: no-store`，以免共享快取保存交易相關狀態。
 
 Web 的 Autotrade overview 與七個 observer panels 共享單一 5 秒唯讀 refresh

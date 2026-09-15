@@ -657,6 +657,28 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 404)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_upstream_timeouts_return_controlled_credential_free_gateway_errors(self) -> None:
+        cases = (
+            (Request(f"{self.base}/api/v1/data/contracts?code=2330"), "Shioaji read service unavailable"),
+            (Request(
+                f"{self.base}/api/v1/data/snapshots", data=b'{"contracts":["2330"]}', method="POST",
+                headers={"Content-Type": "application/json"},
+            ), "Shioaji read service unavailable"),
+            (Request(
+                f"{self.base}/api/v1/watchlist", data=b'{"name":"fixture"}', method="POST",
+                headers={"Content-Type": "application/json"},
+            ), "Shioaji watchlist service unavailable"),
+            (Request(f"{self.base}/api/v1/stream/data?region=TW"), "Shioaji market stream unavailable"),
+        )
+        for request, message in cases:
+            with self.subTest(path=request.full_url), patch(
+                "services.autotrade_gateway.server.urlopen", side_effect=TimeoutError,
+            ), self.assertRaises(HTTPError) as raised:
+                urlopen(request)
+            self.assertEqual(raised.exception.code, 502)
+            self.assertEqual(json.load(raised.exception)["message"], message)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_allowlisted_read_query_post_preserves_json_but_not_credentials(self) -> None:
         body = b'{"contracts":["2330"]}'
         request = Request(

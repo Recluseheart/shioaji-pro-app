@@ -386,7 +386,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 )
         except HTTPError as error:
             self._bytes(error.code, error.read(), error.headers.get_content_type())
-        except URLError:
+        except (URLError, TimeoutError):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
     def _proxy_read_query(self, body: bytes) -> None:
@@ -407,7 +407,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 )
         except HTTPError as error:
             self._bytes(error.code, error.read(), error.headers.get_content_type())
-        except URLError:
+        except (URLError, TimeoutError):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
     def _proxy_watchlist_mutation(self, body: bytes | None) -> None:
@@ -428,7 +428,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 )
         except HTTPError as error:
             self._bytes(error.code, error.read(), error.headers.get_content_type())
-        except URLError:
+        except (URLError, TimeoutError):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji watchlist service unavailable"})
 
     def _relay_market_sse(self) -> None:
@@ -452,7 +452,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
         except HTTPError as error:
             self._bytes(error.code, error.read(), error.headers.get_content_type())
-        except URLError:
+        except (URLError, TimeoutError):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji market stream unavailable"})
         except (BrokenPipeError, ConnectionResetError):
             # The browser can leave a stream at any time; upstream state is

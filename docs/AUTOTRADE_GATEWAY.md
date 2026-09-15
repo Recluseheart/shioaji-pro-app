@@ -34,6 +34,11 @@ event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固
 冒充 `STRATEGY` 或 `SYSTEM_TRIGGER`；這兩種來源未來只能由 Gateway process
 內的 runtime 呼叫共用 coordinator，避免瀏覽器繞過 strategy/run 身分邊界。
 
+上游 Web 端原有的 browser-side 觸價、括號單與 Agent helper 不可被誤標為
+`MANUAL_UI`。在它們移植成 Gateway process 內、帶有 durable strategy/run identity
+的 producer 前，這些自動發起者會在瀏覽器的 HTTP 請求前 fail closed；手動的複合
+平倉拆單仍維持 `MANUAL_UI`，並只做一次父層確認。
+
 策略控制面板可呼叫 `reference-fixture` 的 `validate` 與 `dry-run` preview。
 兩者是明確 allowlist 的 broker-free routes：Validate 只回傳 descriptor 與 warnings；
 Dry Run 只回傳共同 Risk Engine 的 hypothetical verdict，永不持久化 intent、建立

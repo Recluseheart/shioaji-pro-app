@@ -42,6 +42,12 @@ proxy probe。透過 Gateway 取得 `info`、accounts，以及 `trades`、
 snapshot，全部為 HTTP 200 且 JSON shape 與 sidecar 相符。該實例在 probe 後
 立即關閉；沒有建立 intent、outbox、broker mutation 或 background worker。
 
+在後續受控 integration probe 中，Gateway 以 verified simulation account
+allowlist 與 fresh `2330` RiskContext 啟動 reference strategy lifecycle，並送入
+一個 in-process fixture signal。由於 gate 保持 `DISARMED`，結果為一筆 durable
+`RISK_REJECTED` intent，outbox 為空；沒有 broker dispatch、callback 或交易。
+這確認 strategy source 不會繞過共同 Risk Engine／gate。
+
 三種 local database connection setting 均已配置，但本文件不保存 DSN、資料庫
 名稱、帳戶或密碼。任何 canary 前必須在專用 schema 再執行 DB health、outbox
 empty、fresh quote、position、loss 與應用程式 risk limit 的即時檢查；任何一項

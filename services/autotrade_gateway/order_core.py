@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Lock
+from typing import Protocol
 from uuid import uuid4
 
 
@@ -119,6 +120,26 @@ def persisted_request_matches(intent: Intent, payload_json: str) -> bool:
 class Verdict:
     allowed: bool
     reasons: tuple[str, ...] = ()
+
+
+class IntentStore(Protocol):
+    """Durable intent/outbox capabilities shared by SQLite and PostgreSQL."""
+
+    def persist(self, intent: Intent, verdict: Verdict) -> Status: ...
+    def status(self, intent_id: str) -> Status: ...
+    def has_intent(self, intent_id: str) -> bool: ...
+    def request_matches(self, intent: Intent) -> bool: ...
+    def outbox_state(self, intent_id: str) -> str | None: ...
+    def transition(self, intent_id: str, target: Status) -> None: ...
+    def recover(self) -> int: ...
+    def claim_outbox(self) -> str | None: ...
+    def mark_delivery_unknown(self, intent_id: str, reason: str) -> None: ...
+    def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None: ...
+    def record_terminal_callback(
+        self, intent_id: str, broker_order_id: str, terminal: Status,
+    ) -> None: ...
+    def observation_orders(self) -> list[dict[str, object]]: ...
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -397,7 +418,7 @@ class SQLiteIntentStore:
 class OrderCoordinator:
     """One ingress point for manual UI and strategy intents; it owns no broker."""
 
-    def __init__(self, store: SQLiteIntentStore, gate: Gate = Gate.DISARMED, risk: RiskEngine | None = None) -> None:
+    def __init__(self, store: IntentStore, gate: Gate = Gate.DISARMED, risk: RiskEngine | None = None) -> None:
         self.store = store
         self.gate = gate
         self.risk = risk or RiskEngine()

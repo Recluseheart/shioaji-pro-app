@@ -169,6 +169,8 @@ identity，且只可由 `PENDING_SUBMIT`／`SUBMITTED` 前進到 `FILLED`、`CAN
 ## 驗證
 
 ```sh
+uv run ruff check .
+uv run mypy
 python3 -m unittest services.autotrade_gateway.test_order_core \
   services.autotrade_gateway.test_server
 PATH=/opt/homebrew/opt/node@22/bin:$PATH pnpm test

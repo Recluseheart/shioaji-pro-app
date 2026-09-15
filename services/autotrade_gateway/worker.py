@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .order_core import IntentStore
+
 
 class Dispatcher(Protocol):
     def dispatch(self, intent_id: str) -> str: ...
 
 
 class ExecutionWorker:
-    def __init__(self, store, dispatcher: Dispatcher) -> None:
+    def __init__(self, store: IntentStore, dispatcher: Dispatcher) -> None:
         self.store = store
         self.dispatcher = dispatcher
 

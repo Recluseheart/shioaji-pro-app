@@ -10,12 +10,20 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Queue
 from threading import Lock
-from typing import Any, Optional
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 
-from .order_core import DuplicateIntentError, Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
+from .order_core import (
+    DuplicateIntentError,
+    Gate,
+    Intent,
+    IntentStore,
+    OrderCoordinator,
+    SQLiteIntentStore,
+    Source,
+)
 from .strategy_runtime import StrategyRuntime
 
 
@@ -169,12 +177,13 @@ def strategy_runs_document(orders: list[dict[str, object]]) -> list[dict[str, ob
                 "intent_count": 0,
             }
             runs[run_id] = run
-        run["intent_count"] = int(run["intent_count"]) + 1
+        previous_count = run["intent_count"]
+        run["intent_count"] = previous_count + 1 if isinstance(previous_count, int) else 1
     return list(runs.values())
 
 
 def overview_document(
-    store: Any = None,
+    store: IntentStore | None = None,
     strategy_runtime: StrategyRuntime | None = None,
     coordinator: OrderCoordinator | None = None,
 ) -> dict[str, Any]:
@@ -686,18 +695,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
 def create_server(
     host: str = "127.0.0.1",
     port: int = 18082,
-    upstream_origin: Optional[str] = None,
+    upstream_origin: str | None = None,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
     server.daemon_threads = True
-    server.upstream_origin = (upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN", "http://127.0.0.1:21322")).rstrip("/")  # type: ignore[attr-defined]
+    resolved_upstream_origin = upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN") or "http://127.0.0.1:21322"
+    server.upstream_origin = resolved_upstream_origin.rstrip("/")  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:
         from .postgres_intent_store import PostgresIntentStore
 
-        store = PostgresIntentStore(
+        store: IntentStore = PostgresIntentStore(
             database_url,
             os.getenv("AUTOTRADE_GATEWAY_PG_SCHEMA", "autotrade_gateway"),
         )

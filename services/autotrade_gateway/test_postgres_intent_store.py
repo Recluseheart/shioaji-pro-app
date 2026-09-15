@@ -117,6 +117,24 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "POSTGRES-MOCK-ORDER-1",
         )
 
+    def test_reused_broker_identity_becomes_unknown_without_a_second_binding(self) -> None:
+        first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
+        coordinator = armed_coordinator(self.store)
+        coordinator.accept(first)
+        coordinator.accept(second)
+
+        class ReusedIdentityDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "POSTGRES-REUSED-ORDER-1"
+
+        worker = ExecutionWorker(self.store, ReusedIdentityDispatcher())
+        self.assertTrue(worker.dispatch_once())
+        self.assertTrue(worker.dispatch_once())
+        self.assertEqual(self.store.status(first.intent_id), Status.PENDING_SUBMIT)
+        self.assertEqual(self.store.status(second.intent_id), Status.UNKNOWN)
+        self.assertEqual(self.store.outbox_state(second.intent_id), "UNKNOWN")
+
     def test_terminal_callback_requires_the_persisted_broker_identity(self) -> None:
         intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "reference", "run-1")
         armed_coordinator(self.store).accept(intent)

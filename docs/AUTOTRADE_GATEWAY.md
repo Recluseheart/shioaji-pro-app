@@ -188,7 +188,9 @@ store。runtime 重啟後收到同一 event 只會被辨識為重複事件，不
 
 worker 只有在 adapter 回傳不可空的 broker order identity 後，才可把 leased
 outbox 標為 `DISPATCHED` 並將 intent 前進為 `PENDING_SUBMIT`；identity 會和
-intent 一起持久化並出現在唯讀 observation。任何 timeout、例外或缺少 identity
+intent 一起持久化並出現在唯讀 observation。`broker_orders` journal 對 broker identity
+設唯一約束；若同一 identity 被回報給不同 intent，第二筆 delivery 會進入 `UNKNOWN`，
+不能錯誤地視為同一筆 broker order。任何 timeout、例外或缺少 identity
 都維持 delivery-ambiguous，轉為 `UNKNOWN`，不會猜測成功或重送。SQLite 舊
 journal 以 idempotent 欄位 migration 保留既有稽核資料；PostgreSQL 以 schema
 內的 `ADD COLUMN IF NOT EXISTS` 完成同一項演進。

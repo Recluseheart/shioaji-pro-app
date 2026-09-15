@@ -427,6 +427,10 @@ class SQLiteIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS broker_orders (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS strategy_signals (
                 signal_id TEXT PRIMARY KEY,
                 strategy_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL,
@@ -464,6 +468,11 @@ class SQLiteIntentStore:
         }
         if "broker_order_id" not in columns:
             self.connection.execute("ALTER TABLE order_intents ADD COLUMN broker_order_id TEXT")
+        self.connection.execute(
+            """INSERT OR IGNORE INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
+            SELECT intent_id, broker_order_id, updated_at, updated_at FROM order_intents
+            WHERE broker_order_id IS NOT NULL AND broker_order_id != ''""",
+        )
         self.connection.commit()
 
     def close(self) -> None:
@@ -584,6 +593,10 @@ class SQLiteIntentStore:
             return
         with self._lock, self.connection:
             timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?)""", (intent_id, broker_order_id, timestamp, timestamp),
+            )
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=? AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=?, broker_order_id=?, updated_at=? WHERE intent_id=?", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 

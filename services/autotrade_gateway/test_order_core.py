@@ -229,6 +229,24 @@ class OrderCoreTest(unittest.TestCase):
         self.assertEqual(self.store.outbox_state(intent.intent_id), "DISPATCHED")
         self.assertEqual(self.store.observation_orders()[0]["broker_order_id"], "MOCK-ORDER-1")
 
+    def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
+        first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
+        coordinator = armed_coordinator(self.store)
+        coordinator.accept(first)
+        coordinator.accept(second)
+
+        class ReusedIdentityDispatcher:
+            def dispatch(self, _intent: Intent) -> str:
+                return "MOCK-REUSED-ORDER-1"
+
+        worker = ExecutionWorker(self.store, ReusedIdentityDispatcher())
+        self.assertTrue(worker.dispatch_once())
+        self.assertTrue(worker.dispatch_once())
+        self.assertEqual(self.store.status(first.intent_id), Status.PENDING_SUBMIT)
+        self.assertEqual(self.store.status(second.intent_id), Status.UNKNOWN)
+        self.assertEqual(self.store.outbox_state(second.intent_id), "UNKNOWN")
+
     def test_terminal_callback_is_identity_bound_idempotent_and_never_reopens_delivery(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         armed_coordinator(self.store).accept(intent)

@@ -50,6 +50,10 @@ class PostgresIntentStore:
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS broker_orders (
+                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
+                broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
             CREATE TABLE IF NOT EXISTS strategy_signals (
                 signal_id TEXT PRIMARY KEY,
@@ -79,6 +83,12 @@ class PostgresIntentStore:
             """
         )
         self.connection.execute("ALTER TABLE order_intents ADD COLUMN IF NOT EXISTS broker_order_id TEXT")
+        self.connection.execute(
+            """INSERT INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
+            SELECT intent_id, broker_order_id, updated_at, updated_at FROM order_intents
+            WHERE broker_order_id IS NOT NULL AND broker_order_id != ''
+            ON CONFLICT DO NOTHING""",
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -191,6 +201,10 @@ class PostgresIntentStore:
             return
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
+                VALUES (%s,%s,%s,%s)""", (intent_id, broker_order_id, timestamp, timestamp),
+            )
             self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
             self.connection.execute("UPDATE order_intents SET status=%s, broker_order_id=%s, updated_at=%s WHERE intent_id=%s", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
 

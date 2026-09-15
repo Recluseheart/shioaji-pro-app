@@ -24,6 +24,12 @@ broker-order lookup 尚未能驗證目標帳戶與 simulation ownership 前，�
 combo legs 原樣保留為 instrument identity；在 `DISARMED` 下只會回傳 risk
 receipt，不會送往 sidecar。combo broker dispatch、callback 與取消仍未接通。
 
+Gateway 也註冊一個從 legacy 來源移植的 `reference-fixture` strategy
+descriptor，供唯讀 UI 呈現策略生命週期。它固定為 `DISABLED`，沒有市場
+subscription、HTTP 啟動路由或 broker capability。僅隔離測試可明確啟用 fixture
+event；即使如此它仍必須走共用 intent／Risk Engine，在 Gateway 固定
+`DISARMED` 時只產生 `RISK_REJECTED` audit receipt，永不建立 outbox。
+
 ## 啟動唯讀開發環境
 
 ```sh

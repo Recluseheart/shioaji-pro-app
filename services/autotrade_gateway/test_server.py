@@ -83,7 +83,12 @@ class GatewayServerTest(unittest.TestCase):
         with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
             overview = json.load(response)
         self.assertEqual(overview["health"]["environment"], "SIM")
-        self.assertEqual(overview["strategies"], [])
+        self.assertEqual(overview["strategies"], [{
+            "strategy_id": "reference-fixture", "version": "v1",
+            "config_checksum": "reference-fixture-v1", "state": "DISABLED",
+            "enabled": False, "allowed_symbols": ["2330"],
+            "last_event_id": None, "last_intent_id": None, "last_status": None,
+        }])
         self.assertEqual(overview["orders"], [])
         self.assertEqual(overview["reconciliation"], [])
 

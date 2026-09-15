@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .order_core import Gate, Intent, OrderCoordinator, SQLiteIntentStore, Source
+from .strategy_runtime import StrategyRuntime
 
 
 # These GET routes have no order-mutation semantics in the Shioaji HTTP
@@ -85,18 +86,18 @@ def is_allowed_market_stream_post(path: str) -> bool:
     return False
 
 
-def health_document() -> dict[str, Any]:
+def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
     return {
         "environment": "SIM",
         "trading_gate": "DISARMED",
-        "strategy_count": 0,
+        "strategy_count": len(strategy_runtime.observations()) if strategy_runtime else 0,
         "enabled_strategy_count": 0,
         "gateway_status": "READY",
     }
 
 
-def overview_document(store: Any = None) -> dict[str, Any]:
+def overview_document(store: Any = None, strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
     This seed deliberately reports only durable facts it owns.  It must not
@@ -105,8 +106,8 @@ def overview_document(store: Any = None) -> dict[str, Any]:
     """
     orders = store.observation_orders() if store is not None else []
     return {
-        "health": health_document(),
-        "strategies": [],
+        "health": health_document(strategy_runtime),
+        "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": [],
         "orders": orders,
         "risk": {
@@ -347,10 +348,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
         if path == "/api/v1/autotrade/health":
-            self._json(HTTPStatus.OK, health_document())
+            self._json(HTTPStatus.OK, health_document(getattr(self.server, "strategy_runtime", None)))
             return
         if path == "/api/v1/autotrade/overview":
-            self._json(HTTPStatus.OK, overview_document(getattr(self.server, "order_store")))
+            self._json(
+                HTTPStatus.OK,
+                overview_document(
+                    getattr(self.server, "order_store"),
+                    getattr(self.server, "strategy_runtime", None),
+                ),
+            )
             return
         if path == "/api/v1/autotrade/intents":
             self._json(
@@ -515,6 +522,7 @@ def create_server(
     store.recover()
     server.order_store = store  # type: ignore[attr-defined]
     server.order_coordinator = OrderCoordinator(store, gate=Gate.DISARMED)  # type: ignore[attr-defined]
+    server.strategy_runtime = StrategyRuntime(server.order_coordinator)  # type: ignore[attr-defined]
     return server
 
 

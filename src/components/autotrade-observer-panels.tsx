@@ -15,7 +15,7 @@ export type AutotradeObserverPanel =
 const PANEL_COPY: Record<AutotradeObserverPanel, { title: string; empty: string }> = {
     strategy_control: {
         title: '策略控制',
-        empty: '尚無已註冊策略。啟動功能會在 durable strategy runtime 移植後才開放。',
+        empty: '策略 runtime 預設停用。啟動功能需要另外授權，且不會由此面板啟動。',
     },
     signal_timeline: {
         title: '訊號與決策時間線',
@@ -82,12 +82,20 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 </div>
             )}
             {kind === 'strategy_control' && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button disabled title='Gateway 目前固定 DISARMED'>驗證策略</button>
-                    <button disabled title='Gateway 目前固定 DISARMED'>Dry Run</button>
-                    <button disabled title='Gateway 目前固定 DISARMED'>開始</button>
-                    <button disabled title='Gateway 目前固定 DISARMED'>暫停</button>
-                </div>
+                <>
+                    {overview?.strategies.map((item, index) => {
+                        const strategy = item as { strategy_id?: string; version?: string; state?: string; enabled?: boolean };
+                        return <div key={`${strategy.strategy_id ?? 'strategy'}-${index}`} style={{ color: '#aeb7c6' }}>
+                            {strategy.strategy_id ?? '未命名策略'} {strategy.version ?? ''} · {strategy.state ?? 'UNKNOWN'} · {strategy.enabled ? '已啟用' : '未啟用'}
+                        </div>;
+                    })}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button disabled title='Gateway 目前固定 DISARMED'>驗證策略</button>
+                        <button disabled title='需要獨立策略 runtime 授權'>Dry Run</button>
+                        <button disabled title='需要獨立策略 runtime 授權'>開始</button>
+                        <button disabled title='Gateway 目前固定 DISARMED'>暫停</button>
+                    </div>
+                </>
             )}
             {kind === 'run_performance' && overview && (
                 <div style={{ color: '#8892a6' }}>

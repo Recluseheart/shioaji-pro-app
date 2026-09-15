@@ -97,6 +97,88 @@ async function exerciseSingletonPanels(
     }
 }
 
+async function addPanelFromLibrary(page: Page, label: string) {
+    const blocks = page.locator('[data-block-id]');
+    const beforeIds = await blocks.evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute('data-block-id')),
+    );
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+    await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+    await library.getByText(label, { exact: true }).first().click();
+    await expect(blocks).toHaveCount(beforeIds.length + 1);
+    const addedId = await blocks.evaluateAll((elements, ids) =>
+        elements
+            .map((element) => element.getAttribute('data-block-id'))
+            .find((id) => id && !ids.includes(id)),
+        beforeIds,
+    );
+    expect(addedId).toBeTruthy();
+    return page.locator(`[data-block-id="${addedId}"]`);
+}
+
+async function exercisePanelLayout(
+    page: Page,
+    label: string,
+    initiallyPresent: boolean,
+) {
+    const blocks = page.locator('[data-block-id]');
+    const initialCount = await blocks.count();
+    expect(initialCount).toBeGreaterThan(0);
+    if (initiallyPresent) {
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByRole('button', {
+            name: new RegExp(`${label}.*已在版面中`),
+        }).first().click();
+        await blocks.filter({ hasText: label }).first().getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(initialCount - 1);
+    }
+
+    const panel = await addPanelFromLibrary(page, label);
+    await panel.scrollIntoViewIfNeeded();
+
+    const beforeResize = await panel.boundingBox();
+    expect(beforeResize).not.toBeNull();
+    const resizeHandle = panel.locator('.react-resizable-handle');
+    const resizeBox = await resizeHandle.boundingBox();
+    expect(resizeBox).not.toBeNull();
+    await page.mouse.move(resizeBox!.x + 3, resizeBox!.y + 3);
+    await page.mouse.down();
+    // Every BLOCK_META entry has a default width above its minimum. Shrink
+    // before dragging so this also works in the narrow single-column layout.
+    await page.mouse.move(resizeBox!.x - 24, resizeBox!.y + 18, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => {
+        const box = await panel.boundingBox();
+        return box ? [Math.round(box.width), Math.round(box.height)] : null;
+    }).not.toEqual([
+        Math.round(beforeResize!.width),
+        Math.round(beforeResize!.height),
+    ]);
+
+    const beforeMove = await panel.boundingBox();
+    expect(beforeMove).not.toBeNull();
+    const dragHandle = panel.locator('.drag-handle');
+    const dragBox = await dragHandle.boundingBox();
+    expect(dragBox).not.toBeNull();
+    await page.mouse.move(dragBox!.x + 20, dragBox!.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(dragBox!.x + 48, dragBox!.y + 48, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => {
+        const box = await panel.boundingBox();
+        return box ? [Math.round(box.x), Math.round(box.y)] : null;
+    }).not.toEqual([
+        Math.round(beforeMove!.x),
+        Math.round(beforeMove!.y),
+    ]);
+
+    await panel.getByTitle('移除此面板').click();
+    await expect(blocks).toHaveCount(initiallyPresent ? initialCount - 1 : initialCount);
+}
+
 test('Panel Library exposes every public and Autotrade catalogue category', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
@@ -146,6 +228,70 @@ test('Panel Library adds and removes every repeatable panel without a broker mut
     await expect(library.getByRole('button', { name: /自選清單 已在版面中/ })).toBeVisible();
     await library.getByRole('button', { name: /自選清單 已在版面中/ }).click();
     await expect(blocks).toHaveCount(initialCount);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every market BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['自選清單', true], ['排行榜', true], ['K 線圖', false], ['當日走勢', false],
+        ['當日走勢牆', false], ['五檔', false], ['成交明細', false], ['行情回放', false],
+        ['產業全景', false], ['市場脈動', false], ['即時訊號', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every trading and account BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['下單面板', false], ['閃電下單', false], ['分價量表', false], ['委託簿熱圖', false],
+        ['鋪單', false], ['持倉/委託/帳務', true], ['損益分析', false], ['籌碼資訊', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every derivative, tool, and Autotrade BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['選擇權 T 字', false], ['個股期選擇器', false], ['權證篩選器', false], ['組合單', false],
+        ['組合商品', false], ['選擇權損益圖', false], ['通知中心', false], ['診斷 Debug', false],
+        ['策略回測', false], ['AI Agent', false], ['自動交易總覽', false], ['策略控制', false],
+        ['訊號與決策', false], ['自動委託與持倉', false], ['風控與限額', false], ['對帳佇列', false],
+        ['執行績效', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
     expect(mutationRequests).toBe(0);
 });
 

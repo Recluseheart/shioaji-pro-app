@@ -475,7 +475,7 @@ Exit：未修改上游時即可 build、test、啟動，所有 baseline failure 
 ### Phase 1：完整 UI baseline 與 fixture harness
 
 - [ ] 對每個公開 BlockType 建立 fixture／mock server scenario。
-- [ ] 確認所有面板能由 Panel Library 加入、移動、縮放、釘選與刪除。
+- [x] 確認所有面板能由 Panel Library 加入、移動、縮放、釘選與刪除（desktop/mobile deterministic E2E；不接觸 broker）。
 - [ ] 覆蓋 loading、empty、data、error、stale。
 - [ ] 建立 desktop 1440p／1080p 主要視覺回歸；窄螢幕至少保持可操作。
 - [ ] 修復上游 baseline 在本機 browser 的任何白屏或 contract mismatch。

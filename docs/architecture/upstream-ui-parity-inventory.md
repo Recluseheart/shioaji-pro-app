@@ -28,27 +28,26 @@ human UAT completion.
   exposed by the panel library; it adds/removes every repeatable BlockType and
   contains add/locate/remove coverage for every singleton BlockType. The
   singleton coverage has passed on desktop and mobile (Playwright desktop and
-  mobile projects, 2026-09-15). It also proves every pinnable panel can enter and leave its pinned
-  state using a non-real contract fixture, proves a workspace panel can be
-  moved and resized in both layouts, proves the seven Autotrade panels can be
-  added, and confirms these observer presentations do not emit broker mutation
-  requests. The Option Chain has a fixture-backed contract-read failure →
-  manual retry → recovery E2E case.
+  mobile projects, 2026-09-15). A deterministic, Gateway-isolated E2E now
+  adds, resizes, moves, and removes each of the 36 `BlockType` entries in both
+  layouts. Every pinnable entry also completes link → pin → link using a
+  non-real contract fixture. These observer presentations do not emit broker
+  mutation requests. The Option Chain has a fixture-backed contract-read
+  failure → manual retry → recovery E2E case.
 - `playwright.config.ts` starts the Gateway with `uv run python`, matching the
   Python 3.11+ project runtime. It deliberately runs with the default
   `SIM`/`DISARMED` Gateway configuration.
 
 ## Required follow-up test IDs
 
-The following IDs are deliberately retained as open work and must not be
-converted to checkmarks without the named evidence:
+The following IDs retain their canonical evidence status. An item may be
+marked verified only with the named evidence; all other entries remain open:
 
-- `PARITY-CATALOG-01`: every `BlockType` can be added, moved, resized, pinned
-  where allowed, and removed in desktop and mobile layouts. Catalogue presence,
-  every repeatable BlockType's add/remove coverage, all singleton add/locate/
-  remove scenarios, all applicable link → pin → link transitions, and
-  representative move and resize transitions in both layouts are present.
-  Per-BlockType move/resize coverage remains open.
+- `PARITY-CATALOG-01`: **verified 2026-09-15**. Every `BlockType` is covered
+  by desktop/mobile add → resize → move → remove E2E. Catalogue presence,
+  repeatable add/remove, singleton add/locate/remove, and all applicable
+  link → pin → link transitions are separately covered without broker
+  mutation requests.
 - `PARITY-FIXTURE-01`: each public block has loading, empty, data, error and
   stale fixtures without contacting a broker.
 - `PARITY-VISUAL-01`: 1440p, 1080p and narrow-screen dark/black/light visual

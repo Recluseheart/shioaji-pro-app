@@ -125,6 +125,24 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(document["items"][0]["source"], "STRATEGY")
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:
+        store = getattr(self.server, "order_store")
+        strategy_intent = Intent(Source.STRATEGY, "SIM-001", "2330", "BUY", 1, "1000", "fixture", "run-durable")
+        manual_intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        coordinator = OrderCoordinator(store, Gate.DISARMED)
+        coordinator.accept(strategy_intent)
+        coordinator.accept(manual_intent)
+        with urlopen(f"{self.base}/api/v1/autotrade/runs") as response:
+            document = json.load(response)
+        self.assertEqual(document["items"], [
+            {"run_id": "run-durable", "strategy_id": "fixture", "last_intent_id": strategy_intent.intent_id,
+             "last_status": "RISK_REJECTED", "updated_at": document["items"][0]["updated_at"], "intent_count": 1},
+        ])
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertEqual(overview["performance"]["run_count"], 1)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_decision_timeline_projects_durable_risk_verdict_without_a_sidecar_call(self) -> None:
         body = json.dumps({
             "source": "MANUAL_UI", "account_id": "SIM-001", "symbol": "2330",

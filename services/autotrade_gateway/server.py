@@ -107,6 +107,28 @@ def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str
     }
 
 
+def strategy_runs_document(orders: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Project durable strategy runs from their immutable order intents."""
+    runs: dict[str, dict[str, object]] = {}
+    for order in orders:
+        run_id = order.get("run_id")
+        if order.get("source") != Source.STRATEGY.value or not isinstance(run_id, str) or not run_id:
+            continue
+        run = runs.get(run_id)
+        if run is None:
+            run = {
+                "run_id": run_id,
+                "strategy_id": order.get("strategy_id"),
+                "last_intent_id": order.get("intent_id"),
+                "last_status": order.get("status"),
+                "updated_at": order.get("updated_at"),
+                "intent_count": 0,
+            }
+            runs[run_id] = run
+        run["intent_count"] = int(run["intent_count"]) + 1
+    return list(runs.values())
+
+
 def overview_document(
     store: Any = None,
     strategy_runtime: StrategyRuntime | None = None,
@@ -119,10 +141,12 @@ def overview_document(
     a dashboard appear busy.
     """
     orders = store.observation_orders() if store is not None else []
+    runs = strategy_runs_document(orders)
     return {
         "health": health_document(strategy_runtime),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": [],
+        "runs": runs,
         "decisions": orders,
         "orders": orders,
         "risk": {
@@ -133,7 +157,7 @@ def overview_document(
         },
         "reconciliation": [item for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}],
         "performance": {
-            "run_count": 0,
+            "run_count": len(runs),
             "filled_order_count": 0,
             "realized_pnl": "0",
             "unrealized_pnl": "0",
@@ -400,6 +424,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(
                 HTTPStatus.OK,
                 {"items": getattr(self.server, "order_store").observation_orders()},
+            )
+            return
+        if path == "/api/v1/autotrade/runs":
+            self._json(
+                HTTPStatus.OK,
+                {"items": strategy_runs_document(getattr(self.server, "order_store").observation_orders())},
             )
             return
         if path == "/api/v1/autotrade/decisions":

@@ -141,6 +141,47 @@ class GatewayServerTest(unittest.TestCase):
                 self.assertNotIn("Authorization", headers)
                 self.assertNotIn("Cookie", headers)
 
+    def test_web_get_read_contract_inventory_stays_gateway_reachable(self) -> None:
+        """Cover each upstream client GET family with a concrete safe shape.
+
+        Dynamic `/data/` and `/monitor/` paths are deliberate read-only
+        prefixes, unlike `/order/` or `/portfolio/`.  These representatives
+        come directly from `src/lib/shioaji.ts` and its consumers, so a future
+        allowlist tightening cannot quietly send the Web back to a sidecar.
+        """
+        paths = (
+            "/api/v1/health",
+            "/api/v1/info",
+            "/api/v1/auth/accounts",
+            "/api/v1/auth/ca_expiretime?person_id=masked",
+            "/api/v1/data/contracts?security_type=STK&region=TW",
+            "/api/v1/data/contracts/2330?security_type=STK&region=TW",
+            "/api/v1/data/contracts/2330/info?security_type=STK&region=TW",
+            "/api/v1/data/contracts/futures?region=TW",
+            "/api/v1/data/contracts/futures/roots?region=TW",
+            "/api/v1/data/contracts/options?root=TXO&region=TW",
+            "/api/v1/data/contracts/options/roots?region=TW",
+            "/api/v1/data/contracts/warrants?underlying_code=2330&region=TW",
+            "/api/v1/data/contracts/warrants/underlyings?region=TW&include_name=true",
+            "/api/v1/data/contracts/tick-bands/TXF?security_type=FUT&region=TW",
+            "/api/v1/data/regulatory_punish",
+            "/api/v1/monitor/metrics",
+            "/api/v1/monitor/subscriptions",
+            "/api/v1/watchlist",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                request = Request(
+                    f"{self.base}{path}",
+                    headers={"Authorization": "Bearer browser-secret", "Cookie": "session=browser-secret"},
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                received_path, headers, _body = ReadServiceHandler.received[-1]
+                self.assertEqual(received_path, path)
+                self.assertNotIn("Authorization", headers)
+                self.assertNotIn("Cookie", headers)
+
     def test_futures_combo_contract_resolver_is_narrowly_allowlisted_without_credentials(self) -> None:
         body = json.dumps({"legs": [
             {"security_type": "FUT", "region": "TW", "exchange": "TAIFEX", "code": "TXFZ6", "target_code": None},

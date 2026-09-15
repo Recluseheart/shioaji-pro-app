@@ -140,8 +140,7 @@ read model 移植。
 
 ```sh
 uv run python -m services.autotrade_gateway.server
-PATH=/opt/homebrew/opt/node@22/bin:$PATH PORT=4174 \
-  VITE_API_TARGET=http://127.0.0.1:18082 pnpm dev
+PATH=/opt/homebrew/opt/node@22/bin:$PATH PORT=4174 pnpm dev
 ```
 
 開啟 [http://127.0.0.1:4174/](http://127.0.0.1:4174/)，從「新增面板」選擇

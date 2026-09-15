@@ -141,10 +141,10 @@ export default defineConfig(({ mode, command }) => {
                 // origin.  The Gateway owns compatibility allowlists and
                 // fails closed for every order mutation; it can read from a
                 // sidecar internally without exposing that sidecar to the
-                // browser.  VITE_API_TARGET is retained solely for an
-                // isolated Gateway fixture in tests, never as a documented
-                // direct-sidecar escape hatch.
-                '/api': env.VITE_API_TARGET ?? 'http://127.0.0.1:18082',
+                // browser. This deliberately has no environment override:
+                // a build-time proxy escape hatch would let Web traffic skip
+                // the Gateway's compatibility and mutation boundaries.
+                '/api': 'http://127.0.0.1:18082',
             },
         },
     };

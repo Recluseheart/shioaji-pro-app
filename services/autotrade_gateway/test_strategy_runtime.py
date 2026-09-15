@@ -196,6 +196,31 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertEqual(runs[0]["last_status"], "RISK_REJECTED")
         self.assertEqual(runs[0]["intent_count"], 1)
 
+    def test_restart_restores_active_run_before_accepting_a_strategy_signal(self) -> None:
+        initial = StrategyRuntime(
+            OrderCoordinator(self.store, Gate.DISARMED),
+            allow_reference_fixture=True,
+            allow_lifecycle=True,
+            require_running_for_fixture=True,
+        )
+        started = initial.control("start")
+        run_id = started["run_id"]
+
+        restarted = StrategyRuntime(
+            OrderCoordinator(self.store, Gate.DISARMED),
+            allow_reference_fixture=True,
+            allow_lifecycle=True,
+            require_running_for_fixture=True,
+        )
+        self.assertIsNotNone(restarted.process_fixture_event({
+            "reference_signal": True, "event_id": "after-restart",
+        }))
+
+        runs = self.store.observation_strategy_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["run_id"], run_id)
+        self.assertEqual(runs[0]["intent_count"], 1)
+
     def test_fixture_reaches_a_mock_terminal_callback_with_the_same_identity(self) -> None:
         runtime = StrategyRuntime(armed_coordinator(self.store), allow_reference_fixture=True)
         result = runtime.process_fixture_event({"reference_signal": True, "event_id": "event-terminal"})

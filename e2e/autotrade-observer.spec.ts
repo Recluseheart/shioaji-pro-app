@@ -19,6 +19,30 @@ test('Autotrade control panel is visible but cannot start a strategy while disar
     await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。')).toBeVisible();
 });
 
+test('Signal Timeline renders a durable signal linked to its risk-rejected intent', async ({ page }) => {
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            signals: [{
+                signal_id: 'signal-1', strategy_id: 'reference-fixture', run_id: 'run-1',
+                event_id: 'event-1', signal_type: 'REFERENCE_SIGNAL', symbol: '2330', side: 'BUY',
+                intent_id: 'intent-1', correlation_id: 'correlation-1', status: 'RISK_REJECTED',
+                risk_reasons: ['trading_gate_not_armed'], observed_at: '2026-09-15T00:00:00+00:00',
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByRole('button', { name: /訊號與決策 策略訊號、風控決策與 intent 時間線/ }).click();
+    await expect(page.getByText(/訊號 · reference-fixture · REFERENCE_SIGNAL · 2330 買 · RISK_REJECTED · correlat/)).toBeVisible();
+    await expect(page.getByText('event event-1 · run run-1 · 2026-09-15T00:00:00+00:00')).toBeVisible();
+    await expect(page.getByText('風控：交易閘門尚未啟用')).toBeVisible();
+    await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
+});
+
 test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
     let detailReads = 0;
     let mutationRequests = 0;

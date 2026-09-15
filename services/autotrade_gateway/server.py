@@ -195,11 +195,12 @@ def is_valid_combo_contract_query(value: object) -> bool:
 
 def health_document(strategy_runtime: StrategyRuntime | None = None) -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
+    observations = strategy_runtime.observations() if strategy_runtime else []
     return {
         "environment": "SIM",
         "trading_gate": "DISARMED",
-        "strategy_count": len(strategy_runtime.observations()) if strategy_runtime else 0,
-        "enabled_strategy_count": 0,
+        "strategy_count": len(observations),
+        "enabled_strategy_count": sum(item.get("enabled") is True for item in observations),
         "gateway_status": "READY",
     }
 

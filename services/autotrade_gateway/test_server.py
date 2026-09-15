@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
-from services.autotrade_gateway.server import create_server
+from services.autotrade_gateway.server import create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
 
@@ -97,6 +97,16 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
+
+    def test_health_counts_only_runtime_enabled_strategies(self) -> None:
+        class Runtime:
+            def observations(self) -> list[dict[str, object]]:
+                return [{"enabled": True}, {"enabled": False}, {"enabled": "true"}]
+
+        self.assertEqual(health_document(Runtime()), {
+            "environment": "SIM", "trading_gate": "DISARMED", "strategy_count": 3,
+            "enabled_strategy_count": 1, "gateway_status": "READY",
+        })
 
     def test_read_proxy_fixed_paths_cannot_match_longer_unlisted_routes(self) -> None:
         for path in (

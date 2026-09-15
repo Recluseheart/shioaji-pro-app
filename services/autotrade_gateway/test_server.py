@@ -126,6 +126,38 @@ class GatewayServerTest(unittest.TestCase):
                 upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}",
             )
 
+    def test_explicit_strategy_lifecycle_control_is_idempotent_and_broker_free(self) -> None:
+        with patch.dict(os.environ, {
+            "AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE": "1",
+            "AUTOTRADE_ENV": "SIM",
+        }, clear=False):
+            server = create_server(port=0, upstream_origin=f"http://127.0.0.1:{self.upstream.server_port}")
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            request = Request(
+                f"{base}/api/v1/autotrade/strategies/reference-fixture/start",
+                data=b'{"reason":"operator test"}',
+                headers={"Content-Type": "application/json", "Idempotency-Key": "strategy-start-1"}, method="POST",
+            )
+            with urlopen(request) as response:
+                first = json.load(response)
+            with urlopen(request) as response:
+                replay = json.load(response)
+            self.assertEqual(first["state"], "RUNNING")
+            self.assertTrue(first["applied"])
+            self.assertFalse(replay["applied"])
+            self.assertEqual(first["run_id"], replay["run_id"])
+            self.assertEqual(getattr(server, "order_coordinator").gate, Gate.DISARMED)
+            self.assertEqual(getattr(server, "order_store").observation_orders(), [])
+            self.assertEqual(ReadServiceHandler.received, [])
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            getattr(server, "order_store").close()
+
     def test_kill_switch_requires_a_reason_and_only_tightens_the_gate(self) -> None:
         with self.assertRaises(HTTPError) as missing_key:
             urlopen(Request(

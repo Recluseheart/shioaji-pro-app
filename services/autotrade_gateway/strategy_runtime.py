@@ -99,6 +99,11 @@ class StrategyRuntime:
             if definition.get("strategy_id") == self.strategy_id
         ]
 
+    @property
+    def lifecycle_enabled(self) -> bool:
+        """Whether HTTP lifecycle control may enter the broker-free state machine."""
+        return self._allow_lifecycle
+
     def validate_document(self) -> dict[str, object]:
         """Return static fixture validation without starting a runtime."""
         return {

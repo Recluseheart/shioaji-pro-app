@@ -134,6 +134,12 @@ _DISABLED_STRATEGY_CONTROL_PATHS = frozenset(
 )
 
 
+def strategy_control_action(path: str) -> str | None:
+    prefix = "/api/v1/autotrade/strategies/reference-fixture/"
+    action = path.removeprefix(prefix)
+    return action if path.startswith(prefix) and action in {"start", "pause", "resume", "stop"} else None
+
+
 def autotrade_event_id(observation: dict[str, object]) -> str:
     """Make the immutable observation version suitable for Last-Event-ID."""
     return f"{observation['intent_id']}:{observation['updated_at']}"
@@ -417,6 +423,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(reason, str) or not (1 <= len(reason.strip()) <= 256):
             raise ValueError("kill switch reason is invalid")
         return reason.strip(), key
+
+    def _strategy_control_request(self) -> tuple[str, str]:
+        """Read an operator lifecycle request; it is never forwarded upstream."""
+        return self._kill_switch_request()
 
     def _accept_or_reuse_intent(self, intent: Intent) -> None:
         store = getattr(self.server, "order_store")
@@ -937,11 +947,33 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/autotrade/strategies/reference-fixture/dry-run":
             self._json(HTTPStatus.OK, strategy_runtime.dry_run_document())
             return
-        if path in _DISABLED_STRATEGY_CONTROL_PATHS:
-            # Keep denial server-side even when a stale browser renders an
-            # enabled control.  This route must not instantiate a runtime,
-            # create an intent, or contact the sidecar.
-            self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
+        if action := strategy_control_action(path):
+            if not strategy_runtime.lifecycle_enabled:
+                self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
+                return
+            try:
+                reason, idempotency_key = self._strategy_control_request()
+                store = getattr(self.server, "order_store")
+                existing = store.strategy_control_receipt(idempotency_key)
+                if existing is not None:
+                    if existing["strategy_id"] != "reference-fixture" or existing["action"] != action or existing["reason"] != reason:
+                        raise ValueError("idempotency key is already used by a different strategy control")
+                    receipt = existing["receipt"]
+                    self._json(HTTPStatus.OK, {"strategy_id": "reference-fixture", "action": action,
+                                                "reason": reason, **receipt, "applied": False})
+                    return
+                receipt = strategy_runtime.control(action)
+                applied = store.record_strategy_control(
+                    idempotency_key, "reference-fixture", action, reason, receipt,
+                )
+            except RuntimeError:
+                self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
+                return
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid strategy control request"})
+                return
+            self._json(HTTPStatus.OK, {"strategy_id": "reference-fixture", "action": action,
+                                        "reason": reason, **receipt, "applied": applied})
             return
         if path in {"/api/v1/order/cancel_order", "/api/v1/order/cancel_comboorder"}:
             try:
@@ -1034,6 +1066,11 @@ def create_server(
         and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
     ):
         raise RuntimeError("simulation execution is SIM only")
+    if (
+        os.getenv("AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE") == "1"
+        and os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM"
+    ):
+        raise RuntimeError("strategy lifecycle is SIM only")
     server = ThreadingHTTPServer((host, port), GatewayHandler)
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
@@ -1064,7 +1101,10 @@ def create_server(
         store,
         resolved_upstream_origin,
     )
-    server.strategy_runtime = StrategyRuntime(server.order_coordinator)  # type: ignore[attr-defined]
+    server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]
+        getattr(server, "order_coordinator"),
+        allow_lifecycle=os.getenv("AUTOTRADE_ENABLE_STRATEGY_LIFECYCLE") == "1",
+    )
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
     return server
 

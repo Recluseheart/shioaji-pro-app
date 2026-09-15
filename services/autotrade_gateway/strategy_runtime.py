@@ -122,8 +122,14 @@ class StrategyRuntime:
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id or event_id in self._processed_event_ids:
             return None
-        self._processed_event_ids.add(event_id)
         intent = self._fixture_intent(event_id, self._parse_observed_at(event.get("observed_at")))
+        # The event id is mapped to a deterministic intent id.  This lookup
+        # extends in-memory event dedupe across a process restart and prevents
+        # a revived runtime from creating a second broker delivery attempt.
+        if self._coordinator.store.has_intent(intent.intent_id):
+            self._processed_event_ids.add(event_id)
+            return None
+        self._processed_event_ids.add(event_id)
         status, verdict = self._coordinator.accept(intent)
         self._last_event_id = event_id
         self._last_intent_id = intent.intent_id

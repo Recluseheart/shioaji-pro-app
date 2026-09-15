@@ -46,6 +46,15 @@ class StrategyRuntimeTest(unittest.TestCase):
         self.assertIsNone(duplicate)
         self.assertEqual(len(self.store.observation_orders()), 1)
 
+    def test_fixture_event_is_deduplicated_after_runtime_restart(self) -> None:
+        event = {"reference_signal": True, "event_id": "event-after-restart"}
+        first_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertIsNotNone(first_runtime.process_fixture_event(event))
+
+        restarted_runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED), allow_reference_fixture=True)
+        self.assertIsNone(restarted_runtime.process_fixture_event(event))
+        self.assertEqual(len(self.store.observation_orders()), 1)
+
     def test_dry_run_exposes_disarmed_verdict_without_persistence_or_outbox(self) -> None:
         runtime = StrategyRuntime(OrderCoordinator(self.store, Gate.DISARMED))
         document = runtime.dry_run_document()

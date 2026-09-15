@@ -77,6 +77,13 @@ class PostgresIntentStore:
             raise KeyError(intent_id)
         return Status(row["status"])
 
+    def has_intent(self, intent_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT 1 FROM order_intents WHERE intent_id=%s", (intent_id,),
+            ).fetchone()
+        return row is not None
+
     def outbox_state(self, intent_id: str) -> str | None:
         with self._lock:
             row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=%s", (intent_id,)).fetchone()

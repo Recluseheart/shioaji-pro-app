@@ -111,6 +111,10 @@ risk verdict 與原子 outbox 寫入。它的 SQLite 實作只用於隔離測試
 `RECONCILING`，不得直接建立新的 outbox 或重送。這項限制同時適用手動與策略
 單。Gateway 建立持久化 store 後立即執行此 recovery，再開始接受 HTTP request。
 
+reference fixture 以 event id 產生 deterministic intent id，並在接受前查詢 durable
+store。runtime 重啟後收到同一 event 只會被辨識為重複事件，不能重新建立 intent、outbox
+或 broker delivery。
+
 worker 只有在 adapter 回傳不可空的 broker order identity 後，才可把 leased
 outbox 標為 `DISPATCHED` 並將 intent 前進為 `PENDING_SUBMIT`；identity 會和
 intent 一起持久化並出現在唯讀 observation。任何 timeout、例外或缺少 identity

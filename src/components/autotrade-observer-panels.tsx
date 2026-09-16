@@ -5,8 +5,10 @@ import {
     fetchAutotradeOrder,
     previewReferenceStrategy,
     refreshAutotradeReconciliation,
+    refreshAutotradePositionSnapshots,
     type AutotradeOverview,
     type AutotradeOrderObservation,
+    type AutotradePositionObservation,
     type AutotradeReconciliationObservation,
     type AutotradeRiskVerdict,
     type AutotradeSignal,
@@ -113,7 +115,7 @@ function countFor(kind: AutotradeObserverPanel, overview: AutotradeOverview): nu
     switch (kind) {
         case 'strategy_control': return overview.strategies.length;
         case 'signal_timeline': return overview.signals.length + overview.decisions.length + overview.audit_events.length;
-        case 'auto_orders': return automatedOrderObservations(overview.orders).length;
+        case 'auto_orders': return automatedOrderObservations(overview.orders).length + overview.positions.length;
         case 'risk_limits': return overview.risk.last_verdict === null ? 0 : 1;
         case 'reconciliation': return overview.reconciliation.length;
         case 'run_performance': return overview.performance.run_count;
@@ -138,7 +140,7 @@ export function panelSummary(
                 ? '以下為 durable signal、durable intent、Risk Engine verdict 與 immutable 執行事件；不以示範資料取代真實事件。'
                 : PANEL_COPY[kind].empty;
         case 'auto_orders':
-            return automatedOrderObservations(overview.orders).length > 0
+            return automatedOrderObservations(overview.orders).length > 0 || overview.positions.length > 0
                 ? '以下為可對帳的自動委託與策略歸屬持倉觀察資料。'
                 : PANEL_COPY[kind].empty;
         case 'reconciliation':
@@ -159,6 +161,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     const [killSwitchMessage, setKillSwitchMessage] = useState<string | null>(null);
     const [reconciliationMessage, setReconciliationMessage] = useState<string | null>(null);
+    const [positionRefreshMessage, setPositionRefreshMessage] = useState<string | null>(null);
     const [showAllOrders, setShowAllOrders] = useState(false);
     const [timelineFilters, setTimelineFilters] = useState<TimelineFilters>(EMPTY_TIMELINE_FILTERS);
     useEffect(() => {
@@ -229,6 +232,18 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             })
             .catch(() => setReconciliationMessage('對帳查詢未完成；請檢查 SIM reconciliation 設定與 durable case。'));
     };
+    const runPositionRefresh = () => {
+        void refreshAutotradePositionSnapshots()
+            .then((receipt) => {
+                setPositionRefreshMessage(
+                    receipt.item_count > 0
+                        ? `已保存 ${receipt.item_count} 筆 SIM 持倉快照；${receipt.observed_at ?? '時間未知'}`
+                        : 'SIM 帳戶目前沒有持倉；未以示範資料取代空狀態。',
+                );
+                return autotradeObserverStore.refresh();
+            })
+            .catch(() => setPositionRefreshMessage('SIM 持倉快照未取得；保留最後一次 durable 資料。'));
+    };
     return (
         <section style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>{copy.title}</strong>
@@ -252,6 +267,12 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                         onChange={(event) => setShowAllOrders(event.target.checked)}
                     /> 顯示全部委託（含手動）
                 </label>
+            )}
+            {kind === 'auto_orders' && !observerOnly && (
+                <div>
+                    <button onClick={runPositionRefresh} title='只讀取已登入的 SIM sidecar 並保存 durable 快照；不會登入、啟用 CA 或送單'>同步 SIM 持倉快照</button>
+                    {positionRefreshMessage && <div role='status' style={{ color: '#aeb7c6', marginTop: 4 }}>{positionRefreshMessage}</div>}
+                </div>
             )}
             {kind === 'signal_timeline' && overview && timeline && (
                 <div role='group' aria-label='時間線篩選' style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -284,6 +305,11 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                             {order.intent_id && <DurableOrderDetail intentId={order.intent_id} />}
                         </div>;
                     })}
+                </div>
+            )}
+            {kind === 'auto_orders' && overview && overview.positions.length > 0 && (
+                <div style={{ display: 'grid', gap: 5 }} aria-label='durable SIM 持倉'>
+                    {overview.positions.map((position) => <PositionObservation key={position.snapshot_id} position={position} />)}
                 </div>
             )}
             {kind === 'signal_timeline' && overview && timeline && (timeline.signals.length > 0 || timeline.decisions.length > 0 || timeline.auditEvents.length > 0) ? (
@@ -377,6 +403,13 @@ function SignalObservation({ signal }: { signal: AutotradeSignal }) {
         訊號 · {signal.strategy_id} · {signal.signal_type} · {signal.symbol} {direction} · {signal.status} · {signal.correlation_id.slice(0, 8)}
         <div style={{ color: '#aeb7c6' }}>event {signal.event_id} · run {signal.run_id} · {signal.observed_at || '觀測時間未知'}</div>
         {signal.risk_reasons.length ? <div style={{ color: '#f0b44d' }}>風控：{signal.risk_reasons.map(riskReasonLabel).join('、')}</div> : null}
+    </div>;
+}
+
+function PositionObservation({ position }: { position: AutotradePositionObservation }) {
+    return <div style={{ borderLeft: '3px solid #4aa3ff', paddingLeft: 7 }}>
+        持倉 · {position.account_type} {position.account_label} · {position.symbol} · {position.side === 'LONG' ? '多' : '空'} {position.quantity}
+        <div style={{ color: '#aeb7c6' }}>均價 {position.average_price} · 市價 {position.market_price} · 未實現 {position.unrealized_pnl} · {position.observed_at}</div>
     </div>;
 }
 

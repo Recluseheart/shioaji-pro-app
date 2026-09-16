@@ -365,6 +365,7 @@ class IntentStore(Protocol):
     def record_fill(self, fill: Fill) -> None: ...
     def observation_fills(self) -> list[dict[str, object]]: ...
     def record_position_snapshot(self, snapshot: PositionSnapshot) -> None: ...
+    def record_position_snapshots(self, snapshots: tuple[PositionSnapshot, ...]) -> None: ...
     def observation_position_snapshots(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
@@ -1205,43 +1206,51 @@ class SQLiteIntentStore:
         return [dict(row) for row in rows]
 
     def record_position_snapshot(self, snapshot: PositionSnapshot) -> None:
-        """Persist one typed broker-read fact without changing any order state."""
-        values = position_snapshot_values(snapshot)
+        self.record_position_snapshots((snapshot,))
+
+    def record_position_snapshots(self, snapshots: tuple[PositionSnapshot, ...]) -> None:
+        """Atomically retain a complete broker-read position observation."""
+        prepared = tuple((snapshot, position_snapshot_values(snapshot)) for snapshot in snapshots)
+        if len({values[0] for _, values in prepared}) != len(prepared):
+            raise ValueError("position snapshot batch has duplicate identities")
         with self._lock, self.connection:
-            existing = self.connection.execute(
-                """SELECT account_type, account_id, symbol, side, quantity, average_price,
-                    market_price, unrealized_pnl, observed_at
-                    FROM broker_position_snapshots WHERE snapshot_id=?""",
-                (snapshot.snapshot_id,),
-            ).fetchone()
-            expected = dict(zip(
-                ("account_type", "account_id", "symbol", "side", "quantity", "average_price",
-                 "market_price", "unrealized_pnl", "observed_at"),
-                values[1:],
-                strict=True,
-            ))
-            if existing is not None:
-                if dict(existing) == expected:
-                    return
-                raise ValueError("position snapshot identity conflicts with an existing snapshot")
-            self.connection.execute(
-                """INSERT INTO broker_position_snapshots(
-                    snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
-                    market_price,unrealized_pnl,observed_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                values,
-            )
-            self.connection.execute(
-                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
-                VALUES (?, NULL, 'POSITION_SNAPSHOT_RECORDED', ?, ?)""",
-                (
-                    str(uuid4()), json.dumps({
-                        "snapshot_id": snapshot.snapshot_id,
-                        "account_type": snapshot.account_type,
-                        "symbol": snapshot.symbol,
-                    }, separators=(",", ":")), now().isoformat(),
-                ),
-            )
+            new: list[tuple[PositionSnapshot, tuple[str, ...]]] = []
+            for snapshot, values in prepared:
+                existing = self.connection.execute(
+                    """SELECT account_type, account_id, symbol, side, quantity, average_price,
+                        market_price, unrealized_pnl, observed_at
+                        FROM broker_position_snapshots WHERE snapshot_id=?""",
+                    (snapshot.snapshot_id,),
+                ).fetchone()
+                expected = dict(zip(
+                    ("account_type", "account_id", "symbol", "side", "quantity", "average_price",
+                     "market_price", "unrealized_pnl", "observed_at"),
+                    values[1:], strict=True,
+                ))
+                if existing is not None:
+                    if dict(existing) != expected:
+                        raise ValueError("position snapshot identity conflicts with an existing snapshot")
+                else:
+                    new.append((snapshot, values))
+            for snapshot, values in new:
+                self.connection.execute(
+                    """INSERT INTO broker_position_snapshots(
+                        snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                        market_price,unrealized_pnl,observed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (?, NULL, 'POSITION_SNAPSHOT_RECORDED', ?, ?)""",
+                    (
+                        str(uuid4()), json.dumps({
+                            "snapshot_id": snapshot.snapshot_id,
+                            "account_type": snapshot.account_type,
+                            "symbol": snapshot.symbol,
+                        }, separators=(",", ":")), now().isoformat(),
+                    ),
+                )
 
     def observation_position_snapshots(self) -> list[dict[str, object]]:
         """Return internal facts; an observer projection must mask account_id."""

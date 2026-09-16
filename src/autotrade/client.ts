@@ -24,6 +24,7 @@ export type AutotradeOverview = {
     decisions: AutotradeOrderObservation[];
     orders: AutotradeOrderObservation[];
     audit_events: AutotradeAuditEvent[];
+    positions: AutotradePositionObservation[];
     risk: {
         mode: string;
         limits_source: string;
@@ -44,6 +45,19 @@ export type AutotradeOverview = {
         realized_pnl: string;
         unrealized_pnl: string;
     };
+};
+
+export type AutotradePositionObservation = {
+    snapshot_id: string;
+    account_type: 'S' | 'F';
+    account_label: string;
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    quantity: string;
+    average_price: string;
+    market_price: string;
+    unrealized_pnl: string;
+    observed_at: string;
 };
 
 export type AutotradeRiskVerdict = {
@@ -147,6 +161,11 @@ export type ReconciliationRefreshReceipt = {
     observed_terminal_facts: number;
     resolved_intents: number;
     applied: boolean;
+};
+
+export type PositionSnapshotRefreshReceipt = {
+    item_count: number;
+    observed_at: string | null;
 };
 
 export type StrategyControlAction = 'start' | 'pause' | 'resume' | 'stop';
@@ -369,6 +388,29 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             occurred_at: event.occurred_at,
         }];
     }) : [];
+    const positions = Array.isArray(raw.positions) ? raw.positions.flatMap((item): AutotradePositionObservation[] => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+        const position = item as Record<string, unknown>;
+        const decimal = (field: string) => typeof position[field] === 'string'
+            && /^-?\d+(?:\.\d+)?$/.test(position[field]) ? position[field] : null;
+        if (typeof position.snapshot_id !== 'string' || !position.snapshot_id
+            || (position.account_type !== 'S' && position.account_type !== 'F')
+            || typeof position.account_label !== 'string' || !/^\*{3}[^\s]{2}$/.test(position.account_label)
+            || typeof position.symbol !== 'string' || !position.symbol
+            || (position.side !== 'LONG' && position.side !== 'SHORT')
+            || typeof position.observed_at !== 'string') return [];
+        const quantity = decimal('quantity');
+        const averagePrice = decimal('average_price');
+        const marketPrice = decimal('market_price');
+        const unrealizedPnl = decimal('unrealized_pnl');
+        if (!quantity || !averagePrice || !marketPrice || !unrealizedPnl) return [];
+        return [{
+            snapshot_id: position.snapshot_id, account_type: position.account_type,
+            account_label: position.account_label, symbol: position.symbol, side: position.side,
+            quantity, average_price: averagePrice, market_price: marketPrice,
+            unrealized_pnl: unrealizedPnl, observed_at: position.observed_at,
+        }];
+    }) : [];
     return {
         health: normalizeAutotradeHealth(raw.health),
         strategies: list('strategies'),
@@ -377,6 +419,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         orders: normalizeOrders(raw.orders),
         decisions: normalizeOrders(raw.decisions),
         audit_events: auditEvents,
+        positions,
         risk: {
             mode: typeof risk.mode === 'string' ? risk.mode : 'UNKNOWN',
             limits_source: typeof risk.limits_source === 'string' ? risk.limits_source : 'unknown',
@@ -437,6 +480,16 @@ export async function refreshAutotradeReconciliation(
         observed_terminal_facts: document.observed_terminal_facts,
         resolved_intents: document.resolved_intents, applied: document.applied,
     };
+}
+
+/** Request one explicit local SIM read; it cannot create or dispatch an order. */
+export async function refreshAutotradePositionSnapshots(): Promise<PositionSnapshotRefreshReceipt> {
+    const document = await apiPost<Record<string, unknown>>('/api/v1/autotrade/positions/refresh', {});
+    if (typeof document.item_count !== 'number' || !Number.isInteger(document.item_count) || document.item_count < 0
+        || (document.observed_at !== null && typeof document.observed_at !== 'string')) {
+        throw new Error('Gateway returned an invalid position snapshot receipt');
+    }
+    return { item_count: document.item_count, observed_at: document.observed_at };
 }
 
 export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): Promise<StrategyPreview> {

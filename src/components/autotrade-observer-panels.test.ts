@@ -111,6 +111,17 @@ describe('Autotrade observer panel summaries', () => {
         expect(panelSummary('auto_orders', overview, null)).toContain('自動委託');
     });
 
+    it('treats a masked durable SIM position as observer evidence, never demo data', () => {
+        const overview = normalizeAutotradeOverview({
+            positions: [{
+                snapshot_id: 'snapshot-1', account_type: 'F', account_label: '***78', symbol: 'TXFZ6', side: 'SHORT',
+                quantity: '1', average_price: '22000', market_price: '22010', unrealized_pnl: '-10',
+                observed_at: '2026-09-16T00:00:00+00:00',
+            }],
+        });
+        expect(panelSummary('auto_orders', overview, null)).toContain('策略歸屬持倉');
+    });
+
     it('renders durable product and strategy attribution without pretending a target mutation has a price', () => {
         expect(orderObservationText({
             operation: 'PLACE', symbol: '2330', side: 'BUY', quantity: 2,

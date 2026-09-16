@@ -453,6 +453,24 @@ class OrderCoreTest(unittest.TestCase):
         })
         self.assertNotIn("account_id", self.store.observation_audit_events()[0]["details"])
 
+    def test_position_snapshot_batch_rolls_back_when_any_fact_conflicts(self) -> None:
+        baseline = PositionSnapshot(
+            snapshot_id="position-snapshot-baseline", account_type="S", account_id="SIM-001",
+            symbol="2330", side="LONG", quantity="1", average_price="1000", market_price="1001",
+            unrealized_pnl="1", observed_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+        )
+        self.store.record_position_snapshot(baseline)
+        new_snapshot = replace(baseline, snapshot_id="position-snapshot-new", symbol="2317")
+        conflicting_snapshot = replace(baseline, quantity="2")
+
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.store.record_position_snapshots((new_snapshot, conflicting_snapshot))
+
+        self.assertEqual(
+            [item["snapshot_id"] for item in self.store.observation_position_snapshots()],
+            ["position-snapshot-baseline"],
+        )
+
     def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")

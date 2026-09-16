@@ -547,53 +547,62 @@ class PostgresIntentStore:
         } for row in rows]
 
     def record_position_snapshot(self, snapshot: PositionSnapshot) -> None:
-        """Persist one broker-read position fact with conflict-safe replay semantics."""
-        values = position_snapshot_values(snapshot)
+        self.record_position_snapshots((snapshot,))
+
+    def record_position_snapshots(self, snapshots: tuple[PositionSnapshot, ...]) -> None:
+        """Atomically retain a complete broker-read position observation."""
+        prepared = tuple((snapshot, position_snapshot_values(snapshot)) for snapshot in snapshots)
+        if len({values[0] for _, values in prepared}) != len(prepared):
+            raise ValueError("position snapshot batch has duplicate identities")
         with self._lock, self.connection.transaction():
-            existing = self.connection.execute(
-                """SELECT account_type, account_id, symbol, side, quantity, average_price,
-                    market_price, unrealized_pnl, observed_at
-                    FROM broker_position_snapshots WHERE snapshot_id=%s""",
-                (snapshot.snapshot_id,),
-            ).fetchone()
-            if existing is not None:
+            new: list[tuple[PositionSnapshot, tuple[str, ...]]] = []
+            for snapshot, values in prepared:
+                existing = self.connection.execute(
+                    """SELECT account_type, account_id, symbol, side, quantity, average_price,
+                        market_price, unrealized_pnl, observed_at
+                        FROM broker_position_snapshots WHERE snapshot_id=%s""",
+                    (snapshot.snapshot_id,),
+                ).fetchone()
                 expected = {
                     "account_type": values[1], "account_id": values[2], "symbol": values[3],
                     "side": values[4], "quantity": values[5], "average_price": values[6],
                     "market_price": values[7], "unrealized_pnl": values[8], "observed_at": values[9],
                 }
-                actual = {
-                    "account_type": str(existing["account_type"]),
-                    "account_id": str(existing["account_id"]),
-                    "symbol": str(existing["symbol"]),
-                    "side": str(existing["side"]),
-                    "quantity": _decimal_text(existing["quantity"]),
-                    "average_price": _decimal_text(existing["average_price"]),
-                    "market_price": _decimal_text(existing["market_price"]),
-                    "unrealized_pnl": _decimal_text(existing["unrealized_pnl"]),
-                    "observed_at": _iso_timestamp(existing["observed_at"]),
-                }
-                if actual == expected:
-                    return
-                raise ValueError("position snapshot identity conflicts with an existing snapshot")
-            self.connection.execute(
-                """INSERT INTO broker_position_snapshots(
-                    snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
-                    market_price,unrealized_pnl,observed_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                values,
-            )
-            self.connection.execute(
-                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
-                VALUES (%s, NULL, 'POSITION_SNAPSHOT_RECORDED', %s, %s)""",
-                (
-                    str(uuid4()), json.dumps({
-                        "snapshot_id": snapshot.snapshot_id,
-                        "account_type": snapshot.account_type,
-                        "symbol": snapshot.symbol,
-                    }, separators=(",", ":")), now().isoformat(),
-                ),
-            )
+                if existing is not None:
+                    actual = {
+                        "account_type": str(existing["account_type"]),
+                        "account_id": str(existing["account_id"]),
+                        "symbol": str(existing["symbol"]),
+                        "side": str(existing["side"]),
+                        "quantity": _decimal_text(existing["quantity"]),
+                        "average_price": _decimal_text(existing["average_price"]),
+                        "market_price": _decimal_text(existing["market_price"]),
+                        "unrealized_pnl": _decimal_text(existing["unrealized_pnl"]),
+                        "observed_at": _iso_timestamp(existing["observed_at"]),
+                    }
+                    if actual != expected:
+                        raise ValueError("position snapshot identity conflicts with an existing snapshot")
+                else:
+                    new.append((snapshot, values))
+            for snapshot, values in new:
+                self.connection.execute(
+                    """INSERT INTO broker_position_snapshots(
+                        snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                        market_price,unrealized_pnl,observed_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    values,
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (%s, NULL, 'POSITION_SNAPSHOT_RECORDED', %s, %s)""",
+                    (
+                        str(uuid4()), json.dumps({
+                            "snapshot_id": snapshot.snapshot_id,
+                            "account_type": snapshot.account_type,
+                            "symbol": snapshot.symbol,
+                        }, separators=(",", ":")), now().isoformat(),
+                    ),
+                )
 
     def observation_position_snapshots(self) -> list[dict[str, object]]:
         """Return internal durable facts; observer routes must mask account_id."""

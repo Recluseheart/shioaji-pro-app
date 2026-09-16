@@ -122,7 +122,8 @@ class PostgresIntentStoreTest(unittest.TestCase):
         )
         self.store.record_position_snapshot(snapshot)
         self.store.record_position_snapshot(snapshot)
-        self.assertEqual(self.store.observation_position_snapshots(), [{
+        self.assertEqual([item for item in self.store.observation_position_snapshots()
+                          if item["snapshot_id"] == "postgres-position-snapshot-1"], [{
             "snapshot_id": "postgres-position-snapshot-1", "account_type": "S", "account_id": "SIM-001",
             "symbol": "2330", "side": "LONG", "quantity": "12.5", "average_price": "1000.125",
             "market_price": "1001.5", "unrealized_pnl": "-17.1875",
@@ -147,6 +148,24 @@ class PostgresIntentStoreTest(unittest.TestCase):
             {"column_name": "quantity", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
             {"column_name": "unrealized_pnl", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
         ])
+
+    def test_position_snapshot_batch_rolls_back_when_any_fact_conflicts(self) -> None:
+        baseline = PositionSnapshot(
+            snapshot_id="postgres-position-batch-baseline", account_type="S", account_id="SIM-BATCH-001",
+            symbol="2317", side="LONG", quantity="1", average_price="1000", market_price="1001",
+            unrealized_pnl="1", observed_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+        )
+        self.store.record_position_snapshot(baseline)
+        new_snapshot = replace(baseline, snapshot_id="postgres-position-batch-new", symbol="2317")
+        conflicting_snapshot = replace(baseline, quantity="2")
+
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            self.store.record_position_snapshots((new_snapshot, conflicting_snapshot))
+
+        self.assertEqual(
+            [item["snapshot_id"] for item in self.store.observation_position_snapshots()],
+            ["postgres-position-batch-baseline"],
+        )
 
     def test_kill_switch_is_persistent_and_never_rearms_the_store(self) -> None:
         self.assertEqual(self.store.apply_kill_switch("operator test", "kill-test-1"), (

@@ -136,6 +136,51 @@ class GatewayServerTest(unittest.TestCase):
             ["/api/v1/health", "/api/v1/info"],
         )
 
+    def test_position_projection_masks_account_identity_and_never_reads_sidecar(self) -> None:
+        from services.autotrade_gateway.order_core import PositionSnapshot
+
+        getattr(self.server, "order_store").record_position_snapshot(PositionSnapshot(
+            snapshot_id="server-position-1", account_type="S", account_id="SIM-ACCOUNT-1234",
+            symbol="2330", side="LONG", quantity="2", average_price="1000",
+            market_price="1001", unrealized_pnl="2", observed_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+        ))
+        with urlopen(f"{self.base}/api/v1/autotrade/positions") as response:
+            document = json.load(response)
+
+        self.assertEqual(document["items"], [{
+            "snapshot_id": "server-position-1", "account_type": "S", "account_label": "***34",
+            "symbol": "2330", "side": "LONG", "quantity": "2", "average_price": "1000",
+            "market_price": "1001", "unrealized_pnl": "2",
+            "observed_at": "2026-09-16T00:00:00+00:00",
+        }])
+        self.assertNotIn("SIM-ACCOUNT-1234", json.dumps(document))
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_operator_position_refresh_reads_only_sim_facts_and_persists_atomically(self) -> None:
+        from services.autotrade_gateway.order_core import PositionSnapshot
+
+        class SnapshotProvider:
+            def position_snapshots(self):
+                return (PositionSnapshot(
+                    snapshot_id="refresh-position-1", account_type="F", account_id="SIM-FUTURE-5678",
+                    symbol="TXFZ6", side="SHORT", quantity="1", average_price="22000",
+                    market_price="22010", unrealized_pnl="-10",
+                    observed_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+                ),)
+
+        self.server.position_snapshot_provider = SnapshotProvider()
+        request = Request(f"{self.base}/api/v1/autotrade/positions/refresh", data=b"", method="POST")
+        with urlopen(request) as response:
+            receipt = json.load(response)
+        with urlopen(f"{self.base}/api/v1/autotrade/positions") as response:
+            document = json.load(response)
+
+        self.assertEqual(receipt, {"item_count": 1, "observed_at": "2026-09-16T00:00:00+00:00"})
+        self.assertEqual(document["items"][0]["account_label"], "***78")
+        self.assertNotIn("SIM-FUTURE-5678", json.dumps(document))
+        self.assertEqual(getattr(self.server, "order_coordinator").gate, Gate.DISARMED)
+        self.assertEqual(ReadServiceHandler.received, [])
+
     def test_client_disconnect_while_writing_a_read_response_is_silent(self) -> None:
         handler = GatewayHandler.__new__(GatewayHandler)
         handler.send_response = Mock()

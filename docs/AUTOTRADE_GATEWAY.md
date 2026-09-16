@@ -369,6 +369,13 @@ forward-only migration。每一版會寫入該 schema 的
 驗證既有 checksum，不會重放 DDL。新 schema 的持久化 timestamp 一律使用
 `TIMESTAMPTZ`，成交與 broker position snapshot 的數值欄位使用 `NUMERIC(20,8)`，而 API 仍輸出 ISO-8601 UTC offset
 timestamp 與非補零 decimal 字串。position snapshot 保留在本機 store 供風控／對帳使用；任何 observer projection 都必須先遮罩帳戶識別。
+`GET /api/v1/autotrade/positions` 永遠只讀取這個 durable projection，不會因為
+頁面 reload 或 polling 而向 sidecar 查帳。只有本機 `OPERATOR` 可明確呼叫
+`POST /api/v1/autotrade/positions/refresh`（body 必須為空物件），其讀取已登入且
+驗證為 SIM 的 `S`／`F` 帳戶 `position_unit`，先完整驗證所有 payload，再以單一
+transaction 保存整份快照。任何 sidecar／資料格式／寫入錯誤均保留舊快照並回傳失敗；
+不把未知狀態當成空持倉。此 endpoint 不建立 intent/outbox、不能 ARM、不能啟用 CA，
+而 Tailscale `OBSERVER` mode 一律拒絕它。
 既有 inline-schema 的 text 欄位不會被自動破壞性
 轉型；它們會由 migration ledger 接管並保留既有稽核資料。需要修正已部署 schema 時，
 只能新增新的 forward migration，不能修改已記錄 migration 或重寫 broker／audit history。

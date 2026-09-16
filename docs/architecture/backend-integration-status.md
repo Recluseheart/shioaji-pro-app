@@ -11,7 +11,8 @@
 | Gateway durable journal | Implemented | Intent, risk decision, outbox, broker identity, fill, strategy, reconciliation, audit event and broker position snapshot have SQLite and PostgreSQL stores. `UNKNOWN`/`RECONCILING` are never re-enqueued. |
 | PostgreSQL schema and recovery | Implemented and disposable-verified | Forward-only migrations are checksummed in `gateway_schema_migrations`; all timestamps use `TIMESTAMPTZ`, monetary/position values use `NUMERIC(20,8)`. The disposable integration script exercises migration rerun, concurrent idempotency and an archive/list/restore drill. |
 | Shioaji SIM session posture | Implemented, awaiting a sidecar session | The Gateway only observes an already logged-in loopback sidecar and publishes `DISCONNECTED`, `CONNECTING`, `AUTHENTICATED`, `MARKET_DATA_READY`, `DEGRADED` or `LOST`. It never accepts credentials, invokes login/logout, enables CA or arms trading. |
-| UI connection presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout and displays only masked account labels plus the connection state. It retains the existing `SIM` and `DISARMED` indicators. |
+| SIM position snapshot wiring | Implemented and fixture-verified | A local operator can explicitly read verified SIM stock/futures `position_unit` facts, validate the complete response, atomically retain the full snapshot, and project only masked account labels to the UI. `GET` remains durable-only; observer mode cannot invoke refresh. |
+| UI connection and positions presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout, displays only masked account labels, and offers an explicit SIM position snapshot refresh. It retains the existing `SIM` and `DISARMED` indicators and renders an explicit empty state instead of demo positions. |
 | User-owned PostgreSQL final verification | External condition | A dedicated, non-production database plus an isolated Gateway schema and DDL/DML/backup-restore permissions are required. Disposable container evidence is not substituted for this check. |
 | User-owned Shioaji SIM read integration | External condition | The local sidecar must receive credentials through its secret provider and be running in simulation mode. CA must remain unset/disabled; no simulation canary or order will be sent by this work. |
 
@@ -41,6 +42,10 @@ account.
 4. Restart the local Gateway only after the current user-owned process can be
    safely replaced. It will run migrations and recovery before accepting
    requests; the resulting health must still say `SIM` and `DISARMED`.
-5. Ask Codex to continue this Goal. The next run will validate the dedicated
+5. In the existing Auto Command Center's `自動委託與持倉` panel, use `同步 SIM
+   持倉快照` only after the connection state is authenticated. This invokes
+   only a read-only sidecar query, writes a local durable projection, and does
+   not enable CA, arm the Gateway, or submit/cancel an order.
+6. Ask Codex to continue this Goal. The next run will validate the dedicated
    DSN, sidecar read session, Gateway connection endpoint, state recovery and
    UI/SSE behavior without enabling CA or submitting an order.

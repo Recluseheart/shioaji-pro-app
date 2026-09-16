@@ -8,7 +8,7 @@ const overview = {
     enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
     broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
     },
-    strategies: [], signals: [], runs: [], decisions: [], orders: [], audit_events: [],
+    strategies: [], signals: [], runs: [], decisions: [], orders: [], positions: [], audit_events: [],
     risk: { mode: 'ENFORCING', limits_source: 'test', limits: {}, last_verdict: null, usage: {
         intent_count: 0, confirmed_fill_count: 0, confirmed_filled_quantity: 0,
         reconciliation_count: 0, authoritative_remaining_available: false,

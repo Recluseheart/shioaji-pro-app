@@ -9,6 +9,7 @@ import {
     applyAutotradeKillSwitch,
     applyReferenceStrategyControl,
     refreshAutotradeReconciliation,
+    refreshAutotradePositionSnapshots,
     normalizeAutotradeHealth,
     normalizeAutotradeConnection,
     normalizeAutotradeOverview,
@@ -90,6 +91,14 @@ describe('Autotrade Gateway health contract', () => {
             { headers: { 'Idempotency-Key': 'refresh-1' } },
         );
     });
+
+    it('requests only the narrow SIM position refresh receipt', async () => {
+        mocks.post.mockResolvedValue({ item_count: 2, observed_at: '2026-09-16T00:00:00+00:00' });
+        await expect(refreshAutotradePositionSnapshots()).resolves.toEqual({
+            item_count: 2, observed_at: '2026-09-16T00:00:00+00:00',
+        });
+        expect(mocks.post).toHaveBeenCalledWith('/api/v1/autotrade/positions/refresh', {});
+    });
 });
 
 describe('normalizeAutotradeOverview', () => {
@@ -99,6 +108,23 @@ describe('normalizeAutotradeOverview', () => {
             strategies: [], orders: [], reconciliation: [],
             performance: { run_count: 0, filled_order_count: 0 },
         });
+    });
+
+    it('accepts only masked durable SIM position observations', () => {
+        const overview = normalizeAutotradeOverview({
+            positions: [{
+                snapshot_id: 'snapshot-1', account_type: 'S', account_label: '***34', symbol: '2330', side: 'LONG',
+                quantity: '2', average_price: '1000', market_price: '1001', unrealized_pnl: '2',
+                observed_at: '2026-09-16T00:00:00+00:00',
+            }, {
+                snapshot_id: 'unsafe', account_type: 'S', account_label: 'SIM-ACCOUNT-1234', symbol: '2330', side: 'LONG',
+                quantity: '2', average_price: '1000', market_price: '1001', unrealized_pnl: '2',
+                observed_at: '2026-09-16T00:00:00+00:00',
+            }],
+        });
+        expect(overview.positions).toEqual([expect.objectContaining({
+            snapshot_id: 'snapshot-1', account_label: '***34', symbol: '2330', quantity: '2',
+        })]);
     });
 
     it('keeps an adapter-provided broker identity as read-only observation data', () => {

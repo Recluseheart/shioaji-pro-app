@@ -33,7 +33,7 @@ from .order_core import (
     Status,
 )
 from .simulation_snapshot import SimulationSnapshotProvider
-from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor
+from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor, mask_account_id
 from .reconciliation import ReconciliationRefresher, SimulationTradeProvider
 from .strategy_runtime import StrategyRuntime
 from .worker import ExecutionWorker
@@ -484,6 +484,7 @@ def overview_document(
         "runs": runs,
         "decisions": decisions,
         "orders": orders,
+        "positions": position_snapshots_document(store) if store is not None else [],
         "audit_events": audit_events,
         "risk": {
             "mode": "ENFORCING",
@@ -500,6 +501,21 @@ def overview_document(
             "unrealized_pnl": "0",
         },
     }
+
+
+def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
+    """Project durable broker facts without leaking a raw account identifier."""
+    items: list[dict[str, object]] = []
+    for snapshot in store.observation_position_snapshots():
+        account_id = snapshot.get("account_id")
+        account_type = snapshot.get("account_type")
+        if not isinstance(account_id, str) or not isinstance(account_type, str):
+            # Never project malformed persistence as an unidentified account.
+            continue
+        items.append({
+            key: value for key, value in snapshot.items() if key != "account_id"
+        } | {"account_type": account_type, "account_label": mask_account_id(account_id)})
+    return items
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -613,6 +629,48 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "message": "reconciliation refresh outcome is unknown; inspect the durable case before using a new key",
                 "intent_id": intent_id,
             })
+
+    def _refresh_position_snapshots(self) -> None:
+        """Persist one complete, read-only SIM position observation.
+
+        This local write is intentionally unavailable to Tailscale observer
+        mode (the generic POST guard runs first).  It does not use an
+        execution worker, create an intent, or change the DISARMED gate.
+        """
+        if os.getenv("AUTOTRADE_ENV", "SIM").upper() != "SIM":
+            self._json(HTTPStatus.FORBIDDEN, {"message": "position refresh is SIM only"})
+            return
+        size = int(self.headers.get("Content-Length", "0"))
+        if size < 0 or size > 16:
+            self._json(HTTPStatus.BAD_REQUEST, {"message": "position refresh has an invalid request body"})
+            return
+        if size:
+            try:
+                if json.loads(self.rfile.read(size)) != {}:
+                    raise ValueError("position refresh accepts only an empty object")
+            except (ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "position refresh accepts only an empty object"})
+                return
+        try:
+            snapshots = getattr(self.server, "position_snapshot_provider").position_snapshots()
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+            snapshots = None
+        if snapshots is None:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "message": "verified SIM position snapshot is unavailable; previous durable facts were retained",
+            })
+            return
+        try:
+            getattr(self.server, "order_store").record_position_snapshots(snapshots)
+        except ValueError:
+            self._json(HTTPStatus.CONFLICT, {
+                "message": "position snapshot conflicts with durable facts; previous durable facts were retained",
+            })
+            return
+        self._json(HTTPStatus.OK, {
+            "item_count": len(snapshots),
+            "observed_at": snapshots[0].observed_at.isoformat() if snapshots else None,
+        })
 
     def _record_internal_terminal_callback(self) -> None:
         """Accept a terminal fact only from the explicitly configured broker bridge.
@@ -1116,6 +1174,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 getattr(self.server, "connection_monitor").probe().document(),
             )
             return
+        if path == "/api/v1/autotrade/positions":
+            # This endpoint is an immutable local projection only.  It never
+            # asks the sidecar to refresh a broker read as part of GET.
+            self._json(HTTPStatus.OK, {
+                "items": position_snapshots_document(getattr(self.server, "order_store")),
+            })
+            return
         if path == "/api/v1/autotrade/overview":
             # The durable overview is never allowed to trigger sidecar I/O.
             # It reports the last posture observed by the dedicated health
@@ -1257,6 +1322,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         if intent_id := reconciliation_refresh_intent_id(path):
             self._reconciliation_refresh(intent_id)
+            return
+        if path == "/api/v1/autotrade/positions/refresh":
+            self._refresh_position_snapshots()
             return
         if path == "/api/v1/autotrade/kill-switch":
             try:
@@ -1444,6 +1512,10 @@ def create_server(
     # This monitor only observes an already-owned sidecar session.  It never
     # receives credentials or exposes an unmasked broker/account identifier.
     server.connection_monitor = SimulationConnectionMonitor(resolved_upstream_origin)  # type: ignore[attr-defined]
+    # Construction validates a credential-free loopback origin but does not
+    # connect, authenticate, activate CA, or make a broker request.  Reads
+    # happen only after an explicit local operator refresh endpoint.
+    server.position_snapshot_provider = SimulationSnapshotProvider(resolved_upstream_origin)  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:
         from .postgres_intent_store import PostgresIntentStore

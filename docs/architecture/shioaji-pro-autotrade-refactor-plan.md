@@ -468,7 +468,7 @@ UI 顯示短碼，但 detail drawer 可複製完整 internal ID；隱私模式�
 - [x] 記錄 upstream SHA、Shioaji version 與本機 baseline artifact（tag 仍未建立，因為建立／push tag 需另行授權）。
 - [x] 在目前乾淨工作樹執行 `pnpm install --frozen-lockfile`、test、build（2026-09-16；依賴未變更，完整前端 test/build 已通過）。
 - [ ] 保存 upstream baseline screenshots 與測試數。
-- [ ] 建立 feature-parity checklist，逐面板對應 test ID。
+- [x] 建立 feature-parity checklist，逐面板對應 test ID（`docs/architecture/upstream-ui-parity-inventory.md`）。
 
 Exit：未修改上游時即可 build、test、啟動，所有 baseline failure 已列出而非被忽略。
 
@@ -486,41 +486,41 @@ Exit：所有公開 Web 顯示功能在不連真實券商時可由 deterministic
 
 - [x] 建立 Gateway reverse proxy 與 explicit route allowlist（固定 read route、受限 contract/tick-band segment；未知 data/monitor route fail closed）。
 - [ ] 完成 Shioaji 1.7.5 read API contract tests。
-- [ ] 接通 accounts、contracts、market、portfolio、watchlist、monitor 與 SSE。
-- [ ] 實作 version transformers 與 timeout／error mapping。
+- [x] 接通 accounts、contracts、market、portfolio、watchlist、monitor 與 SSE（Gateway allowlist／relay fixture；真實 sidecar read contract 仍列 Phase 6）。
+- [x] 實作 version transformers 與 timeout／error mapping（credential-free failure mapping 與 Gateway server contract tests）。
 - [x] Vite dev／preview／production build 全部只指向 Gateway（dev/preview proxy；static build 僅接受受驗證 Gateway origin，sidecar 21322/8080 origin fail closed；runtime unit、build 與 preview health probe 已驗證）。
 
 Exit：上游 UI 在 simulation read mode 下不需直接存取 Shioaji server，即可完整看盤與查詢帳務。
 
 ### Phase 3：統一手動交易 mutation
 
-- [ ] 匯入 domain、Risk Engine、intent、outbox、state machine 與 PostgreSQL store。
-- [ ] 實作 HTTP broker adapter，由 outbox 呼叫 Shioaji server。
-- [ ] 攔截所有上游 order mutations。
-- [ ] 建立 manual source、idempotency 與 response compatibility。
-- [ ] trade callback／poll reconciliation 寫回同一 store。
+- [x] 匯入 domain、Risk Engine、intent、outbox、state machine 與 PostgreSQL store（SQLite／PostgreSQL contract tests）。
+- [x] 實作 HTTP broker adapter，由 outbox 呼叫 Shioaji server（loopback mock seam；沒有啟用 real broker execution）。
+- [x] 攔截所有上游 order mutations（Gateway-only browser runtime；未列舉 mutation fail closed）。
+- [x] 建立 manual source、idempotency 與 response compatibility（durable receipt／collision tests）。
+- [x] trade callback／poll reconciliation 寫回同一 store（terminal callback、UNKNOWN／reconciliation tests）。
 - [ ] 接通一般、flash、chart、cancel、update、close、reverse、bracket 與 combo flows。
 
 Exit：所有手動 simulation mutation 都有完整 intent→broker→callback audit chain，UI 行為維持上游 parity。
 
 ### Phase 4：移植自動交易 runtime
 
-- [ ] 移植 Strategy Runner、heartbeat、market-event dedup 與 durable ingress。
-- [ ] 新增 strategy/run/signal/decision/reconciliation APIs。
-- [ ] 以同一 Risk Engine／outbox 執行 strategy intents。
-- [ ] restart、timeout、duplicate callback、out-of-order callback fault tests。
-- [ ] reference strategy 預設 disabled；先用 fixture 與 broker mock。
+- [x] 移植 Strategy Runner、heartbeat、market-event dedup 與 durable ingress（預設不啟動）。
+- [x] 新增 strategy/run/signal/decision/reconciliation APIs。
+- [x] 以同一 Risk Engine／outbox 執行 strategy intents（fixture/mock 僅建立可稽核 receipt）。
+- [x] restart、timeout、duplicate callback、out-of-order callback fault tests。
+- [x] reference strategy 預設 disabled；先用 fixture 與 broker mock。
 
 Exit：signal 能經完整鏈路到 mock broker terminal state，且 manual／strategy order 可由 source 分辨。
 
 ### Phase 5：自動交易 UI 與一鍵 workspace
 
-- [ ] 實作第 8 節七個面板。
-- [ ] 實作完整／控制／觀察三個 preset。
-- [ ] Strategy form、dry-run preview、start/pause/resume/stop。
-- [ ] Decision Timeline、Auto Orders、Risk usage、UNKNOWN queue。
-- [ ] 將自動委託 overlay 到上游 K 線並連動商品。
-- [ ] 加入清楚的中文錯誤與復原指引。
+- [x] 實作第 8 節七個面板。
+- [x] 實作完整／控制／觀察三個 preset。
+- [x] Strategy form、dry-run preview、start/pause/resume/stop（SIM feature flag 下仍不可 ARM）。
+- [x] Decision Timeline、Auto Orders、Risk usage、UNKNOWN queue。
+- [x] 將自動委託 overlay 到上游 K 線並連動商品。
+- [x] 加入清楚的中文錯誤與復原指引。
 
 Exit：不看 log、DB 或 CLI，使用者只靠 UI 就能理解策略是否運行、為何下單／拒單、目前委託與持倉及下一步。
 

@@ -377,8 +377,9 @@ timestamp 與非補零 decimal 字串。既有 inline-schema 的 text 欄位不�
 `AUTOTRADE_GATEWAY_PG_SCHEMA` 建立／修改物件的權限；不得使用 superuser、既有資料庫
 或 backup schema。開發期可執行 `scripts/run_gateway_postgres_integration.sh`，它會建立
 loopback-only disposable PostgreSQL container 與 UUID 測試 schema，結束時只刪除本次
-container/schema。這項測試不等同於使用者專用 DSN 的最終 migration、backup/restore 或
-共享 API/worker 驗證。
+container/schema。它也會在 container 內建立 migrated schema archive、執行
+`pg_restore --list`，並將 archive restore 到另一個新 database；這項 disposable drill
+不等同於使用者專用 DSN 的最終 migration、backup/restore 或共享 API/worker 驗證。
 
 ### Shioaji SIM session posture
 

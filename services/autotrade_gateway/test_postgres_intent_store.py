@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -138,6 +139,35 @@ class PostgresIntentStoreTest(unittest.TestCase):
         with self.assertRaises(DuplicateIntentError):
             coordinator.accept(intent)
         self.assertEqual(len(self.store.observation_orders()), 1)
+
+    def test_concurrent_connections_create_one_idempotent_intent_and_outbox(self) -> None:
+        """The unique intent key, not an in-process lock, arbitrates retries."""
+        from services.autotrade_gateway.postgres_intent_store import PostgresIntentStore
+
+        peer = PostgresIntentStore(self.dsn, self.schema)
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+
+        def accept(store: IntentStore) -> str:
+            try:
+                armed_coordinator(store).accept(intent)
+            except DuplicateIntentError:
+                return "duplicate"
+            return "created"
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(accept, (self.store, peer)))
+        finally:
+            peer.close()
+
+        self.assertCountEqual(results, ["created", "duplicate"])
+        self.assertEqual(self.store.outbox_state(intent.intent_id), "PENDING")
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) AS count FROM order_intents WHERE intent_id=%s", (intent.intent_id,),
+        ).fetchone()["count"], 1)
+        self.assertEqual(self.store.connection.execute(
+            "SELECT count(*) AS count FROM risk_decisions WHERE intent_id=%s", (intent.intent_id,),
+        ).fetchone()["count"], 1)
 
     def test_risk_verdict_is_durable_separately_from_its_intent(self) -> None:
         intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

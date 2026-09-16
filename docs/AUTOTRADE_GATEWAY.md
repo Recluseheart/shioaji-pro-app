@@ -440,5 +440,8 @@ adapter。
 
 `scripts/dev-api.sh` 是 simulation-only launcher。它會在解析 sidecar binary
 之前拒絕 shell 或未追蹤 `.env` 中的 `SJ_PRODUCTION=1/true/yes`，以及任何
-`SJ_CA_PATH`／`SJ_CA_PASSWD`，避免 production 或 CA 設定被 sidecar 意外繼承；
-要使用正式盤須另行取得授權，不得以此 script 繞過。
+`SJ_CA_PATH`／`SJ_CA_PASSWD`。它也拒絕 sidecar 的 TLS、ACME 或 HTTP/3
+transport override，因為 Gateway 的 sidecar contract 固定是 credential-free
+loopback HTTP；遠端 observer 的 HTTPS 必須在 Gateway/Tailscale 邊界終止。
+這些檢查避免 production、CA 或不相容 transport 被 sidecar 意外繼承；要使用
+正式盤須另行取得授權，不得以此 script 繞過。

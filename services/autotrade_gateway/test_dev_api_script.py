@@ -34,6 +34,16 @@ class DevApiScriptTest(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("refusing to start dev api with CA configuration", completed.stderr)
 
+    def test_refuses_tls_transport_before_resolving_or_starting_a_sidecar(self) -> None:
+        completed = self.run_launcher(SJ_HTTP_TLS_CERT="/private/sidecar.pem")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with TLS or ACME transport configuration", completed.stderr)
+
+    def test_refuses_http3_transport_before_resolving_or_starting_a_sidecar(self) -> None:
+        completed = self.run_launcher(SJ_HTTP3="true")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with HTTP/3 transport configuration", completed.stderr)
+
     def test_refuses_production_configuration_in_an_untracked_dotenv(self) -> None:
         completed = self.run_dotenv_launcher("SJ_PRODUCTION=TRUE\n")
         self.assertNotEqual(completed.returncode, 0)
@@ -43,6 +53,16 @@ class DevApiScriptTest(unittest.TestCase):
         completed = self.run_dotenv_launcher("SJ_CA_PATH=/private/ca.pem\n")
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("refusing to start dev api with CA configuration in .env", completed.stderr)
+
+    def test_refuses_tls_transport_configuration_in_an_untracked_dotenv(self) -> None:
+        completed = self.run_dotenv_launcher("SJ_HTTP_ACME_CACHE=/private/acme\n")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with TLS or ACME transport configuration in .env", completed.stderr)
+
+    def test_refuses_http3_transport_configuration_in_an_untracked_dotenv(self) -> None:
+        completed = self.run_dotenv_launcher("SJ_HTTP3=TRUE\n")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with HTTP/3 transport configuration in .env", completed.stderr)
 
     def run_dotenv_launcher(self, dotenv: str) -> subprocess.CompletedProcess[str]:
         with TemporaryDirectory() as temporary:

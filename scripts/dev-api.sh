@@ -24,12 +24,33 @@ if [ -n "${SJ_CA_PATH:-}" ] || [ -n "${SJ_CA_PASSWD:-}" ]; then
     echo "refusing to start dev api with CA configuration" >&2
     exit 1
 fi
+if [ -n "${SJ_HTTP_TLS_CERT:-}" ] || [ -n "${SJ_HTTP_TLS_KEY:-}" ] \
+    || [ -n "${SJ_HTTP_ACME_DOMAINS:-}" ] || [ -n "${SJ_HTTP_ACME_CONTACTS:-}" ] \
+    || [ -n "${SJ_HTTP_ACME_CACHE:-}" ] || [ -n "${SJ_HTTP_ACME_DIRECTORY_NAME:-}" ] \
+    || [ -n "${SJ_HTTP_ACME_DIRECTORY_URL:-}" ]; then
+    echo "refusing to start dev api with TLS or ACME transport configuration" >&2
+    exit 1
+fi
+case "${SJ_HTTP3:-}" in
+    1|true|TRUE|yes|YES)
+        echo "refusing to start dev api with HTTP/3 transport configuration" >&2
+        exit 1
+        ;;
+esac
 if [ -f .env ] && grep -Eiq "^[[:space:]]*(export[[:space:]]+)?SJ_PRODUCTION[[:space:]]*=[[:space:]]*['\"]?(1|true|yes)['\"]?([[:space:]]*(#.*)?)?$" .env; then
     echo "refusing to start dev api with production configuration in .env" >&2
     exit 1
 fi
 if [ -f .env ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?SJ_CA_(PATH|PASSWD)[[:space:]]*=[[:space:]]*[^[:space:]#]" .env; then
     echo "refusing to start dev api with CA configuration in .env" >&2
+    exit 1
+fi
+if [ -f .env ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?SJ_HTTP_(TLS_CERT|TLS_KEY|ACME_[A-Z_]+)[[:space:]]*=[[:space:]]*[^[:space:]#]" .env; then
+    echo "refusing to start dev api with TLS or ACME transport configuration in .env" >&2
+    exit 1
+fi
+if [ -f .env ] && grep -Eiq "^[[:space:]]*(export[[:space:]]+)?SJ_HTTP3[[:space:]]*=[[:space:]]*['\"]?(1|true|yes)['\"]?([[:space:]]*(#.*)?)?$" .env; then
+    echo "refusing to start dev api with HTTP/3 transport configuration in .env" >&2
     exit 1
 fi
 

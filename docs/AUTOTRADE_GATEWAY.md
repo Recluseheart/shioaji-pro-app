@@ -380,6 +380,24 @@ loopback-only disposable PostgreSQL container 與 UUID 測試 schema，結束時
 container/schema。這項測試不等同於使用者專用 DSN 的最終 migration、backup/restore 或
 共享 API/worker 驗證。
 
+### Shioaji SIM session posture
+
+Shioaji credential、login/logout、contract loading 與 session renewal 的 owner 是既有本機
+sidecar／desktop secret store，不是 Gateway 或瀏覽器。Gateway 絕不接收 API key、secret、
+CA path 或 CA password，也不提供 login/logout mutation。當 sidecar 已完成 simulation login
+後，UI 的 Auto Command Center 會輪詢唯讀
+`GET /api/v1/autotrade/connection`；該 endpoint 依序讀取 sidecar 的 health、SIM info、
+accounts 與 market subscription posture，並只回傳遮罩帳戶 label。
+
+狀態語意為 `DISCONNECTED`（尚未連線）、`CONNECTING`（probe 進行中）、
+`AUTHENTICATED`（已確認 SIM session、但尚未發現市場資料 ready）、
+`MARKET_DATA_READY`（帳戶與訂閱 read contracts 都有效）、`DEGRADED`（sidecar 有回應但
+SIM/info/accounts/market contract 不完整）與 `LOST`（先前可用的 sidecar 已失聯）。所有
+probe 有有限 timeout，且不會重試或推測 broker mutation；sidecar reconnect 後下一次唯讀
+probe 才會恢復 UI 狀態。登入成功也不會 ARM Gate、啟用 strategy、開啟 CA 或派送 outbox。
+Gateway 的 `/autotrade/health` 與 durable `/autotrade/overview` 保持 sidecar-free，避免普通
+狀態／稽核讀取產生帳戶 I/O。
+
 ## 現在尚未具備的能力
 
 - 自動 market feed runner、實際 strategy signal scheduler 與任何 background dispatch loop。

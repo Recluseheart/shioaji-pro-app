@@ -10,6 +10,7 @@ import {
     applyReferenceStrategyControl,
     refreshAutotradeReconciliation,
     normalizeAutotradeHealth,
+    normalizeAutotradeConnection,
     normalizeAutotradeOverview,
 } from './client';
 
@@ -29,6 +30,17 @@ describe('Autotrade Gateway health contract', () => {
     it('accepts the versioned read-only shape', () => {
         expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' })).toEqual({
             environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
+        });
+    });
+
+    it('accepts only masked account labels from the sidecar posture', () => {
+        expect(normalizeAutotradeConnection({
+                state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
+                accounts: [{ account_type: 'S', account_label: '***78', signed: true, sensitive_metadata: 'must-drop' }],
+        })).toEqual({
+            state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
+            accounts: [{ account_type: 'S', account_label: '***78', signed: true }],
         });
     });
 

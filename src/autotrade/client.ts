@@ -7,7 +7,14 @@ export type AutotradeHealth = {
     enabled_strategy_count: number;
     gateway_status: 'READY' | 'DEGRADED' | 'UNAVAILABLE';
     capability_mode: 'OPERATOR' | 'OBSERVER';
+    broker_connection: {
+        state: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATED' | 'MARKET_DATA_READY' | 'DEGRADED' | 'LOST';
+        accounts: Array<{ account_type: 'S' | 'F'; account_label: string; signed: boolean }>;
+        last_updated_at: string | null;
+    };
 };
+
+export type AutotradeConnection = AutotradeHealth['broker_connection'];
 
 export type AutotradeOverview = {
     health: AutotradeHealth;
@@ -179,6 +186,7 @@ const fallback: AutotradeHealth = {
     enabled_strategy_count: 0,
     gateway_status: 'UNAVAILABLE',
     capability_mode: 'OBSERVER',
+    broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
 };
 
 export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
@@ -188,6 +196,19 @@ export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
         ? raw.environment : 'UNKNOWN';
     const trading_gate = raw.trading_gate === 'DISARMED' || raw.trading_gate === 'ARMED' || raw.trading_gate === 'KILLED'
         ? raw.trading_gate : 'UNKNOWN';
+    const rawConnection = raw.broker_connection && typeof raw.broker_connection === 'object'
+        ? raw.broker_connection as Record<string, unknown> : {};
+    const connectionState = rawConnection.state === 'CONNECTING' || rawConnection.state === 'AUTHENTICATED'
+        || rawConnection.state === 'MARKET_DATA_READY' || rawConnection.state === 'DEGRADED'
+        || rawConnection.state === 'LOST' ? rawConnection.state : 'DISCONNECTED';
+    const connectionAccounts = Array.isArray(rawConnection.accounts)
+        ? rawConnection.accounts.flatMap((account): AutotradeHealth['broker_connection']['accounts'] => {
+            if (!account || typeof account !== 'object') return [];
+            const item = account as Record<string, unknown>;
+            if ((item.account_type !== 'S' && item.account_type !== 'F') || typeof item.account_label !== 'string'
+                || !/^\*{3}[^\s]{2}$/.test(item.account_label) || typeof item.signed !== 'boolean') return [];
+            return [{ account_type: item.account_type, account_label: item.account_label, signed: item.signed }];
+        }) : [];
     return {
         environment,
         trading_gate,
@@ -196,11 +217,24 @@ export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
         gateway_status: raw.gateway_status === 'READY' || raw.gateway_status === 'DEGRADED'
             ? raw.gateway_status : 'UNAVAILABLE',
         capability_mode: raw.capability_mode === 'OPERATOR' ? 'OPERATOR' : 'OBSERVER',
+        broker_connection: {
+            state: connectionState,
+            accounts: connectionAccounts,
+            last_updated_at: typeof rawConnection.last_updated_at === 'string' ? rawConnection.last_updated_at : null,
+        },
     };
 }
 
 export async function fetchAutotradeHealth(): Promise<AutotradeHealth> {
     return normalizeAutotradeHealth(await apiGet<unknown>('/api/v1/autotrade/health'));
+}
+
+export function normalizeAutotradeConnection(value: unknown): AutotradeConnection {
+    return normalizeAutotradeHealth({ broker_connection: value }).broker_connection;
+}
+
+export async function fetchAutotradeConnection(): Promise<AutotradeConnection> {
+    return normalizeAutotradeConnection(await apiGet<unknown>('/api/v1/autotrade/connection'));
 }
 
 export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {

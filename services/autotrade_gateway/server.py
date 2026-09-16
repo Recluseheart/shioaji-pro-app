@@ -33,6 +33,7 @@ from .order_core import (
     Status,
 )
 from .simulation_snapshot import SimulationSnapshotProvider
+from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor
 from .reconciliation import ReconciliationRefresher, SimulationTradeProvider
 from .strategy_runtime import StrategyRuntime
 from .worker import ExecutionWorker
@@ -349,10 +350,11 @@ def health_document(
     strategy_runtime: StrategyRuntime | None = None,
     gate: Gate = Gate.DISARMED,
     capability_mode: str = "OPERATOR",
+    connection: ConnectionObservation | None = None,
 ) -> dict[str, Any]:
     """Stable first read contract consumed by the Web Autotrade panels."""
     observations = strategy_runtime.observations() if strategy_runtime else []
-    return {
+    document: dict[str, Any] = {
         "environment": "SIM",
         "trading_gate": gate.value,
         "strategy_count": len(observations),
@@ -360,6 +362,9 @@ def health_document(
         "gateway_status": "READY",
         "capability_mode": capability_mode if capability_mode in {"OPERATOR", "OBSERVER"} else "OBSERVER",
     }
+    if connection is not None:
+        document["broker_connection"] = connection.document()
+    return document
 
 
 def strategy_runs_document(store: IntentStore) -> list[dict[str, object]]:
@@ -456,6 +461,7 @@ def overview_document(
     strategy_runtime: StrategyRuntime | None = None,
     coordinator: OrderCoordinator | None = None,
     capability_mode: str = "OPERATOR",
+    connection: ConnectionObservation | None = None,
 ) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
@@ -471,7 +477,7 @@ def overview_document(
     reconciliation = reconciliation_document(store, orders) if store is not None else []
     return {
         "health": health_document(
-            strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED, capability_mode,
+            strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED, capability_mode, connection,
         ),
         "strategies": strategy_runtime.observations() if strategy_runtime else [],
         "signals": store.observation_signals() if store is not None else [],
@@ -1102,7 +1108,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/v1/autotrade/connection":
+            # A dedicated read keeps the core health and durable overview
+            # sidecar-free while giving the UI a current session posture.
+            self._json(
+                HTTPStatus.OK,
+                getattr(self.server, "connection_monitor").probe().document(),
+            )
+            return
         if path == "/api/v1/autotrade/overview":
+            # The durable overview is never allowed to trigger sidecar I/O.
+            # It reports the last posture observed by the dedicated health
+            # read, preserving the no-broker-access audit/read-model boundary.
+            connection = getattr(self.server, "connection_monitor").latest()
             self._json(
                 HTTPStatus.OK,
                 overview_document(
@@ -1110,6 +1128,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     getattr(self.server, "strategy_runtime", None),
                     getattr(self.server, "order_coordinator", None),
                     "OBSERVER" if getattr(self.server, "observer_mode", False) else "OPERATOR",
+                    connection,
                 ),
             )
             return
@@ -1422,6 +1441,9 @@ def create_server(
     server.daemon_threads = True
     server.observer_mode = mode == "OBSERVER"  # type: ignore[attr-defined]
     server.upstream_origin = resolved_upstream_origin.rstrip("/")  # type: ignore[attr-defined]
+    # This monitor only observes an already-owned sidecar session.  It never
+    # receives credentials or exposes an unmasked broker/account identifier.
+    server.connection_monitor = SimulationConnectionMonitor(resolved_upstream_origin)  # type: ignore[attr-defined]
     database_url = os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL")
     if database_url:
         from .postgres_intent_store import PostgresIntentStore

@@ -120,7 +120,21 @@ class GatewayServerTest(unittest.TestCase):
         with urlopen(f"{self.base}/api/v1/autotrade/health") as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Cache-Control"], "no-store")
-            self.assertEqual(json.load(response)["trading_gate"], "DISARMED")
+            document = json.load(response)
+        self.assertEqual(document["trading_gate"], "DISARMED")
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_connection_posture_is_a_dedicated_credential_free_read(self) -> None:
+        with urlopen(f"{self.base}/api/v1/autotrade/connection") as response:
+            document = json.load(response)
+        # Generic fixture responses do not establish a SIM session. The
+        # Gateway makes only credential-free GET probes and reports DEGRADED;
+        # it does not attempt a login, CA activation, or broker mutation.
+        self.assertEqual(document["state"], "DEGRADED")
+        self.assertEqual(
+            [item[0] for item in ReadServiceHandler.received],
+            ["/api/v1/health", "/api/v1/info"],
+        )
 
     def test_client_disconnect_while_writing_a_read_response_is_silent(self) -> None:
         handler = GatewayHandler.__new__(GatewayHandler)

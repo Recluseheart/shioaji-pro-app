@@ -448,6 +448,10 @@ class OrderCoreTest(unittest.TestCase):
             "observed_at": "2026-09-16T00:00:00+00:00",
         }])
         self.assertEqual(self.store.observation_orders(), [])
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "snapshot_id": "position-snapshot-1", "account_type": "S", "symbol": "2330",
+        })
+        self.assertNotIn("account_id", self.store.observation_audit_events()[0]["details"])
 
     def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

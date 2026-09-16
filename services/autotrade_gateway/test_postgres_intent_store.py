@@ -128,6 +128,10 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "market_price": "1001.5", "unrealized_pnl": "-17.1875",
             "observed_at": "2026-09-16T00:00:00+00:00",
         }])
+        self.assertEqual(self.store.observation_audit_events()[0]["details"], {
+            "snapshot_id": "postgres-position-snapshot-1", "account_type": "S", "symbol": "2330",
+        })
+        self.assertNotIn("account_id", self.store.observation_audit_events()[0]["details"])
         columns = self.store.connection.execute(
             """SELECT column_name, data_type, numeric_precision, numeric_scale
             FROM information_schema.columns

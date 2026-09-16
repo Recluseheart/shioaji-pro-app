@@ -488,7 +488,7 @@ Exit：所有公開 Web 顯示功能在不連真實券商時可由 deterministic
 - [ ] 完成 Shioaji 1.7.5 read API contract tests。
 - [ ] 接通 accounts、contracts、market、portfolio、watchlist、monitor 與 SSE。
 - [ ] 實作 version transformers 與 timeout／error mapping。
-- [ ] Vite dev／preview／production build 全部只指向 Gateway。
+- [x] Vite dev／preview／production build 全部只指向 Gateway（dev/preview proxy；static build 僅接受受驗證 Gateway origin，sidecar 21322/8080 origin fail closed；runtime unit、build 與 preview health probe 已驗證）。
 
 Exit：上游 UI 在 simulation read mode 下不需直接存取 Shioaji server，即可完整看盤與查詢帳務。
 

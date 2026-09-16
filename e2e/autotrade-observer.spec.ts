@@ -541,6 +541,36 @@ test('Autotrade panel reads the loopback Gateway and exposes no mutation control
     await expect(page.getByText('不會啟動策略、送出委託或重送 UNKNOWN')).toBeVisible();
 });
 
+test('Auto Command Center renders only a masked SIM connection posture without an order mutation', async ({ page }) => {
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            },
+        } });
+    });
+    await page.route('**/api/v1/autotrade/connection', async (route) => {
+        await route.fulfill({ json: {
+            state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
+            accounts: [{ account_type: 'S', account_label: '***78', signed: true, sensitive_metadata: 'must-drop' }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動交易總覽', { exact: true }).click();
+    await expect(page.getByText('帳戶連線：MARKET_DATA_READY')).toBeVisible();
+    await expect(page.getByText('已發現 simulation 帳戶：S ***78（已簽署）')).toBeVisible();
+    await expect(page.getByText('sensitive_metadata')).toHaveCount(0);
+    expect(orderMutations).toBe(0);
+});
+
 test('Autotrade control panel is visible but cannot start a strategy while disarmed', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();

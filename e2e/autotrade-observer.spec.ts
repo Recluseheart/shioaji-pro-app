@@ -178,7 +178,9 @@ async function exercisePanelLayout(
     expect(dragBox).not.toBeNull();
     await page.mouse.move(dragBox!.x + 20, dragBox!.y + 12);
     await page.mouse.down();
-    await page.mouse.move(dragBox!.x + 48, dragBox!.y + 48, { steps: 8 });
+    // Cross at least one grid cell after react-grid-layout rounding. A smaller
+    // delta can leave the persisted x/y unchanged for narrow panels.
+    await page.mouse.move(dragBox!.x + 160, dragBox!.y + 96, { steps: 12 });
     await page.mouse.up();
     // A mobile one-column grid may scroll the moved panel back into view, so
     // a viewport bounding box can stay still while the saved layout changed.

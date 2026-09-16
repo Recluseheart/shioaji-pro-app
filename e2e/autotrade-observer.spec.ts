@@ -564,7 +564,7 @@ test('Auto Command Center renders only a masked SIM connection posture without a
     await page.route('**/api/v1/autotrade/overview', async (route) => {
         await route.fulfill({ json: {
             health: {
-                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                api_version: 2, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
                 enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
             },
         } });
@@ -582,6 +582,28 @@ test('Auto Command Center renders only a masked SIM connection posture without a
     await expect(page.getByText('已發現 simulation 帳戶：S ***78（已簽署）')).toBeVisible();
     await expect(page.getByText('sensitive_metadata')).toHaveCount(0);
     expect(orderMutations).toBe(0);
+});
+
+test('Auto Command Center does not poll connection from a pre-v2 Gateway', async ({ page }) => {
+    let connectionReads = 0;
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                api_version: 1, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            },
+        } });
+    });
+    await page.route('**/api/v1/autotrade/connection', async (route) => {
+        connectionReads += 1;
+        await route.fulfill({ status: 404, json: { message: 'read route not permitted' } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動交易總覽', { exact: true }).click();
+    await expect(page.getByText('此 Gateway 未提供目前的帳戶連線觀測 API；請由操作人員安全更新或重啟 Gateway 後，再判定 sidecar 狀態。')).toBeVisible();
+    await page.waitForTimeout(250);
+    expect(connectionReads).toBe(0);
 });
 
 test('Autotrade control panel is visible but cannot start a strategy while disarmed', async ({ page }) => {

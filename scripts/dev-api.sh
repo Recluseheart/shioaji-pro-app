@@ -11,6 +11,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# This launcher is solely for the local simulation sidecar.  A user may have
+# production or CA variables in their login shell; never inherit them into a
+# process launched for the Gateway's read-only development path.
+case "${SJ_PRODUCTION:-}" in
+    1|true|TRUE|yes|YES)
+        echo "refusing to start dev api with SJ_PRODUCTION enabled" >&2
+        exit 1
+        ;;
+esac
+if [ -n "${SJ_CA_PATH:-}" ] || [ -n "${SJ_CA_PASSWD:-}" ]; then
+    echo "refusing to start dev api with CA configuration" >&2
+    exit 1
+fi
+
 case "$(uname -sm)" in
     "Darwin arm64") TRIPLE=aarch64-apple-darwin ;;
     "Darwin x86_64") TRIPLE=x86_64-apple-darwin ;;

@@ -439,6 +439,6 @@ proxy 驗證 Gateway 狀態與 DISARMED 控制項；它不啟動 Shioaji server 
 adapter。
 
 `scripts/dev-api.sh` 是 simulation-only launcher。它會在解析 sidecar binary
-之前拒絕 `SJ_PRODUCTION=1/true/yes` 與任何 `SJ_CA_PATH`／`SJ_CA_PASSWD`，避免
-login shell 的 production 或 CA 設定被意外繼承；要使用正式盤須另行取得授權，
-不得以此 script 繞過。
+之前拒絕 shell 或未追蹤 `.env` 中的 `SJ_PRODUCTION=1/true/yes`，以及任何
+`SJ_CA_PATH`／`SJ_CA_PASSWD`，避免 production 或 CA 設定被 sidecar 意外繼承；
+要使用正式盤須另行取得授權，不得以此 script 繞過。

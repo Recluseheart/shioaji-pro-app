@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
+from tempfile import TemporaryDirectory
 import unittest
 
 
@@ -31,3 +33,29 @@ class DevApiScriptTest(unittest.TestCase):
         completed = self.run_launcher(SJ_CA_PATH="/private/ca.pem")
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("refusing to start dev api with CA configuration", completed.stderr)
+
+    def test_refuses_production_configuration_in_an_untracked_dotenv(self) -> None:
+        completed = self.run_dotenv_launcher("SJ_PRODUCTION=true\n")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with production configuration in .env", completed.stderr)
+
+    def test_refuses_ca_configuration_in_an_untracked_dotenv(self) -> None:
+        completed = self.run_dotenv_launcher("SJ_CA_PATH=/private/ca.pem\n")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("refusing to start dev api with CA configuration in .env", completed.stderr)
+
+    def run_dotenv_launcher(self, dotenv: str) -> subprocess.CompletedProcess[str]:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copy(ROOT / "scripts" / "dev-api.sh", scripts / "dev-api.sh")
+            (root / ".env").write_text(dotenv, encoding="utf-8")
+            return subprocess.run(
+                ["sh", "scripts/dev-api.sh"],
+                cwd=root,
+                env={"PATH": os.environ["PATH"]},
+                capture_output=True,
+                check=False,
+                text=True,
+            )

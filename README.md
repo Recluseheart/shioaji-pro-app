@@ -184,6 +184,15 @@ read contract 轉給 sidecar；未完成的 stream 與所有 order mutation 都�
 開發伺服器，然後在面板庫選擇「自動交易」類別或套用三個 Autotrade 預設版面。
 此路徑沒有 API secret、broker session、CA 或任何可用 order mutation。
 
+### SIM 帳戶連線狀態
+
+設定 `.env` 後，請由既有 `shioaji server start`／desktop sidecar 完成 simulation
+login；不要把 key、secret、CA 或 database DSN 貼入前端、log 或 Git。Gateway 只透過
+loopback 的唯讀 `GET /api/v1/autotrade/connection` 觀察已存在的 sidecar session，並在
+Auto Command Center 顯示 `DISCONNECTED`、`AUTHENTICATED`、`MARKET_DATA_READY`、
+`DEGRADED` 或 `LOST`，帳戶只顯示遮罩識別。登入成功不會 ARM Gate、不會啟用策略，也
+不會啟用 CA 或送出委託；詳見 [Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md)。
+
 ## Deploy as a Shioaji custom app 部署為內建 App
 
 Shioaji server 可直接代管前端，build 完上傳即可：

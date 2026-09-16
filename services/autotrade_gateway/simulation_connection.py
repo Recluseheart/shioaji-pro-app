@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from threading import Lock
 from typing import cast
@@ -79,21 +79,27 @@ class SimulationConnectionMonitor:
         self.opener = opener if opener is not None else cast(HttpOpener, urlopen)
         self._lock = Lock()
         self._last_healthy = False
+        self._failure_count = 0
+        self._retry_not_before: datetime | None = None
         self._latest = ConnectionObservation(ConnectionState.DISCONNECTED, (), self._timestamp())
 
     def probe(self) -> ConnectionObservation:
         """Read session/account/market readiness without making a broker mutation."""
         with self._lock:
+            if self._retry_not_before is not None and datetime.now(timezone.utc) < self._retry_not_before:
+                return self._latest
             self._latest = ConnectionObservation(ConnectionState.CONNECTING, (), self._timestamp())
             health = self._request("/api/v1/health")
             if health is None:
-                return self._record(ConnectionState.LOST if self._last_healthy else ConnectionState.DISCONNECTED)
+                return self._record_failure()
+            if isinstance(health, dict) and health.get("status") in {"starting", "connecting"}:
+                return self._record(ConnectionState.CONNECTING)
             info = self._request("/api/v1/info")
             if not isinstance(info, dict) or info.get("simulation") is not True:
-                return self._record(ConnectionState.DEGRADED)
+                return self._record_failure(ConnectionState.DEGRADED)
             accounts_document = self._request("/api/v1/auth/accounts")
             if not isinstance(accounts_document, list):
-                return self._record(ConnectionState.DEGRADED)
+                return self._record_failure(ConnectionState.DEGRADED)
             accounts = tuple(
                 account for item in accounts_document
                 if (account := self._masked_account(item)) is not None
@@ -105,8 +111,10 @@ class SimulationConnectionMonitor:
                 return self._record(ConnectionState.AUTHENTICATED, accounts)
             subscriptions = self._request("/api/v1/monitor/subscriptions")
             if not isinstance(subscriptions, (dict, list)):
-                return self._record(ConnectionState.DEGRADED, accounts)
+                return self._record_failure(ConnectionState.DEGRADED, accounts)
             self._last_healthy = True
+            self._failure_count = 0
+            self._retry_not_before = None
             return self._record(ConnectionState.MARKET_DATA_READY, accounts)
 
     def latest(self) -> ConnectionObservation:
@@ -120,6 +128,20 @@ class SimulationConnectionMonitor:
     ) -> ConnectionObservation:
         self._latest = ConnectionObservation(state, accounts, self._timestamp())
         return self._latest
+
+    def _record_failure(
+        self,
+        state: ConnectionState | None = None,
+        accounts: tuple[MaskedSimulationAccount, ...] | None = None,
+    ) -> ConnectionObservation:
+        """Apply bounded exponential backoff without retrying a sidecar mutation."""
+        self._failure_count = min(self._failure_count + 1, 5)
+        delay_seconds = min(30, 2 ** (self._failure_count - 1))
+        self._retry_not_before = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+        return self._record(
+            state or (ConnectionState.LOST if self._last_healthy else ConnectionState.DISCONNECTED),
+            self._latest.accounts if accounts is None else accounts,
+        )
 
     def _request(self, path: str) -> object | None:
         request = Request(

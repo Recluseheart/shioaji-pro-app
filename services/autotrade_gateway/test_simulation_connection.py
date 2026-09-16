@@ -64,6 +64,28 @@ class SimulationConnectionMonitorTest(unittest.TestCase):
         available = False
         self.assertEqual(monitor.probe().state, ConnectionState.LOST)
 
+    def test_failed_probe_is_backed_off_without_another_sidecar_request(self) -> None:
+        calls = 0
+
+        def opener(request, *, timeout: float):
+            nonlocal calls
+            del request, timeout
+            calls += 1
+            raise OSError("sidecar stopped")
+
+        monitor = SimulationConnectionMonitor("http://127.0.0.1:21322", opener=opener)
+        self.assertEqual(monitor.probe().state, ConnectionState.DISCONNECTED)
+        self.assertEqual(monitor.probe().state, ConnectionState.DISCONNECTED)
+        self.assertEqual(calls, 1)
+
+    def test_sidecar_starting_status_is_reported_as_connecting(self) -> None:
+        def opener(request, *, timeout: float):
+            del request, timeout
+            return Response({"status": "starting"})
+
+        observation = SimulationConnectionMonitor("http://127.0.0.1:21322", opener=opener).probe()
+        self.assertEqual(observation.state, ConnectionState.CONNECTING)
+
     def test_non_simulation_or_incomplete_read_contract_is_degraded(self) -> None:
         def opener(request, *, timeout: float):
             del timeout

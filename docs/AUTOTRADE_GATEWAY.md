@@ -394,8 +394,9 @@ accounts 與 market subscription posture，並只回傳遮罩帳戶 label。
 `AUTHENTICATED`（已確認 SIM session、但尚未發現市場資料 ready）、
 `MARKET_DATA_READY`（帳戶與訂閱 read contracts 都有效）、`DEGRADED`（sidecar 有回應但
 SIM/info/accounts/market contract 不完整）與 `LOST`（先前可用的 sidecar 已失聯）。所有
-probe 有有限 timeout，且不會重試或推測 broker mutation；sidecar reconnect 後下一次唯讀
-probe 才會恢復 UI 狀態。登入成功也不會 ARM Gate、啟用 strategy、開啟 CA 或派送 outbox。
+probe 有有限 timeout；失敗只會以 1–30 秒 bounded exponential backoff 重試下一個唯讀
+probe，不會重送或推測 broker mutation。sidecar reconnect 後下一次唯讀 probe 才會恢復 UI
+狀態。登入成功也不會 ARM Gate、啟用 strategy、開啟 CA 或派送 outbox。
 Gateway 的 `/autotrade/health` 與 durable `/autotrade/overview` 保持 sidecar-free，避免普通
 狀態／稽核讀取產生帳戶 I/O。
 

@@ -64,6 +64,53 @@ class PostgresIntentStoreTest(unittest.TestCase):
         self.store.transition(intent.intent_id, Status.RECONCILING)
         self.assertEqual(self.store.observation_reconciliation_cases()[0]["state"], "RECONCILING")
 
+    def test_schema_migrations_are_recorded_and_safe_to_rerun(self) -> None:
+        """A restart applies no hidden DDL and preserves the durable journal."""
+        initial = self.store.connection.execute(
+            "SELECT version, name FROM gateway_schema_migrations ORDER BY version",
+        ).fetchall()
+        self.assertEqual(
+            [dict(row) for row in initial],
+            [
+                {"version": 1, "name": "durable_intent_and_strategy_schema"},
+                {"version": 2, "name": "legacy_broker_and_risk_backfill"},
+            ],
+        )
+        columns = self.store.connection.execute(
+            """SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema=%s
+              AND (table_name, column_name) IN (
+                  ('order_intents', 'created_at'),
+                  ('order_intents', 'updated_at'),
+                  ('fills', 'price')
+              )
+            ORDER BY table_name, column_name""",
+            (self.schema,),
+        ).fetchall()
+        self.assertEqual(
+            [dict(row) for row in columns],
+            [
+                {"table_name": "fills", "column_name": "price", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
+                {"table_name": "order_intents", "column_name": "created_at", "data_type": "timestamp with time zone", "numeric_precision": None, "numeric_scale": None},
+                {"table_name": "order_intents", "column_name": "updated_at", "data_type": "timestamp with time zone", "numeric_precision": None, "numeric_scale": None},
+            ],
+        )
+
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        OrderCoordinator(self.store).accept(intent)
+        from services.autotrade_gateway.postgres_intent_store import PostgresIntentStore
+
+        restarted = PostgresIntentStore(self.dsn, self.schema)
+        try:
+            self.assertEqual(restarted.status(intent.intent_id), Status.RISK_REJECTED)
+            rerun = restarted.connection.execute(
+                "SELECT version, name FROM gateway_schema_migrations ORDER BY version",
+            ).fetchall()
+            self.assertEqual([dict(row) for row in rerun], [dict(row) for row in initial])
+        finally:
+            restarted.close()
+
     def test_kill_switch_is_persistent_and_never_rearms_the_store(self) -> None:
         self.assertEqual(self.store.apply_kill_switch("operator test", "kill-test-1"), (
             Gate.KILLED, "operator test", True,

@@ -25,6 +25,19 @@ from .order_core import (
     now,
     persisted_request_matches,
 )
+from .postgres_migrations import apply_postgres_migrations
+
+
+def _iso_timestamp(value: object) -> str:
+    """Serialize both typed migrations and legacy text rows for the API."""
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _decimal_text(value: object) -> str:
+    """Avoid leaking PostgreSQL scale padding into the stable UI contract."""
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    return str(value)
 
 
 class PostgresIntentStore:
@@ -40,110 +53,7 @@ class PostgresIntentStore:
             raise RuntimeError("install psycopg[binary] to use AUTOTRADE_GATEWAY_DATABASE_URL") from error
         self._lock = Lock()
         self.connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
-        self.connection.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-        self.connection.execute(f'SET search_path TO "{schema}"')
-        self.connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS order_intents (
-                intent_id TEXT PRIMARY KEY, correlation_id TEXT NOT NULL,
-                source TEXT NOT NULL, strategy_id TEXT, run_id TEXT,
-                payload_json TEXT NOT NULL, status TEXT NOT NULL,
-                risk_reasons_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                broker_order_id TEXT
-            );
-            CREATE TABLE IF NOT EXISTS execution_outbox (
-                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
-                state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS risk_decisions (
-                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
-                allowed BOOLEAN NOT NULL, reasons_json TEXT NOT NULL, decided_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS audit_events (
-                event_id TEXT PRIMARY KEY, intent_id TEXT REFERENCES order_intents(intent_id),
-                event_type TEXT NOT NULL, details_json TEXT NOT NULL, occurred_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS audit_events_occurred_idx
-                ON audit_events(occurred_at DESC, event_id DESC);
-            CREATE TABLE IF NOT EXISTS gateway_controls (
-                control_name TEXT PRIMARY KEY, state TEXT NOT NULL, reason TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL UNIQUE, applied_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS fills (
-                fill_id TEXT PRIMARY KEY, intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
-                broker_order_id TEXT NOT NULL, quantity INTEGER NOT NULL, price TEXT NOT NULL,
-                filled_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS fills_intent_idx ON fills(intent_id, filled_at DESC, fill_id DESC);
-            CREATE TABLE IF NOT EXISTS broker_orders (
-                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
-                broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS reconciliation_cases (
-                intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
-                state TEXT NOT NULL, reason TEXT NOT NULL, opened_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS reconciliation_refresh_requests (
-                idempotency_key TEXT PRIMARY KEY, intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
-                reason TEXT NOT NULL, state TEXT NOT NULL, receipt_json TEXT, applied_at TEXT NOT NULL,
-                completed_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS reconciliation_refresh_pending_intent_idx
-                ON reconciliation_refresh_requests(intent_id) WHERE state='PENDING';
-            CREATE INDEX IF NOT EXISTS execution_outbox_state_idx ON execution_outbox(state, created_at);
-            CREATE TABLE IF NOT EXISTS strategy_signals (
-                signal_id TEXT PRIMARY KEY,
-                strategy_id TEXT NOT NULL, run_id TEXT NOT NULL, event_id TEXT NOT NULL,
-                signal_type TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
-                intent_id TEXT NOT NULL REFERENCES order_intents(intent_id),
-                correlation_id TEXT NOT NULL, status TEXT NOT NULL,
-                risk_reasons_json TEXT NOT NULL, observed_at TEXT NOT NULL, created_at TEXT NOT NULL,
-                UNIQUE(strategy_id, event_id)
-            );
-            CREATE INDEX IF NOT EXISTS strategy_signals_observed_idx
-                ON strategy_signals(observed_at DESC, signal_id DESC);
-            CREATE TABLE IF NOT EXISTS strategy_definitions (
-                strategy_id TEXT PRIMARY KEY, state TEXT NOT NULL, enabled BOOLEAN NOT NULL,
-                allowed_symbols_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS strategy_control_requests (
-                idempotency_key TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
-                action TEXT NOT NULL, reason TEXT NOT NULL, receipt_json TEXT NOT NULL,
-                applied_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS strategy_versions (
-                strategy_id TEXT NOT NULL REFERENCES strategy_definitions(strategy_id),
-                version TEXT NOT NULL, config_checksum TEXT NOT NULL,
-                PRIMARY KEY(strategy_id, version)
-            );
-            CREATE TABLE IF NOT EXISTS strategy_runs (
-                run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL,
-                version TEXT NOT NULL, config_checksum TEXT NOT NULL,
-                state TEXT NOT NULL, last_intent_id TEXT REFERENCES order_intents(intent_id),
-                last_status TEXT, intent_count INTEGER NOT NULL,
-                started_at TEXT NOT NULL, heartbeat_at TEXT, ended_at TEXT, updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS strategy_runs_updated_idx
-                ON strategy_runs(updated_at DESC, run_id DESC);
-            CREATE TABLE IF NOT EXISTS strategy_heartbeats (
-                run_id TEXT NOT NULL REFERENCES strategy_runs(run_id),
-                observed_at TEXT NOT NULL,
-                PRIMARY KEY(run_id, observed_at)
-            );
-            """
-        )
-        self.connection.execute("ALTER TABLE order_intents ADD COLUMN IF NOT EXISTS broker_order_id TEXT")
-        self.connection.execute(
-            """INSERT INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
-            SELECT intent_id, broker_order_id, updated_at, updated_at FROM order_intents
-            WHERE broker_order_id IS NOT NULL AND broker_order_id != ''
-            ON CONFLICT DO NOTHING""",
-        )
-        self.connection.execute(
-            """INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at)
-            SELECT intent_id, status <> 'RISK_REJECTED', risk_reasons_json, updated_at
-            FROM order_intents ON CONFLICT DO NOTHING""",
-        )
+        apply_postgres_migrations(self.connection, schema)
 
     def close(self) -> None:
         with self._lock:
@@ -478,6 +388,7 @@ class PostgresIntentStore:
             observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
             observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
             observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observation["updated_at"] = _iso_timestamp(observation["updated_at"])
             observations.append(observation)
         return observations
 
@@ -499,6 +410,7 @@ class PostgresIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observation["decided_at"] = _iso_timestamp(observation["decided_at"])
             observations.append(observation)
         return observations
 
@@ -517,6 +429,7 @@ class PostgresIntentStore:
             except (TypeError, ValueError, json.JSONDecodeError):
                 details = {}
             observation["details"] = details if isinstance(details, dict) else {}
+            observation["occurred_at"] = _iso_timestamp(observation["occurred_at"])
             observations.append(observation)
         return observations
 
@@ -593,6 +506,14 @@ class PostgresIntentStore:
                     "quantity": fill.quantity, "price": fill.price, "filled_at": fill.filled_at.isoformat(),
                 }:
                     return
+                if (
+                    str(existing["intent_id"]) == fill.intent_id
+                    and str(existing["broker_order_id"]) == fill.broker_order_id
+                    and existing["quantity"] == fill.quantity
+                    and _decimal_text(existing["price"]) == _decimal_text(fill.price)
+                    and _iso_timestamp(existing["filled_at"]) == fill.filled_at.isoformat()
+                ):
+                    return
                 raise ValueError("fill identity conflicts with an existing fill")
             if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.FILLED}:
                 raise ValueError("fill is not valid for current intent status")
@@ -617,7 +538,11 @@ class PostgresIntentStore:
                 "SELECT fill_id,intent_id,broker_order_id,quantity,price,filled_at FROM fills "
                 "ORDER BY filled_at DESC, fill_id DESC",
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{
+            **dict(row),
+            "price": _decimal_text(row["price"]),
+            "filled_at": _iso_timestamp(row["filled_at"]),
+        } for row in rows]
 
     def record_signal(self, signal: StrategySignal) -> None:
         """Persist a signal once; it never changes a broker delivery state."""
@@ -655,6 +580,7 @@ class PostgresIntentStore:
             observation["risk_reasons"] = [
                 reason for reason in parsed_reasons if isinstance(reason, str)
             ] if isinstance(parsed_reasons, list) else []
+            observation["observed_at"] = _iso_timestamp(observation["observed_at"])
             observations.append(observation)
         return observations
 
@@ -890,11 +816,21 @@ class PostgresIntentStore:
                     last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
                     FROM strategy_runs ORDER BY updated_at DESC, run_id DESC""",
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{
+            **dict(row),
+            "started_at": _iso_timestamp(row["started_at"]),
+            "heartbeat_at": _iso_timestamp(row["heartbeat_at"]) if row["heartbeat_at"] is not None else None,
+            "ended_at": _iso_timestamp(row["ended_at"]) if row["ended_at"] is not None else None,
+            "updated_at": _iso_timestamp(row["updated_at"]),
+        } for row in rows]
 
     def observation_reconciliation_cases(self) -> list[dict[str, object]]:
         with self._lock:
             rows = self.connection.execute(
                 "SELECT intent_id,state,reason,opened_at,updated_at FROM reconciliation_cases ORDER BY opened_at DESC, intent_id DESC",
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{
+            **dict(row),
+            "opened_at": _iso_timestamp(row["opened_at"]),
+            "updated_at": _iso_timestamp(row["updated_at"]),
+        } for row in rows]

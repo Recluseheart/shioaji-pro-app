@@ -361,6 +361,25 @@ market intent 都不會被畫成價格線，以避免把觀察資料誤解為可
 時，Gateway 會使用 schema-scoped PostgreSQL intent/outbox store；需要安裝
 `psycopg[binary]`。兩者都不得指向既有 Autotrade database 或 backup。
 
+### PostgreSQL migration 與隔離規則
+
+PostgreSQL store 在啟動時只會對 `AUTOTRADE_GATEWAY_PG_SCHEMA` 執行
+forward-only migration。每一版會寫入該 schema 的
+`gateway_schema_migrations` ledger（版號、名稱、checksum、套用時間）；重新啟動只會
+驗證既有 checksum，不會重放 DDL。新 schema 的持久化 timestamp 一律使用
+`TIMESTAMPTZ`，成交價格使用 `NUMERIC(20,8)`，而 API 仍輸出 ISO-8601 UTC offset
+timestamp 與非補零 decimal 字串。既有 inline-schema 的 text 欄位不會被自動破壞性
+轉型；它們會由 migration ledger 接管並保留既有稽核資料。需要修正已部署 schema 時，
+只能新增新的 forward migration，不能修改已記錄 migration 或重寫 broker／audit history。
+
+`AUTOTRADE_GATEWAY_DATABASE_URL` 必須只存在於未追蹤的本機環境或 secret provider。
+最終驗證帳號至少需要連線目標測試 database，以及只在指定
+`AUTOTRADE_GATEWAY_PG_SCHEMA` 建立／修改物件的權限；不得使用 superuser、既有資料庫
+或 backup schema。開發期可執行 `scripts/run_gateway_postgres_integration.sh`，它會建立
+loopback-only disposable PostgreSQL container 與 UUID 測試 schema，結束時只刪除本次
+container/schema。這項測試不等同於使用者專用 DSN 的最終 migration、backup/restore 或
+共享 API/worker 驗證。
+
 ## 現在尚未具備的能力
 
 - 自動 market feed runner、實際 strategy signal scheduler 與任何 background dispatch loop。

@@ -35,7 +35,7 @@ class DevApiScriptTest(unittest.TestCase):
         self.assertIn("refusing to start dev api with CA configuration", completed.stderr)
 
     def test_refuses_production_configuration_in_an_untracked_dotenv(self) -> None:
-        completed = self.run_dotenv_launcher("SJ_PRODUCTION=true\n")
+        completed = self.run_dotenv_launcher("SJ_PRODUCTION=TRUE\n")
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("refusing to start dev api with production configuration in .env", completed.stderr)
 

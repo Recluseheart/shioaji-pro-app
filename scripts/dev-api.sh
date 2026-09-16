@@ -24,7 +24,7 @@ if [ -n "${SJ_CA_PATH:-}" ] || [ -n "${SJ_CA_PASSWD:-}" ]; then
     echo "refusing to start dev api with CA configuration" >&2
     exit 1
 fi
-if [ -f .env ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?SJ_PRODUCTION[[:space:]]*=[[:space:]]*['\"]?(1|true|yes)['\"]?([[:space:]]*(#.*)?)?$" .env; then
+if [ -f .env ] && grep -Eiq "^[[:space:]]*(export[[:space:]]+)?SJ_PRODUCTION[[:space:]]*=[[:space:]]*['\"]?(1|true|yes)['\"]?([[:space:]]*(#.*)?)?$" .env; then
     echo "refusing to start dev api with production configuration in .env" >&2
     exit 1
 fi

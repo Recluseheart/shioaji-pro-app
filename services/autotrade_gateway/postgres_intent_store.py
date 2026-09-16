@@ -16,6 +16,7 @@ from .order_core import (
     Intent,
     Gate,
     Fill,
+    PositionSnapshot,
     StrategyRun,
     StrategyDefinition,
     StrategySignal,
@@ -24,6 +25,7 @@ from .order_core import (
     intent_from_persisted_payload,
     now,
     persisted_request_matches,
+    position_snapshot_values,
 )
 from .postgres_migrations import apply_postgres_migrations
 
@@ -542,6 +544,72 @@ class PostgresIntentStore:
             **dict(row),
             "price": _decimal_text(row["price"]),
             "filled_at": _iso_timestamp(row["filled_at"]),
+        } for row in rows]
+
+    def record_position_snapshot(self, snapshot: PositionSnapshot) -> None:
+        """Persist one broker-read position fact with conflict-safe replay semantics."""
+        values = position_snapshot_values(snapshot)
+        with self._lock, self.connection.transaction():
+            existing = self.connection.execute(
+                """SELECT account_type, account_id, symbol, side, quantity, average_price,
+                    market_price, unrealized_pnl, observed_at
+                    FROM broker_position_snapshots WHERE snapshot_id=%s""",
+                (snapshot.snapshot_id,),
+            ).fetchone()
+            if existing is not None:
+                expected = {
+                    "account_type": values[1], "account_id": values[2], "symbol": values[3],
+                    "side": values[4], "quantity": values[5], "average_price": values[6],
+                    "market_price": values[7], "unrealized_pnl": values[8], "observed_at": values[9],
+                }
+                actual = {
+                    "account_type": str(existing["account_type"]),
+                    "account_id": str(existing["account_id"]),
+                    "symbol": str(existing["symbol"]),
+                    "side": str(existing["side"]),
+                    "quantity": _decimal_text(existing["quantity"]),
+                    "average_price": _decimal_text(existing["average_price"]),
+                    "market_price": _decimal_text(existing["market_price"]),
+                    "unrealized_pnl": _decimal_text(existing["unrealized_pnl"]),
+                    "observed_at": _iso_timestamp(existing["observed_at"]),
+                }
+                if actual == expected:
+                    return
+                raise ValueError("position snapshot identity conflicts with an existing snapshot")
+            self.connection.execute(
+                """INSERT INTO broker_position_snapshots(
+                    snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                    market_price,unrealized_pnl,observed_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                values,
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, NULL, 'POSITION_SNAPSHOT_RECORDED', %s, %s)""",
+                (
+                    str(uuid4()), json.dumps({
+                        "snapshot_id": snapshot.snapshot_id,
+                        "account_type": snapshot.account_type,
+                        "symbol": snapshot.symbol,
+                    }, separators=(",", ":")), now().isoformat(),
+                ),
+            )
+
+    def observation_position_snapshots(self) -> list[dict[str, object]]:
+        """Return internal durable facts; observer routes must mask account_id."""
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                    market_price,unrealized_pnl,observed_at FROM broker_position_snapshots
+                    ORDER BY observed_at DESC, snapshot_id DESC""",
+            ).fetchall()
+        return [{
+            **dict(row),
+            "quantity": _decimal_text(row["quantity"]),
+            "average_price": _decimal_text(row["average_price"]),
+            "market_price": _decimal_text(row["market_price"]),
+            "unrealized_pnl": _decimal_text(row["unrealized_pnl"]),
+            "observed_at": _iso_timestamp(row["observed_at"]),
         } for row in rows]
 
     def record_signal(self, signal: StrategySignal) -> None:

@@ -129,6 +129,27 @@ MIGRATIONS = (
             FROM order_intents ON CONFLICT DO NOTHING""",
         ),
     ),
+    Migration(
+        3,
+        "broker_position_snapshots",
+        (
+            """CREATE TABLE IF NOT EXISTS broker_position_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                account_type TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL CHECK (side IN ('LONG', 'SHORT')),
+                quantity NUMERIC(20,8) NOT NULL CHECK (quantity > 0),
+                average_price NUMERIC(20,8) NOT NULL CHECK (average_price >= 0),
+                market_price NUMERIC(20,8) NOT NULL CHECK (market_price >= 0),
+                unrealized_pnl NUMERIC(20,8) NOT NULL,
+                observed_at TIMESTAMPTZ NOT NULL,
+                UNIQUE(account_type, account_id, symbol, side, observed_at)
+            )""",
+            """CREATE INDEX IF NOT EXISTS broker_position_snapshots_observed_idx
+            ON broker_position_snapshots(observed_at DESC, snapshot_id DESC)""",
+        ),
+    ),
 )
 
 

@@ -12,6 +12,7 @@ from services.autotrade_gateway.order_core import (
     Gate,
     DuplicateIntentError,
     Fill,
+    PositionSnapshot,
     Intent,
     OrderCoordinator,
     RiskContext,
@@ -428,6 +429,25 @@ class OrderCoreTest(unittest.TestCase):
             "filled_at": "2026-09-15T00:00:00+00:00",
         }])
         self.assertEqual(self.store.observation_audit_events()[0]["event_type"], "FILL_RECORDED")
+
+    def test_position_snapshot_is_typed_idempotent_and_does_not_mutate_orders(self) -> None:
+        snapshot = PositionSnapshot(
+            snapshot_id="position-snapshot-1", account_type="S", account_id="SIM-001",
+            symbol="2330", side="LONG", quantity="12.5", average_price="1000.125",
+            market_price="1001.5", unrealized_pnl="-17.1875",
+            observed_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+        )
+
+        self.store.record_position_snapshot(snapshot)
+        self.store.record_position_snapshot(snapshot)
+
+        self.assertEqual(self.store.observation_position_snapshots(), [{
+            "snapshot_id": "position-snapshot-1", "account_type": "S", "account_id": "SIM-001",
+            "symbol": "2330", "side": "LONG", "quantity": "12.5", "average_price": "1000.125",
+            "market_price": "1001.5", "unrealized_pnl": "-17.1875",
+            "observed_at": "2026-09-16T00:00:00+00:00",
+        }])
+        self.assertEqual(self.store.observation_orders(), [])
 
     def test_reused_broker_identity_is_unknown_not_bound_to_two_intents(self) -> None:
         first = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")

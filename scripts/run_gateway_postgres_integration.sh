@@ -33,7 +33,7 @@ restore_drill() {
   docker exec "$container_name" createdb -U "$username" "$restore_database"
   docker exec "$container_name" pg_restore -U "$username" -d "$restore_database" "$archive"
   docker exec "$container_name" psql -U "$username" -d "$restore_database" -v ON_ERROR_STOP=1 -Atqc \
-    "SELECT count(*) FROM \"$schema\".gateway_schema_migrations WHERE version = 2" | grep -qx '1'
+    "SELECT count(*) FROM \"$schema\".gateway_schema_migrations WHERE version = 3" | grep -qx '1'
 }
 
 for _ in {1..30}; do

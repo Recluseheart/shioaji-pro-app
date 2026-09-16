@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
+from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, PositionSnapshot, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
 from services.autotrade_gateway.simulation_execution_window import SimulationExecutionWindow
 from services.autotrade_gateway.worker import ExecutionWorker
 
@@ -75,6 +75,7 @@ class PostgresIntentStoreTest(unittest.TestCase):
             [
                 {"version": 1, "name": "durable_intent_and_strategy_schema"},
                 {"version": 2, "name": "legacy_broker_and_risk_backfill"},
+                {"version": 3, "name": "broker_position_snapshots"},
             ],
         )
         columns = self.store.connection.execute(
@@ -111,6 +112,37 @@ class PostgresIntentStoreTest(unittest.TestCase):
             self.assertEqual([dict(row) for row in rerun], [dict(row) for row in initial])
         finally:
             restarted.close()
+
+    def test_position_snapshot_uses_numeric_timezone_and_idempotency_constraints(self) -> None:
+        snapshot = PositionSnapshot(
+            snapshot_id="postgres-position-snapshot-1", account_type="S", account_id="SIM-001",
+            symbol="2330", side="LONG", quantity="12.5", average_price="1000.125",
+            market_price="1001.5", unrealized_pnl="-17.1875",
+            observed_at=datetime(2026, 9, 16, tzinfo=timezone.utc),
+        )
+        self.store.record_position_snapshot(snapshot)
+        self.store.record_position_snapshot(snapshot)
+        self.assertEqual(self.store.observation_position_snapshots(), [{
+            "snapshot_id": "postgres-position-snapshot-1", "account_type": "S", "account_id": "SIM-001",
+            "symbol": "2330", "side": "LONG", "quantity": "12.5", "average_price": "1000.125",
+            "market_price": "1001.5", "unrealized_pnl": "-17.1875",
+            "observed_at": "2026-09-16T00:00:00+00:00",
+        }])
+        columns = self.store.connection.execute(
+            """SELECT column_name, data_type, numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema=%s AND table_name='broker_position_snapshots'
+              AND column_name IN ('quantity', 'average_price', 'market_price', 'unrealized_pnl', 'observed_at')
+            ORDER BY column_name""",
+            (self.schema,),
+        ).fetchall()
+        self.assertEqual([dict(row) for row in columns], [
+            {"column_name": "average_price", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
+            {"column_name": "market_price", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
+            {"column_name": "observed_at", "data_type": "timestamp with time zone", "numeric_precision": None, "numeric_scale": None},
+            {"column_name": "quantity", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
+            {"column_name": "unrealized_pnl", "data_type": "numeric", "numeric_precision": 20, "numeric_scale": 8},
+        ])
 
     def test_kill_switch_is_persistent_and_never_rearms_the_store(self) -> None:
         self.assertEqual(self.store.apply_kill_switch("operator test", "kill-test-1"), (

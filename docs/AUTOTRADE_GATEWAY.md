@@ -367,8 +367,9 @@ PostgreSQL store 在啟動時只會對 `AUTOTRADE_GATEWAY_PG_SCHEMA` 執行
 forward-only migration。每一版會寫入該 schema 的
 `gateway_schema_migrations` ledger（版號、名稱、checksum、套用時間）；重新啟動只會
 驗證既有 checksum，不會重放 DDL。新 schema 的持久化 timestamp 一律使用
-`TIMESTAMPTZ`，成交價格使用 `NUMERIC(20,8)`，而 API 仍輸出 ISO-8601 UTC offset
-timestamp 與非補零 decimal 字串。既有 inline-schema 的 text 欄位不會被自動破壞性
+`TIMESTAMPTZ`，成交與 broker position snapshot 的數值欄位使用 `NUMERIC(20,8)`，而 API 仍輸出 ISO-8601 UTC offset
+timestamp 與非補零 decimal 字串。position snapshot 保留在本機 store 供風控／對帳使用；任何 observer projection 都必須先遮罩帳戶識別。
+既有 inline-schema 的 text 欄位不會被自動破壞性
 轉型；它們會由 migration ledger 接管並保留既有稽核資料。需要修正已部署 schema 時，
 只能新增新的 forward migration，不能修改已記錄 migration 或重寫 broker／audit history。
 

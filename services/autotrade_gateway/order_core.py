@@ -155,6 +155,67 @@ class Fill:
     filled_at: datetime
 
 
+@dataclass(frozen=True)
+class PositionSnapshot:
+    """One immutable, broker-read position fact.
+
+    Account identifiers are retained only in the local durable store so a
+    later risk/reconciliation worker can bind facts to the right account.
+    Observer/API projections must mask them before they leave the process.
+    """
+
+    snapshot_id: str
+    account_type: str
+    account_id: str
+    symbol: str
+    side: str
+    quantity: str
+    average_price: str
+    market_price: str
+    unrealized_pnl: str
+    observed_at: datetime
+
+
+def position_snapshot_values(snapshot: PositionSnapshot) -> tuple[str, ...]:
+    """Validate and canonically serialize a broker-read position snapshot."""
+    text_fields = {
+        "snapshot_id": snapshot.snapshot_id,
+        "account_type": snapshot.account_type,
+        "account_id": snapshot.account_id,
+        "symbol": snapshot.symbol,
+    }
+    if any(not isinstance(value, str) or not value or len(value) > 128 for value in text_fields.values()):
+        raise ValueError("position snapshot identity is invalid")
+    if snapshot.side not in {"LONG", "SHORT"}:
+        raise ValueError("position snapshot side is invalid")
+    if snapshot.observed_at.tzinfo is None:
+        raise ValueError("position snapshot timestamp has no timezone")
+
+    def decimal_text(
+        value: str, field_name: str, *, positive: bool = False, signed: bool = False,
+    ) -> str:
+        try:
+            decimal = Decimal(value)
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError(f"position snapshot {field_name} is invalid") from error
+        if not decimal.is_finite() or (decimal <= 0 if positive else not signed and decimal < 0):
+            raise ValueError(f"position snapshot {field_name} is invalid")
+        return format(decimal.normalize(), "f")
+
+    return (
+        snapshot.snapshot_id,
+        snapshot.account_type,
+        snapshot.account_id,
+        snapshot.symbol,
+        snapshot.side,
+        decimal_text(snapshot.quantity, "quantity", positive=True),
+        decimal_text(snapshot.average_price, "average_price"),
+        decimal_text(snapshot.market_price, "market_price"),
+        decimal_text(snapshot.unrealized_pnl, "unrealized_pnl", signed=True),
+        snapshot.observed_at.isoformat(),
+    )
+
+
 def intent_from_persisted_payload(payload_json: str) -> Intent:
     """Reconstruct the exact durable request for the execution owner.
 
@@ -303,6 +364,8 @@ class IntentStore(Protocol):
     def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]: ...
     def record_fill(self, fill: Fill) -> None: ...
     def observation_fills(self) -> list[dict[str, object]]: ...
+    def record_position_snapshot(self, snapshot: PositionSnapshot) -> None: ...
+    def observation_position_snapshots(self) -> list[dict[str, object]]: ...
     def record_signal(self, signal: StrategySignal) -> None: ...
     def observation_signals(self) -> list[dict[str, object]]: ...
     def record_strategy_definition(self, definition: StrategyDefinition) -> None: ...
@@ -541,6 +604,15 @@ class SQLiteIntentStore:
                 filled_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS fills_intent_idx ON fills(intent_id, filled_at DESC, fill_id DESC);
+            CREATE TABLE IF NOT EXISTS broker_position_snapshots (
+                snapshot_id TEXT PRIMARY KEY, account_type TEXT NOT NULL, account_id TEXT NOT NULL,
+                symbol TEXT NOT NULL, side TEXT NOT NULL, quantity TEXT NOT NULL,
+                average_price TEXT NOT NULL, market_price TEXT NOT NULL, unrealized_pnl TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                UNIQUE(account_type, account_id, symbol, side, observed_at)
+            );
+            CREATE INDEX IF NOT EXISTS broker_position_snapshots_observed_idx
+                ON broker_position_snapshots(observed_at DESC, snapshot_id DESC);
             CREATE TABLE IF NOT EXISTS broker_orders (
                 intent_id TEXT PRIMARY KEY REFERENCES order_intents(intent_id),
                 broker_order_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -1129,6 +1201,55 @@ class SQLiteIntentStore:
             rows = self.connection.execute(
                 "SELECT fill_id,intent_id,broker_order_id,quantity,price,filled_at FROM fills "
                 "ORDER BY filled_at DESC, fill_id DESC",
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_position_snapshot(self, snapshot: PositionSnapshot) -> None:
+        """Persist one typed broker-read fact without changing any order state."""
+        values = position_snapshot_values(snapshot)
+        with self._lock, self.connection:
+            existing = self.connection.execute(
+                """SELECT account_type, account_id, symbol, side, quantity, average_price,
+                    market_price, unrealized_pnl, observed_at
+                    FROM broker_position_snapshots WHERE snapshot_id=?""",
+                (snapshot.snapshot_id,),
+            ).fetchone()
+            expected = dict(zip(
+                ("account_type", "account_id", "symbol", "side", "quantity", "average_price",
+                 "market_price", "unrealized_pnl", "observed_at"),
+                values[1:],
+                strict=True,
+            ))
+            if existing is not None:
+                if dict(existing) == expected:
+                    return
+                raise ValueError("position snapshot identity conflicts with an existing snapshot")
+            self.connection.execute(
+                """INSERT INTO broker_position_snapshots(
+                    snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                    market_price,unrealized_pnl,observed_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                values,
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (?, NULL, 'POSITION_SNAPSHOT_RECORDED', ?, ?)""",
+                (
+                    str(uuid4()), json.dumps({
+                        "snapshot_id": snapshot.snapshot_id,
+                        "account_type": snapshot.account_type,
+                        "symbol": snapshot.symbol,
+                    }, separators=(",", ":")), now().isoformat(),
+                ),
+            )
+
+    def observation_position_snapshots(self) -> list[dict[str, object]]:
+        """Return internal facts; an observer projection must mask account_id."""
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                    market_price,unrealized_pnl,observed_at FROM broker_position_snapshots
+                    ORDER BY observed_at DESC, snapshot_id DESC""",
             ).fetchall()
         return [dict(row) for row in rows]
 

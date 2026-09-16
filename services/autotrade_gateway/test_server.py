@@ -91,6 +91,16 @@ class ReadServiceHandler(BaseHTTPRequestHandler):
 
 class GatewayServerTest(unittest.TestCase):
     def setUp(self) -> None:
+        # Unit fixtures must remain process-local even when a developer has a
+        # real, schema-scoped PostgreSQL Gateway configuration in `.env`.
+        # Integration coverage opts in through test_postgres_intent_store with
+        # a UUID schema; sharing the configured durable journal here makes
+        # tests order-dependent and can write fixture facts into it.
+        self._store_environment = patch.dict(os.environ, {
+            "AUTOTRADE_GATEWAY_DATABASE_URL": "",
+            "AUTOTRADE_GATEWAY_DB": "",
+        }, clear=False)
+        self._store_environment.start()
         ReadServiceHandler.received.clear()
         ReadServiceHandler.market_hold_started.clear()
         ReadServiceHandler.market_hold_client_closed.clear()
@@ -115,6 +125,7 @@ class GatewayServerTest(unittest.TestCase):
         self.upstream.shutdown()
         self.upstream_thread.join()
         self.upstream.server_close()
+        self._store_environment.stop()
 
     def test_health_is_sim_disarmed_and_cache_safe(self) -> None:
         with urlopen(f"{self.base}/api/v1/autotrade/health") as response:

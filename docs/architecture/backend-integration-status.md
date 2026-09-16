@@ -13,19 +13,27 @@
 | Shioaji SIM session posture | Implemented, awaiting a sidecar session | The Gateway only observes an already logged-in loopback sidecar and publishes `DISCONNECTED`, `CONNECTING`, `AUTHENTICATED`, `MARKET_DATA_READY`, `DEGRADED` or `LOST`. It never accepts credentials, invokes login/logout, enables CA or arms trading. |
 | SIM position snapshot wiring | Implemented and fixture-verified | A local operator can explicitly read verified SIM stock/futures `position_unit` facts, validate the complete response, atomically retain the full snapshot, and project only masked account labels to the UI. `GET` remains durable-only; observer mode cannot invoke refresh. |
 | UI connection and positions presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout, displays only masked account labels, and offers an explicit SIM position snapshot refresh. It retains the existing `SIM` and `DISARMED` indicators and renders an explicit empty state instead of demo positions. |
-| User-owned PostgreSQL final verification | External condition | A dedicated, non-production database plus an isolated Gateway schema and DDL/DML/backup-restore permissions are required. Disposable container evidence is not substituted for this check. |
-| User-owned Shioaji SIM read integration | External condition | The local sidecar must receive credentials through its secret provider and be running in simulation mode. CA must remain unset/disabled; no simulation canary or order will be sent by this work. |
+| User-owned PostgreSQL final verification | Partially verified | The configured DSN was connectivity-checked without exposing it, its test-database naming and schema DDL isolation were confirmed, and all 23 PostgreSQL repository tests ran against UUID schemas. The remaining backup/restore drill needs `pg_dump`/`pg_restore` and permission to create a temporary restore database. Disposable-container evidence is not substituted for this check. |
+| User-owned Shioaji SIM read integration | Read-only verified | The loopback sidecar reported `MARKET_DATA_READY` for one masked, signed simulation account. Gateway reads of balance, positions, trades and market subscriptions succeeded; the account had no current positions or trades, which is retained as an explicit empty state. CA remains unset/disabled and no simulation canary or order was sent. |
 
 ## Current local observation
 
-At the time of this snapshot, the loopback development Gateway was listening
-on port 18082 but did not yet expose the newer connection endpoint (the source
-Gateway health contract is now `api_version: 2`; the running process predates
-it), and no sidecar was listening on port 21322. No repository-local `.env`
-and no Gateway database environment variable were present. This is deliberately
-recorded as an absent external dependency, not interpreted as a failed login or
-unsigned account. The UI now labels that old process as upgrade-required rather
-than treating its health response as fresh sidecar evidence.
+The loopback sidecar now listens on port 21322, loaded its local untracked
+environment, and was observed only through read contracts. The replacement
+Gateway listens on port 18082 with `api_version: 2`, `SIM`, `DISARMED` and an
+operator-only capability. Its connection projection exposes only a masked
+account label. The running Gateway uses a new schema-local durable journal:
+the previously configured schema is retained unchanged after an earlier test
+isolation defect recorded fixture facts (including a kill switch) there. No
+history was deleted or reset; future persistent service configuration must use
+the new, dedicated schema rather than attempting to re-arm the retained one.
+
+The first full test run after loading the DSN exposed that `GatewayServerTest`
+silently inherited `AUTOTRADE_GATEWAY_DATABASE_URL`; its unit fixtures could
+therefore share a configured journal. The test setup now explicitly selects its
+process-local SQLite store, while PostgreSQL tests opt in only through
+`AUTOTRADE_GATEWAY_TEST_POSTGRES_DSN` and a UUID schema. This is a test-only
+boundary fix; it does not delete or alter the retained schema.
 
 ## Safe user-owned setup when ready
 
@@ -41,9 +49,12 @@ than treating its health response as fresh sidecar evidence.
    never in tracked files, a frontend variable, or logs. Grant only database
    connect plus create/use/drop objects inside that designated schema and the
    permissions needed for the restore drill.
-4. Restart the local Gateway only after the current user-owned process can be
-   safely replaced. It will run migrations and recovery before accepting
-   requests; the resulting health must still say `SIM` and `DISARMED`.
+4. Configure a fresh, non-shared `AUTOTRADE_GATEWAY_PG_SCHEMA` after any
+   fixture-contaminated schema; never delete, truncate or re-arm the retained
+   journal to make a health indicator look clean. Restart the local Gateway
+   only after the current user-owned process can be safely replaced. It will
+   run migrations and recovery before accepting requests; the resulting health
+   must still say `SIM` and `DISARMED`.
 5. In the existing Auto Command Center's `自動委託與持倉` panel, use `同步 SIM
    持倉快照` only after the connection state is authenticated. This invokes
    only a read-only sidecar query, writes a local durable projection, and does

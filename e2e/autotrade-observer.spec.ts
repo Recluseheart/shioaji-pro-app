@@ -466,7 +466,9 @@ test('A workspace panel can be repositioned without a broker mutation', async ({
     const chart = page.locator('[data-block-id="chart-0"]');
     const before = await chart.boundingBox();
     expect(before).not.toBeNull();
-    const handle = chart.locator('.drag-handle');
+    // The chart body can embed quote widgets with their own drag affordance;
+    // only the PanelChrome title bar owns this workspace item's layout drag.
+    const handle = chart.locator('[class*="panelTitle"].drag-handle');
     const handleBox = await handle.boundingBox();
     expect(handleBox).not.toBeNull();
     await page.mouse.move(handleBox!.x + 20, handleBox!.y + 12);

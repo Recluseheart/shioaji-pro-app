@@ -463,9 +463,9 @@ UI 顯示短碼，但 detail drawer 可複製完整 internal ID；隱私模式�
 
 ### Phase 0：路線切換與 fork bootstrap
 
-- [ ] 使用者確認 AGPL 與 fork namespace。
-- [ ] fork upstream，設定 `origin`／`upstream`／`legacy`。
-- [ ] pin upstream SHA、Shioaji version 與 baseline tag。
+- [x] 使用者確認 AGPL 與 fork namespace。
+- [x] fork upstream，設定 `origin`／`upstream`／`legacy`。
+- [x] 記錄 upstream SHA、Shioaji version 與本機 baseline artifact（tag 仍未建立，因為建立／push tag 需另行授權）。
 - [ ] 在乾淨環境執行 `pnpm install --frozen-lockfile`、test、build。
 - [ ] 保存 upstream baseline screenshots 與測試數。
 - [ ] 建立 feature-parity checklist，逐面板對應 test ID。

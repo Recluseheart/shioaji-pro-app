@@ -3,13 +3,14 @@ import { fetchAutotradeConnection, type AutotradeConnection, type AutotradeHealt
 import { autotradeObserverStore, type AutotradeObserverState } from '../autotrade/observer-store';
 
 const CONNECTION_STALE_AFTER_MS = 15_000;
+const CONNECTION_OBSERVATION_API_VERSION = 2;
 
 export type ConnectionFreshness = 'CURRENT' | 'STALE' | 'UNKNOWN';
 export type GatewayApiCompatibility = 'CURRENT' | 'UPGRADE_REQUIRED';
 
 /** Version 2 introduced the independently polled connection-observation route. */
 export function gatewayApiCompatibility(version: number): GatewayApiCompatibility {
-    return version >= 2 ? 'CURRENT' : 'UPGRADE_REQUIRED';
+    return version >= CONNECTION_OBSERVATION_API_VERSION ? 'CURRENT' : 'UPGRADE_REQUIRED';
 }
 
 /** A cached healthy sidecar posture is never equivalent to a current probe. */
@@ -28,10 +29,15 @@ export function AutoCommandCenter() {
     const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
     const [liveConnection, setLiveConnection] = useState<AutotradeConnection | null>(null);
     const [clock, setClock] = useState(() => Date.now());
+    const apiVersion = observer.overview?.health.api_version ?? 0;
     useEffect(() => {
         return autotradeObserverStore.subscribe(setObserver);
     }, []);
     useEffect(() => {
+        if (gatewayApiCompatibility(apiVersion) === 'UPGRADE_REQUIRED') {
+            setLiveConnection(null);
+            return;
+        }
         let active = true;
         const refresh = () => {
             setClock(Date.now());
@@ -42,7 +48,7 @@ export function AutoCommandCenter() {
         refresh();
         const timer = setInterval(refresh, 5_000);
         return () => { active = false; clearInterval(timer); };
-    }, []);
+    }, [apiVersion]);
     const value: AutotradeHealth = {
         ...(observer.overview?.health ?? {
         api_version: 0, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,

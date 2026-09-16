@@ -9,6 +9,29 @@
 
 更新日期：2026-09-14；狀態：**下單程式修正 v1 為 SIM soak candidate，Goal 仍進行中**。本文件不是正式盤、CA 或 simulation canary 核准。
 
+## Shioaji Pro backend integration addendum（2026-09-16）
+
+這份 addendum 記錄新 fork 的本機 backend 整合證據；它不會縮短、取代或通過下列
+v1 的 72 小時 soak、三日 backup、remote CI、人工 reconciliation 或任何 canary gate。
+
+- 專用 PostgreSQL DSN 以不輸出 DSN 的 connectivity check 驗證；目標 schema 有 17 張
+  資料表、checksummed migration ledger 為 3/3。`PostgresIntentStore` 以新 schema 啟動及
+  restart recovery 後維持預設 `DISARMED`。
+- 使用 custom-format archive 的 purpose-built restore drill 已完成：archive 可由
+  `pg_restore --list` 列出，還原目標的 17 張資料表 row count 與來源一致，migration 3/3，
+  還原後 store 可開啟且 Gate 為 `DISARMED`。應用角色維持
+  `NOSUPERUSER`、`NOCREATEDB`、`NOCREATEROLE`；本項不需要提高應用角色權限。
+- 重啟後 Gateway health 是 `api_version: 2`、`SIM`、`DISARMED`、`READY`；sidecar 的
+  唯讀 connection projection 是 `MARKET_DATA_READY`。帳戶識別在 Autotrade connection
+  response 僅以遮罩 label 出現；持倉/委託為真實空集合時顯示 empty state，沒有 demo data。
+- 當前 fresh durable schema 的 intent/outbox 均為空；持倉 refresh 只讀取 SIM position
+  facts 並保存 empty snapshot receipt。這不是 canary，也沒有建立 broker mutation。
+- 實際 Gateway SSE 首次連線及含 `Last-Event-ID` 的重連皆回覆 `text/event-stream` 與
+  `retry: 3000`；durable replay/dedup 的有事件情境由 unit 與 Playwright coverage 驗證。
+
+這份驗證期間未啟用 CA、LIVE、正式或 simulation order/canary，也沒有 push、tag 或
+release。先前被 fixture 污染的 schema 已保留、未重設或刪除；服務使用新的專用 schema。
+
 ## 修正前證據的處置
 
 2026-09-14 前的 407 小時 Paper Soak、0-byte backup 計數、舊 simulation canary 與同機 Tailscale 測試，全部只作為稽核起點，已被

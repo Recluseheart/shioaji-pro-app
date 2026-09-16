@@ -16,6 +16,32 @@ export const GATEWAY_PORT = 18082;
 // there, so it stays a probe candidate for attach.
 export const LEGACY_PORT = 8080;
 
+/**
+ * Accept only a deliberate browser-facing Gateway origin.  A public build
+ * must never inherit a Shioaji sidecar origin just because it is served by a
+ * custom app on that process.  The value is public configuration, never a
+ * credential; credentials and CA material stay inside the sidecar.
+ */
+export function gatewayOriginFromEnvironment(value: unknown): string | null {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+        const origin = new URL(value.trim());
+        if ((origin.protocol !== 'http:' && origin.protocol !== 'https:')
+            || origin.username || origin.password || origin.pathname !== '/'
+            || origin.search || origin.hash || origin.port === String(DEFAULT_PORT)
+            || origin.port === String(LEGACY_PORT)) return null;
+        return origin.origin;
+    } catch {
+        return null;
+    }
+}
+
+/** Return the non-Tauri browser API base without ever selecting a sidecar. */
+export function browserGatewayApiBase(isProduction: boolean, configuredOrigin: unknown): string {
+    return gatewayOriginFromEnvironment(configuredOrigin)
+        ?? (isProduction ? `http://127.0.0.1:${GATEWAY_PORT}` : '');
+}
+
 // The server version this build expects（repo 根目錄 SHIOAJI_VERSION，
 // build 時注入；存 '1.5.5' 形式、去掉 v 前綴）。Empty when the define is
 // unavailable（tests）— consumers must treat empty as "don't check".
@@ -127,7 +153,11 @@ export function setServerPid(pid: number | null) {
 // with 本機 HTTPS enabled the mkcert certificate covers it alongside
 // localhost and ::1.
 export function getApiBase(): string {
-    return isTauri ? `http://127.0.0.1:${GATEWAY_PORT}` : '';
+    if (isTauri) return `http://127.0.0.1:${GATEWAY_PORT}`;
+    // Development uses Vite's same-origin proxy.  A built static app can be
+    // hosted by the Shioaji sidecar, so production must address the Gateway
+    // explicitly rather than letting `/api` resolve to the sidecar itself.
+    return browserGatewayApiBase(import.meta.env.PROD, import.meta.env.VITE_API_BASE);
 }
 
 /** Native shell-only origin for managing the Shioaji session owner. */

@@ -147,5 +147,15 @@ export default defineConfig(({ mode, command }) => {
                 '/api': 'http://127.0.0.1:18082',
             },
         },
+        // `vite preview` does not inherit `server.proxy`. Keep its browser
+        // requests on the same Gateway-only contract as `vite dev`; static
+        // production builds use the validated VITE_API_BASE fallback in
+        // runtime.ts and therefore cannot silently talk to a sidecar.
+        preview: {
+            host: '127.0.0.1',
+            proxy: {
+                '/api': 'http://127.0.0.1:18082',
+            },
+        },
     };
 });

@@ -198,7 +198,8 @@ Auto Command Center 顯示 `DISCONNECTED`、`AUTHENTICATED`、`MARKET_DATA_READY
 Shioaji server 可直接代管前端，build 完上傳即可：
 
 ```sh
-VITE_BASE=/apps/shioaji-pro-app/ pnpm build
+# The published bundle must address Gateway, never the sidecar which hosts it.
+VITE_BASE=/apps/shioaji-pro-app/ VITE_API_BASE=http://127.0.0.1:18082 pnpm build
 cd dist
 ARGS=(); for f in *; do ARGS+=(-F "files=@$f"); done
 curl -X POST http://localhost:8080/api/v1/apps/shioaji-pro-app "${ARGS[@]}"
@@ -206,6 +207,10 @@ curl -X POST http://localhost:8080/api/v1/apps/shioaji-pro-app "${ARGS[@]}"
 
 然後開啟 `http://localhost:8080/apps/shioaji-pro-app/index.html`。
 （注意：上傳的 app 存在 server 記憶體，server 重啟後需重新上傳。）
+
+若由另一台 Tailscale 裝置開啟此 build，請在建置時將 `VITE_API_BASE` 指向
+該裝置可到達、已設定為 `OBSERVER` 的 Gateway HTTPS origin；不要將 sidecar
+port 或任何 credential 放入 bundle。
 
 ## Safety notes 安全提醒
 

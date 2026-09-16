@@ -19,11 +19,13 @@
 ## Current local observation
 
 At the time of this snapshot, the loopback development Gateway was listening
-on port 18082 but did not yet expose the newer connection endpoint, and no
-sidecar was listening on port 21322. No repository-local `.env` and no Gateway
-database environment variable were present. This is deliberately recorded as
-an absent external dependency, not interpreted as a failed login or unsigned
-account.
+on port 18082 but did not yet expose the newer connection endpoint (the source
+Gateway health contract is now `api_version: 2`; the running process predates
+it), and no sidecar was listening on port 21322. No repository-local `.env`
+and no Gateway database environment variable were present. This is deliberately
+recorded as an absent external dependency, not interpreted as a failed login or
+unsigned account. The UI now labels that old process as upgrade-required rather
+than treating its health response as fresh sidecar evidence.
 
 ## Safe user-owned setup when ready
 

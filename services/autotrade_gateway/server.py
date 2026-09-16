@@ -346,6 +346,9 @@ def is_valid_combo_contract_query(value: object) -> bool:
     return True
 
 
+GATEWAY_API_VERSION = 2
+
+
 def health_document(
     strategy_runtime: StrategyRuntime | None = None,
     gate: Gate = Gate.DISARMED,
@@ -355,6 +358,7 @@ def health_document(
     """Stable first read contract consumed by the Web Autotrade panels."""
     observations = strategy_runtime.observations() if strategy_runtime else []
     document: dict[str, Any] = {
+        "api_version": GATEWAY_API_VERSION,
         "environment": "SIM",
         "trading_gate": gate.value,
         "strategy_count": len(observations),

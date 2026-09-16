@@ -19,7 +19,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from services.autotrade_gateway.order_core import Fill, Gate, Intent, OrderCoordinator, RiskContext, RiskPosition, SQLiteIntentStore, Source, Status, StrategyRun
-from services.autotrade_gateway.server import GatewayHandler, create_server, health_document
+from services.autotrade_gateway.server import GATEWAY_API_VERSION, GatewayHandler, create_server, health_document
 from services.autotrade_gateway.strategy_runtime import StrategyRuntime
 
 
@@ -122,6 +122,7 @@ class GatewayServerTest(unittest.TestCase):
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             document = json.load(response)
         self.assertEqual(document["trading_gate"], "DISARMED")
+        self.assertEqual(document["api_version"], GATEWAY_API_VERSION)
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_connection_posture_is_a_dedicated_credential_free_read(self) -> None:
@@ -570,7 +571,7 @@ class GatewayServerTest(unittest.TestCase):
                 return [{"enabled": True}, {"enabled": False}, {"enabled": "true"}]
 
         self.assertEqual(health_document(Runtime()), {
-            "environment": "SIM", "trading_gate": "DISARMED", "strategy_count": 3,
+            "api_version": GATEWAY_API_VERSION, "environment": "SIM", "trading_gate": "DISARMED", "strategy_count": 3,
             "enabled_strategy_count": 1, "gateway_status": "READY", "capability_mode": "OPERATOR",
         })
 

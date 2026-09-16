@@ -30,7 +30,7 @@ describe('Autotrade Gateway health contract', () => {
 
     it('accepts the versioned read-only shape', () => {
         expect(normalizeAutotradeHealth({ environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' })).toEqual({
-            environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 2, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR', api_version: 0,
             broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
         });
     });

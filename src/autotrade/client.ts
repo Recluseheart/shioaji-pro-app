@@ -1,6 +1,7 @@
 import { apiGet, apiPost } from '../lib/api';
 
 export type AutotradeHealth = {
+    api_version: number;
     environment: 'SIM' | 'LIVE' | 'UNKNOWN';
     trading_gate: 'DISARMED' | 'ARMED' | 'KILLED' | 'UNKNOWN';
     strategy_count: number;
@@ -199,6 +200,7 @@ function riskReasonLabel(reason: string): string {
 }
 
 const fallback: AutotradeHealth = {
+    api_version: 0,
     environment: 'UNKNOWN',
     trading_gate: 'UNKNOWN',
     strategy_count: 0,
@@ -229,6 +231,8 @@ export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
             return [{ account_type: item.account_type, account_label: item.account_label, signed: item.signed }];
         }) : [];
     return {
+        api_version: typeof raw.api_version === 'number' && Number.isInteger(raw.api_version) && raw.api_version >= 0
+            ? raw.api_version : 0,
         environment,
         trading_gate,
         strategy_count: typeof raw.strategy_count === 'number' ? raw.strategy_count : 0,

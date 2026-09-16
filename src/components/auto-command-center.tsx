@@ -5,6 +5,12 @@ import { autotradeObserverStore, type AutotradeObserverState } from '../autotrad
 const CONNECTION_STALE_AFTER_MS = 15_000;
 
 export type ConnectionFreshness = 'CURRENT' | 'STALE' | 'UNKNOWN';
+export type GatewayApiCompatibility = 'CURRENT' | 'UPGRADE_REQUIRED';
+
+/** Version 2 introduced the independently polled connection-observation route. */
+export function gatewayApiCompatibility(version: number): GatewayApiCompatibility {
+    return version >= 2 ? 'CURRENT' : 'UPGRADE_REQUIRED';
+}
 
 /** A cached healthy sidecar posture is never equivalent to a current probe. */
 export function connectionFreshness(
@@ -39,13 +45,14 @@ export function AutoCommandCenter() {
     }, []);
     const value: AutotradeHealth = {
         ...(observer.overview?.health ?? {
-        environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
+        api_version: 0, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
         enabled_strategy_count: 0, gateway_status: 'UNAVAILABLE', capability_mode: 'OBSERVER',
         broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
         }),
         ...(liveConnection ? { broker_connection: liveConnection } : {}),
     };
     const freshness = connectionFreshness(value.broker_connection.last_updated_at, clock);
+    const compatibility = gatewayApiCompatibility(value.api_version);
     return (
         <div style={{ padding: 12, display: 'grid', gap: 10, fontSize: 13 }}>
             <strong>自動交易總覽</strong>
@@ -53,6 +60,7 @@ export function AutoCommandCenter() {
                 <Status label='環境' value={value.environment} tone='#4aa3ff' />
                 <Status label='交易閘門' value={value.trading_gate} tone='#f0b44d' />
                 <Status label='帳戶連線' value={value.broker_connection.state} tone='#8892a6' />
+                <Status label='Gateway API' value={`v${value.api_version}`} tone={compatibility === 'CURRENT' ? '#73c991' : '#f0b44d'} />
                 <Status label='資料新鮮度' value={freshness} tone={freshness === 'CURRENT' ? '#73c991' : '#f0b44d'} />
                 <Status label='策略' value={`${value.enabled_strategy_count}/${value.strategy_count} 啟用`} tone='#8892a6' />
             </div>
@@ -67,6 +75,9 @@ export function AutoCommandCenter() {
                 {observer.error ?? `Gateway ${value.gateway_status}`}。此面板只讀取狀態；不會啟動策略、送出委託或重送 UNKNOWN。
             </div>
             {observer.stale && <div role='status' style={{ color: '#f0b44d' }}>顯示最後一次成功的 Gateway 狀態；沒有重送委託。</div>}
+            {compatibility === 'UPGRADE_REQUIRED' && <div role='status' style={{ color: '#f0b44d' }}>
+                此 Gateway 未提供目前的帳戶連線觀測 API；請由操作人員安全更新或重啟 Gateway 後，再判定 sidecar 狀態。
+            </div>}
             {freshness !== 'CURRENT' && <div role='status' style={{ color: '#f0b44d' }}>
                 {freshness === 'STALE'
                     ? '帳戶連線資料已過期；保留最後一次觀測，不可據此判定市場或帳務可用。'

@@ -163,7 +163,10 @@ operator capability/idempotency、broker callback/reconciliation 與 finally
 
 ## 已提供的 read contract
 
-- `GET /api/v1/autotrade/health`：環境、交易閘門與 Gateway 狀態。
+- `GET /api/v1/autotrade/health`：環境、交易閘門、Gateway 狀態與整數
+  `api_version`。目前版本為 `2`；v2 才保證另行輪詢的
+  `GET /api/v1/autotrade/connection`。前端遇到缺少或較舊版本時會顯示
+  upgrade-required，保留 fail-closed 的最後狀態，不會猜測 sidecar 可用。
 - `GET /api/v1/autotrade/overview`：策略、訊號、訂單、風控、對帳與績效的
   聚合 read model。沒有持久資料來源時各事件陣列必須為空，不能製造 broker
   activity 來填滿 UI。`risk.last_verdict` 只投影最新 durable ingress 的

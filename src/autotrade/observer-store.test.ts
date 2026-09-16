@@ -4,7 +4,7 @@ import type { AutotradeOverview } from './client';
 
 const overview = {
     health: {
-    environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+    api_version: 2, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
     enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
     broker_connection: { state: 'DISCONNECTED', accounts: [], last_updated_at: null },
     },

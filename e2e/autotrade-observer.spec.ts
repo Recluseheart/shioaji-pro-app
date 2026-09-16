@@ -178,13 +178,14 @@ async function exercisePanelLayout(
     expect(dragBox).not.toBeNull();
     await page.mouse.move(dragBox!.x + 20, dragBox!.y + 12);
     await page.mouse.down();
-    await expect(panel).toHaveClass(/react-draggable-dragging/);
     await page.mouse.move(dragBox!.x + 48, dragBox!.y + 48, { steps: 8 });
     await page.mouse.up();
     // A mobile one-column grid may scroll the moved panel back into view, so
     // a viewport bounding box can stay still while the saved layout changed.
     // Assert the persisted logical grid position instead of scroll-relative
-    // pixels; page reload uses this exact state for workspace restoration.
+    // pixels; page reload uses this exact state for workspace restoration. The
+    // persisted movement is the browser-observable drag guarantee; the
+    // library's transient CSS class is not synchronized with mouse-down.
     await expect.poll(() => persistedGridPosition(page, panel)).not.toEqual(beforeMove);
 
     await panel.getByTitle('移除此面板').click();

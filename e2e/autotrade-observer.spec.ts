@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 async function isolateGatewayReads(page: Page) {
     // Catalogue interactions are local workspace operations.  Do not let an
@@ -117,6 +117,18 @@ async function addPanelFromLibrary(page: Page, label: string) {
     return page.locator(`[data-block-id="${addedId}"]`);
 }
 
+async function persistedGridPosition(page: Page, panel: Locator) {
+    const panelId = await panel.getAttribute('data-block-id');
+    expect(panelId).toBeTruthy();
+    return page.evaluate((id) => {
+        const raw = localStorage.getItem('sj-pro-workspace-v3');
+        if (!raw) return null;
+        const workspace = JSON.parse(raw) as { layout?: Array<{ i: string; x: number; y: number }> };
+        const item = workspace.layout?.find(candidate => candidate.i === id);
+        return item ? [item.x, item.y] : null;
+    }, panelId);
+}
+
 async function exercisePanelLayout(
     page: Page,
     label: string,
@@ -158,22 +170,22 @@ async function exercisePanelLayout(
         Math.round(beforeResize!.height),
     ]);
 
-    const beforeMove = await panel.boundingBox();
+    const beforeMove = await persistedGridPosition(page, panel);
     expect(beforeMove).not.toBeNull();
     const dragHandle = panel.locator('.drag-handle');
+    await expect(dragHandle).toBeVisible();
     const dragBox = await dragHandle.boundingBox();
     expect(dragBox).not.toBeNull();
     await page.mouse.move(dragBox!.x + 20, dragBox!.y + 12);
     await page.mouse.down();
+    await expect(panel).toHaveClass(/react-draggable-dragging/);
     await page.mouse.move(dragBox!.x + 48, dragBox!.y + 48, { steps: 8 });
     await page.mouse.up();
-    await expect.poll(async () => {
-        const box = await panel.boundingBox();
-        return box ? [Math.round(box.x), Math.round(box.y)] : null;
-    }).not.toEqual([
-        Math.round(beforeMove!.x),
-        Math.round(beforeMove!.y),
-    ]);
+    // A mobile one-column grid may scroll the moved panel back into view, so
+    // a viewport bounding box can stay still while the saved layout changed.
+    // Assert the persisted logical grid position instead of scroll-relative
+    // pixels; page reload uses this exact state for workspace restoration.
+    await expect.poll(() => persistedGridPosition(page, panel)).not.toEqual(beforeMove);
 
     await panel.getByTitle('移除此面板').click();
     await expect(blocks).toHaveCount(initiallyPresent ? initialCount - 1 : initialCount);

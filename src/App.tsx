@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GridLayout, {
+    noCompactor,
     useContainerWidth,
     type Layout,
     type LayoutItem,
@@ -884,7 +885,14 @@ function MainApp() {
             const item: LayoutItem = {
                 i: id,
                 x: 0,
-                y: Infinity, // RGL drops it at the bottom
+                // Use a concrete bottom row rather than RGL's Infinity
+                // sentinel. Desktop vertical compaction keeps the same
+                // visible placement, while the mobile no-compaction layout
+                // can safely persist a user-reordered panel.
+                y: workspace.layout.reduce(
+                    (bottom, layout) => Math.max(bottom, layout.y + layout.h),
+                    0,
+                ),
                 // defaultSize 以 24 欄語意撰寫 → 存檔是 288 基準
                 w: meta.defaultSize.w * GRID_LEGACY_SCALE,
                 h: meta.defaultSize.h,
@@ -1193,6 +1201,13 @@ function MainApp() {
                     <GridLayout
                         layout={renderLayout}
                         width={width}
+                        // A narrow one-column terminal has no horizontal
+                        // escape hatch. Vertical compaction would therefore
+                        // snap every downward mobile drag back to its old row
+                        // and make manual panel ordering impossible. Keep
+                        // desktop packing unchanged while preserving an
+                        // explicit mobile placement.
+                        compactor={width < 640 ? noCompactor : undefined}
                         gridConfig={{
                             cols: renderCols,
                             rowHeight: 30,

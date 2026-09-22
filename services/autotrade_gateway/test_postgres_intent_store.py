@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, PositionSnapshot, RiskContext, Source, Status, StrategyDefinition, StrategyRun, StrategySignal
+from services.autotrade_gateway.order_core import DuplicateIntentError, Fill, Gate, Intent, IntentStore, OrderCoordinator, PositionSnapshot, RiskContext, Source, Status, Verdict, StrategyDefinition, StrategyRun, StrategySignal
 from services.autotrade_gateway.simulation_execution_window import SimulationExecutionWindow
 from services.autotrade_gateway.worker import ExecutionWorker
 
@@ -355,7 +355,8 @@ class PostgresIntentStoreTest(unittest.TestCase):
         second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
         coordinator = armed_coordinator(self.store)
         coordinator.accept(first)
-        coordinator.accept(second)
+        # Seed independently approved deliveries to exercise the store guard.
+        self.store.persist(second, Verdict(True))
 
         class ReusedIdentityDispatcher:
             def dispatch(self, _intent: Intent) -> str:
@@ -491,3 +492,32 @@ class PostgresIntentStoreTest(unittest.TestCase):
             "config_checksum": "fixture-checksum", "state": "DISABLED",
             "enabled": False, "allowed_symbols": ["2330"],
         }])
+
+    def test_execution_runtime_paper_fill_and_amendment_storage(self) -> None:
+        from services.autotrade_gateway.execution_service import ExecutionService, PaperTransport
+        from services.autotrade_gateway.test_trading_integration import manual
+        broker = PaperTransport(self.store)
+        runtime = ExecutionService(self.store, broker, lambda _: None, allow_execution=True)
+        runtime.control("arm", "postgres paper validation", "arm-paper")
+        order = manual(price=950, account=broker.account_id)
+        runtime.coordinator.accept(order)
+        runtime.tick()
+        identity = self.store.observation_orders()[0]["broker_order_id"]
+        command = Intent(Source.MANUAL_UI, broker.account_id, "2330", "BUY", 0, "0", operation="CANCEL",
+                         target_order_id=str(identity), target_order_verified=True)
+        runtime.coordinator.accept(command)
+        runtime.tick()
+        runtime.tick()
+        self.assertEqual(self.store.status(command.intent_id), Status.COMPLETED)
+        self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
+
+    def test_postgres_process_lease_rejects_second_owner(self) -> None:
+        from services.autotrade_gateway.runtime_lease import RuntimeLease
+        lease = RuntimeLease(self.dsn, self.schema, ":memory:")
+        try:
+            with self.assertRaisesRegex(RuntimeError, "operator process"):
+                RuntimeLease(self.dsn, self.schema, ":memory:")
+        finally:
+            lease.close()
+        reopened = RuntimeLease(self.dsn, self.schema, ":memory:")
+        reopened.close()

@@ -22,6 +22,7 @@ from services.autotrade_gateway.order_core import (
     Source,
     SQLiteIntentStore,
     Status,
+    Verdict,
 )
 from services.autotrade_gateway.worker import ExecutionWorker
 
@@ -476,7 +477,8 @@ class OrderCoreTest(unittest.TestCase):
         second = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
         coordinator = armed_coordinator(self.store)
         coordinator.accept(first)
-        coordinator.accept(second)
+        # Seed independently approved deliveries to exercise the store guard.
+        self.store.persist(second, Verdict(True))
 
         class ReusedIdentityDispatcher:
             def dispatch(self, _intent: Intent) -> str:

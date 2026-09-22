@@ -21,8 +21,12 @@ class ExecutionWorker:
         if intent_id is None:
             return False
         try:
-            broker_order_id = self.dispatcher.dispatch(self.store.load_intent(intent_id))
-            self.store.mark_pending_submit(intent_id, broker_order_id)
+            intent = self.store.load_intent(intent_id)
+            broker_order_id = self.dispatcher.dispatch(intent)
+            if intent.operation == "PLACE":
+                self.store.mark_pending_submit(intent_id, broker_order_id)
+            else:
+                self.store.mark_operation_pending(intent_id, broker_order_id)
         except Exception as error:
             # A timeout/crash never implies delivery did not happen.
             self.store.mark_delivery_unknown(intent_id, f"dispatch_uncertain:{type(error).__name__}")

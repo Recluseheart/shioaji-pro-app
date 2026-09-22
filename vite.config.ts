@@ -119,6 +119,7 @@ export default defineConfig(({ mode, command }) => {
                 'src-tauri/**',
                 'plugins/**/test/*.test.mjs',
                 'e2e/**',
+                'e2e-paper/**',
             ],
         },
         resolve: {

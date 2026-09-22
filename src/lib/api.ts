@@ -135,7 +135,9 @@ export async function apiPost<T>(
         base() + path,
         {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...opts?.headers },
+            headers: { 'Content-Type': 'application/json',
+                ...(AGENT_HARNESS_MUTATIONS.has(path) ? { 'Idempotency-Key': crypto.randomUUID() } : {}),
+                ...opts?.headers },
             body: JSON.stringify(body),
         },
         // opt-in only — order paths must never abort an in-flight request
@@ -143,7 +145,33 @@ export async function apiPost<T>(
         opts?.timeoutMs,
     );
     if (!res.ok) await throwApiError(res);
-    return res.json() as Promise<T>;
+    const document = await res.json();
+    if (AGENT_HARNESS_MUTATIONS.has(path) && typeof document?.intent_id === 'string') {
+        return awaitGatewayTrade<T>(document.intent_id);
+    }
+    return document as T;
+}
+
+/** Accepted receipts are not broker Trades. Poll reads only; never retry POST. */
+export async function awaitGatewayTrade<T>(intentId: string): Promise<T> {
+    const deadline = Date.now() + 15000;
+    try {
+        while (Date.now() < deadline) {
+            const response = await doFetchWithTimeout(
+                base() + `/api/v1/autotrade/orders/${encodeURIComponent(intentId)}/broker-trade`,
+                { method: 'GET' }, Math.min(3000, Math.max(1, deadline - Date.now())),
+            );
+            if (!response.ok) break;
+            const receipt = await response.json();
+            if (['UNKNOWN', 'RECONCILING', 'MANUAL_REVIEW', 'BROKER_REJECTED', 'RISK_REJECTED'].includes(receipt.status)) break;
+            if (receipt.trade?.order?.id && receipt.trade?.status) return receipt.trade as T;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    } catch {
+        // The accepted mutation still exists even if readback is unavailable.
+    }
+    throw Object.assign(new Error(`委託已受理，結果尚待確認；請查看委託／對帳佇列，勿重送（${intentId.slice(0, 8)}）`),
+        { mutationNotStarted: false, intentId });
 }
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {

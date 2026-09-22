@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from services.autotrade_gateway.order_core import Verdict
+
 import unittest
 
 from services.autotrade_gateway.order_core import Gate, Intent, OrderCoordinator, RiskContext, SQLiteIntentStore, Source, Status
@@ -143,7 +145,7 @@ class ReconciliationParserTest(unittest.TestCase):
         target = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
         other = Intent(Source.MANUAL_UI, "SIM-001", "2317", "BUY", 1, "1000")
         coordinator.accept(target)
-        coordinator.accept(other)
+        store.persist(other, Verdict(True))
         store.mark_pending_submit(target.intent_id, "broker-target")
         store.mark_pending_submit(other.intent_id, "broker-other")
         # A real uncertain delivery originates from a claimed outbox lease;

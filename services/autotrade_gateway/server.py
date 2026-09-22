@@ -7,6 +7,9 @@ import os
 import re
 import select
 import socket
+from datetime import datetime, timezone
+from decimal import Decimal
+from urllib.parse import urlparse
 from hmac import compare_digest
 from dataclasses import replace
 from http import HTTPStatus
@@ -118,6 +121,12 @@ MARKET_STREAM_CAPABILITIES = frozenset({
 })
 
 
+def validated_quantity(value: object) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("quantity must be a positive integer")
+    return value
+
+
 def configured_simulation_execution_worker(
     store: IntentStore,
     upstream_origin: str,
@@ -207,6 +216,11 @@ RISK_REASON_LABELS = {
     "position_limit_exceeded": "預估商品部位超過限額",
     "gross_exposure_limit_exceeded": "預估總曝險超過限額",
     "daily_loss_limit_exceeded": "每日損失已達限額",
+    "pnl_unavailable": "缺少完整的已實現與未實現損益",
+    "instrument_risk_unavailable": "此商品或數量單位尚無可用風控模型",
+    "order_rate_exceeded": "已達每分鐘委託上限",
+    "order_cooldown": "委託冷卻時間尚未結束",
+    "outstanding_order_requires_reconciliation": "此帳戶仍有未結委託，請先等候回報或對帳",
 }
 
 
@@ -359,7 +373,8 @@ def health_document(
     observations = strategy_runtime.observations() if strategy_runtime else []
     document: dict[str, Any] = {
         "api_version": GATEWAY_API_VERSION,
-        "environment": "SIM",
+        "environment": "PAPER" if getattr(strategy_runtime, "execution_mode", None) == "PAPER" else "SIM",
+        "runtime_mode": getattr(strategy_runtime, "execution_mode", "OBSERVE"),
         "trading_gate": gate.value,
         "strategy_count": len(observations),
         "enabled_strategy_count": sum(item.get("enabled") is True for item in observations),
@@ -501,10 +516,33 @@ def overview_document(
         "performance": {
             "run_count": len(runs),
             "filled_order_count": len({fill["intent_id"] for fill in fills}),
-            "realized_pnl": "0",
-            "unrealized_pnl": "0",
+            **performance_document(store),
         },
     }
+
+
+def performance_document(store: IntentStore | None) -> dict[str, object]:
+    unavailable: dict[str, object] = {"realized_pnl": None, "unrealized_pnl": None,
+                                    "source": "UNAVAILABLE", "scope": "ACCOUNT", "observed_at": None,
+                                    "stale": True}
+    if store is None:
+        return unavailable
+    event = next((row for row in store.observation_audit_events()
+                  if row["event_type"] == "ACCOUNT_PNL_SNAPSHOT"), None)
+    if event is None:
+        return unavailable
+    details = event["details"]
+    if not isinstance(details, dict):
+        return unavailable
+    try:
+        observed = datetime.fromisoformat(str(details["observed_at"]))
+        age = (datetime.now(timezone.utc) - observed).total_seconds()
+        for field in ("realized_pnl", "unrealized_pnl"):
+            if not Decimal(str(details[field])).is_finite():
+                return unavailable
+        return {**details, "stale": not 0 <= age <= 30}
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        return unavailable
 
 
 def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
@@ -529,9 +567,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
         # Do not emit request bodies, query parameters or credentials.
         return
 
-    def _json(self, status: HTTPStatus, document: dict[str, Any]) -> None:
-        reasons = document.get("risk_reasons")
-        if "message" not in document and isinstance(reasons, list) and reasons:
+    def _json(self, status: HTTPStatus, document: object) -> None:
+        reasons = document.get("risk_reasons") if isinstance(document, dict) else None
+        if isinstance(document, dict) and "message" not in document and isinstance(reasons, list) and reasons:
             labels = [RISK_REASON_LABELS.get(reason, str(reason)) for reason in reasons]
             document = {**document, "message": f"風控拒絕：{'；'.join(labels)}"}
         payload = json.dumps(document, separators=(",", ":")).encode()
@@ -767,7 +805,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def _paper_read(self) -> bool:
+        if getattr(self.server, "runtime_mode", None) != "PAPER":
+            return False
+        from .paper_api import read_document
+        runtime = getattr(self.server, "execution_service")
+        code, document = read_document(self.path.partition("?")[0], self.command, runtime)
+        self._json(HTTPStatus(code), document)
+        return True
+
     def _proxy_read(self) -> None:
+        if self._paper_read():
+            return
         """Forward allowed read traffic without forwarding browser credentials."""
         upstream = getattr(self.server, "upstream_origin")
         headers = {
@@ -789,6 +838,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
     def _proxy_read_query(self, body: bytes) -> None:
+        if self._paper_read():
+            return
         """Forward an explicitly read-only JSON query without browser credentials."""
         upstream = getattr(self.server, "upstream_origin")
         headers = {
@@ -810,6 +861,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji read service unavailable"})
 
     def _proxy_watchlist_mutation(self, body: bytes | None) -> None:
+        if self._paper_read():
+            return
         """Proxy a narrowly-scoped UI preference mutation without credentials."""
         upstream = getattr(self.server, "upstream_origin")
         headers = {
@@ -831,6 +884,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {"message": "Shioaji watchlist service unavailable"})
 
     def _relay_sse(self, unavailable_message: str) -> None:
+        if self._paper_read():
+            return
         """Relay an explicitly allowlisted upstream SSE stream without credentials."""
         upstream = getattr(self.server, "upstream_origin")
         headers = {
@@ -1006,7 +1061,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             account_id=str(value["account_id"]),
             symbol=str(value["symbol"]),
             side=str(value["side"]),
-            quantity=int(value["quantity"]),
+            quantity=validated_quantity(value["quantity"]),
             limit_price=str(value["limit_price"]),
             strategy_id=str(value["strategy_id"]) if value.get("strategy_id") else None,
             run_id=str(value["run_id"]) if value.get("run_id") else None,
@@ -1041,7 +1096,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             account_id=str(account["account_id"]),
             symbol=str(contract["code"]),
             side=str(order["action"]).upper(),
-            quantity=int(order["quantity"]),
+            quantity=validated_quantity(order["quantity"]),
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
             broker_request={
@@ -1075,7 +1130,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             # aggregate risk symbol used by the current common policy seam.
             symbol="COMBO",
             side=str(order["action"]).upper(),
-            quantity=int(order["quantity"]),
+            quantity=validated_quantity(order["quantity"]),
             limit_price=str(order["price"]),
             order_price_type=str(order.get("price_type", "LMT")).upper(),
             instrument={"kind": "COMBO", "legs": legs},
@@ -1160,6 +1215,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.partition("?")[0]
+        if path.startswith("/api/v1/autotrade/orders/") and path.endswith("/broker-trade"):
+            runtime = getattr(self.server, "execution_service", None)
+            try:
+                if runtime is None:
+                    raise KeyError(path)
+                self._json(HTTPStatus.OK, runtime.trade_document(path.split("/")[-2]))
+            except KeyError:
+                self._json(HTTPStatus.NOT_FOUND, {"message": "broker readback unavailable"})
+            return
+        if path == "/api/v1/autotrade/runtime":
+            runtime = getattr(self.server, "execution_service", None)
+            self._json(HTTPStatus.OK, runtime.document() if runtime else {
+                "mode": "OBSERVE", "execution_available": False, "running": False,
+            })
+            return
         if path == "/api/v1/autotrade/health":
             coordinator = getattr(self.server, "order_coordinator")
             self._json(
@@ -1313,11 +1383,56 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, observation)
 
     def do_POST(self) -> None:  # noqa: N802
+        try:
+            lease = getattr(self.server, "runtime_lease", None)
+            if lease:
+                lease.assert_owned()
+        except Exception:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"message": "journal ownership unavailable"})
+            return
+        with getattr(self.server, "order_coordinator").lock:
+            self._do_POST()
+
+    def _json_object(self) -> dict:
+        size = int(self.headers.get("Content-Length", "0"))
+        if not 0 < size <= 8192:
+            raise ValueError("invalid JSON body size")
+        value = json.loads(self.rfile.read(size))
+        if not isinstance(value, dict):
+            raise ValueError("JSON object required")
+        return value
+
+    def _do_POST(self) -> None:
         path = self.path.partition("?")[0]
         if getattr(self.server, "observer_mode", False) and not is_observer_read_post_path(path):
             self._json(HTTPStatus.FORBIDDEN, {"message": "observer mode does not permit mutations"})
             return
         strategy_runtime = getattr(self.server, "strategy_runtime")
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).hostname not in {"localhost", "127.0.0.1", "::1"}:
+            self._json(HTTPStatus.FORBIDDEN, {"message": "operator origin is not local"})
+            return
+        runtime = getattr(self.server, "execution_service", None)
+        if path in {"/api/v1/autotrade/execution/arm", "/api/v1/autotrade/execution/disarm"}:
+            if runtime is None:
+                self._json(HTTPStatus.FORBIDDEN, {"message": "execution runtime is not configured"})
+                return
+            try:
+                reason, key = self._strategy_control_request()
+                receipt = runtime.control(path.rsplit("/", 1)[1], reason, key)
+                self._json(HTTPStatus.OK, receipt)
+            except (ValueError, TypeError, OSError):
+                self._json(HTTPStatus.CONFLICT, {"message": "execution preflight or control request failed"})
+            return
+        if path == f"/api/v1/autotrade/strategies/{strategy_runtime.strategy_id}/configure":
+            if runtime is None:
+                self._json(HTTPStatus.FORBIDDEN, {"message": "market strategy is not configured"})
+                return
+            try:
+                self._json(HTTPStatus.OK, runtime.strategy.configure(self._json_object()))
+            except (ValueError, TypeError) as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"message": str(error)})
+            return
         if path == "/api/v1/autotrade/internal/broker-terminal":
             try:
                 self._record_internal_terminal_callback()
@@ -1328,6 +1443,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._reconciliation_refresh(intent_id)
             return
         if path == "/api/v1/autotrade/positions/refresh":
+            if getattr(self.server, "runtime_mode", None) == "PAPER":
+                self._json(HTTPStatus.CONFLICT, {"message": "PAPER positions are derived from local fills"})
+                return
             self._refresh_position_snapshots()
             return
         if path == "/api/v1/autotrade/kill-switch":
@@ -1344,13 +1462,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "trading_gate": gate.value, "reason": persisted_reason, "applied": applied,
             })
             return
-        if path == "/api/v1/autotrade/strategies/reference-fixture/validate":
+        if path == f"/api/v1/autotrade/strategies/{strategy_runtime.strategy_id}/validate":
             self._json(HTTPStatus.OK, strategy_runtime.validate_document())
             return
-        if path == "/api/v1/autotrade/strategies/reference-fixture/dry-run":
+        if path == f"/api/v1/autotrade/strategies/{strategy_runtime.strategy_id}/dry-run":
             self._json(HTTPStatus.OK, strategy_runtime.dry_run_document())
             return
-        if action := strategy_control_action(path):
+        if (path.startswith(f"/api/v1/autotrade/strategies/{strategy_runtime.strategy_id}/")
+                and (action := strategy_control_action(path.replace(f"/strategies/{strategy_runtime.strategy_id}/", "/strategies/reference-fixture/")))):
             if not strategy_runtime.lifecycle_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
                 return
@@ -1359,15 +1478,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 store = getattr(self.server, "order_store")
                 existing = store.strategy_control_receipt(idempotency_key)
                 if existing is not None:
-                    if existing["strategy_id"] != "reference-fixture" or existing["action"] != action or existing["reason"] != reason:
+                    if existing["strategy_id"] != strategy_runtime.strategy_id or existing["action"] != action or existing["reason"] != reason:
                         raise ValueError("idempotency key is already used by a different strategy control")
                     receipt = existing["receipt"]
-                    self._json(HTTPStatus.OK, {"strategy_id": "reference-fixture", "action": action,
+                    self._json(HTTPStatus.OK, {"strategy_id": strategy_runtime.strategy_id, "action": action,
                                                 "reason": reason, **receipt, "applied": False})
                     return
                 receipt = strategy_runtime.control(action)
                 applied = store.record_strategy_control(
-                    idempotency_key, "reference-fixture", action, reason, receipt,
+                    idempotency_key, strategy_runtime.strategy_id, action, reason, receipt,
                 )
             except RuntimeError:
                 self._json(HTTPStatus.FORBIDDEN, {"message": "strategy runtime is disabled"})
@@ -1375,7 +1494,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, json.JSONDecodeError):
                 self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid strategy control request"})
                 return
-            self._json(HTTPStatus.OK, {"strategy_id": "reference-fixture", "action": action,
+            self._json(HTTPStatus.OK, {"strategy_id": strategy_runtime.strategy_id, "action": action,
                                         "reason": reason, **receipt, "applied": applied})
             return
         if path in {"/api/v1/order/cancel_order", "/api/v1/order/cancel_comboorder"}:
@@ -1457,10 +1576,47 @@ class GatewayHandler(BaseHTTPRequestHandler):
     do_PATCH = do_POST
 
 
-def create_server(
+class OwnedGatewayServer(ThreadingHTTPServer):
+    def server_close(self) -> None:
+        runtime = getattr(self, "execution_service", None)
+        if runtime:
+            runtime.stop()
+        super().server_close()
+        lease = getattr(self, "runtime_lease", None)
+        if lease:
+            lease.close()
+
+
+def create_server(host: str = "127.0.0.1", port: int = 18082,
+                  upstream_origin: str | None = None, runtime_mode: str | None = None) -> ThreadingHTTPServer:
+    from .runtime_lease import RuntimeLease
+    selected = (runtime_mode or os.getenv("AUTOTRADE_RUNTIME_MODE") or "OBSERVE").upper()
+    if selected not in {"OBSERVE", "PAPER", "SIM"}:
+        raise ValueError("runtime mode must be OBSERVE, PAPER or SIM")
+    if selected != "OBSERVE" and os.getenv("AUTOTRADE_GATEWAY_MODE", "OPERATOR").upper() == "OBSERVER":
+        raise ValueError("observer cannot own an execution runtime")
+    lease = None if os.getenv("AUTOTRADE_GATEWAY_MODE", "OPERATOR").upper() == "OBSERVER" else RuntimeLease(
+        os.getenv("AUTOTRADE_GATEWAY_DATABASE_URL"), os.getenv("AUTOTRADE_GATEWAY_PG_SCHEMA", "autotrade_gateway"),
+        os.getenv("AUTOTRADE_GATEWAY_DB", ":memory:"),
+    )
+    try:
+        server = _create_server(host, port, upstream_origin, selected)
+        server.runtime_lease = lease  # type: ignore[attr-defined]
+        runtime = getattr(server, "execution_service", None)
+        if runtime and lease:
+            runtime.ownership_check = lease.assert_owned
+        return server
+    except BaseException:
+        if lease:
+            lease.close()
+        raise
+
+
+def _create_server(
     host: str = "127.0.0.1",
     port: int = 18082,
     upstream_origin: str | None = None,
+    runtime_mode: str | None = None,
 ) -> ThreadingHTTPServer:
     # Refuse a bad process configuration before binding a port.  The detailed
     # loopback-origin validation happens when the worker adapter is built.
@@ -1506,8 +1662,9 @@ def create_server(
     resolved_upstream_origin = upstream_origin or os.getenv("SHIOAJI_HTTP_ORIGIN") or "http://127.0.0.1:21322"
     # Account discovery can fail closed. Do it before binding so an invalid
     # SIM reconciliation configuration never leaks a listener socket.
-    risk_configuration = configured_simulation_risk_context(resolved_upstream_origin)
-    server = ThreadingHTTPServer((host, port), GatewayHandler)
+    risk_configuration = configured_simulation_risk_context(resolved_upstream_origin) if runtime_mode == "OBSERVE" else None
+    server = OwnedGatewayServer((host, port), GatewayHandler)
+    server.runtime_mode = runtime_mode  # type: ignore[attr-defined]
     # An observer disconnect must never keep the Gateway alive during a
     # restart.  Each SSE request has its own cleanup path and is read-only.
     server.daemon_threads = True
@@ -1533,9 +1690,10 @@ def create_server(
     # A process crash or restart cannot prove that a leased/pending broker
     # delivery did not reach the broker.  Recover before serving any route so
     # no worker could ever treat the stale outbox record as retryable.
-    store.recover()
+    if mode != "OBSERVER":
+        store.recover()
     server.order_store = store  # type: ignore[attr-defined]
-    reference_signals_enabled = os.getenv("AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS") == "1"
+    reference_signals_enabled = runtime_mode == "OBSERVE" and os.getenv("AUTOTRADE_ENABLE_REFERENCE_STRATEGY_SIGNALS") == "1"
     if reference_signals_enabled and risk_configuration is None:
         raise RuntimeError("reference strategy signals require verified simulation risk context")
     server.order_coordinator = OrderCoordinator(  # type: ignore[attr-defined]
@@ -1551,13 +1709,13 @@ def create_server(
     server.execution_worker = configured_simulation_execution_worker(  # type: ignore[attr-defined]
         store,
         resolved_upstream_origin,
-    )
+    ) if runtime_mode == "OBSERVE" else None
     server.reconciliation_refresher = configured_simulation_reconciliation_refresher(  # type: ignore[attr-defined]
         store,
         resolved_upstream_origin,
         risk_configuration,
-    )
-    server.broker_callback_secret = os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET")  # type: ignore[attr-defined]
+    ) if runtime_mode == "OBSERVE" else None
+    server.broker_callback_secret = os.getenv("AUTOTRADE_BROKER_CALLBACK_SECRET") if runtime_mode == "OBSERVE" else None  # type: ignore[attr-defined]
     server.strategy_runtime = StrategyRuntime(  # type: ignore[attr-defined]
         getattr(server, "order_coordinator"),
         allow_reference_fixture=reference_signals_enabled,
@@ -1570,12 +1728,53 @@ def create_server(
     # must never be able to submit a source=STRATEGY event or bypass lifecycle.
     server.process_reference_strategy_event = getattr(server, "strategy_runtime").process_fixture_event  # type: ignore[attr-defined]
     server.autotrade_event_hub = AutotradeEventHub()  # type: ignore[attr-defined]
+    selected_runtime = runtime_mode or os.getenv("AUTOTRADE_RUNTIME_MODE", "OBSERVE")
+    if selected_runtime not in {"OBSERVE", "PAPER", "SIM"}:
+        server.server_close()
+        store.close()
+        raise ValueError("runtime mode must be OBSERVE, PAPER or SIM")
+    if selected_runtime != "OBSERVE":
+        if mode == "OBSERVER":
+            server.server_close()
+            store.close()
+            raise ValueError("observer cannot own an execution runtime")
+        from .execution_service import ExecutionService, PaperTransport, SidecarTransport
+        try:
+            transport = (PaperTransport(store) if selected_runtime == "PAPER" else
+                         SidecarTransport(resolved_upstream_origin, os.getenv("AUTOTRADE_SIM_ACCOUNT_ID")))
+            runtime = ExecutionService(store, transport, getattr(server, "autotrade_event_hub").publish,
+                allow_execution=selected_runtime == "PAPER" or os.getenv("AUTOTRADE_ALLOW_SIMULATION_ORDERS") == "1")
+            runtime.strategy.execution_mode = selected_runtime
+            if selected_runtime == "PAPER":
+                from .paper_api import PaperConnectionMonitor
+                server.connection_monitor = PaperConnectionMonitor()  # type: ignore[attr-defined]
+            server.execution_service = runtime  # type: ignore[attr-defined]
+            server.order_coordinator = runtime.coordinator  # type: ignore[attr-defined]
+            server.strategy_runtime = runtime.strategy  # type: ignore[attr-defined]
+        except Exception:
+            server.server_close()
+            store.close()
+            raise
     return server
 
 
 if __name__ == "__main__":
-    running_server = create_server()
+    import signal
+
+    def stop_process(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop_process)
+    running_server = create_server(port=int(os.getenv("AUTOTRADE_GATEWAY_PORT", "18082")))
+    runtime = getattr(running_server, "execution_service", None)
+    if runtime:
+        runtime.start()
     try:
         running_server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
+        if runtime:
+            runtime.stop()
+        running_server.server_close()
         getattr(running_server, "order_store").close()

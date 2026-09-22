@@ -28,7 +28,7 @@ class StrategyRuntime:
     strategy_id = "reference-fixture"
     version = "v1"
     config_checksum = "reference-fixture-v1"
-    allowed_symbols = ("2330",)
+    allowed_symbols: tuple[str, ...] = ("2330",)
     reference_account_id = "SIM-001"
     reference_broker_id = "SIM-BROKER"
 
@@ -245,7 +245,7 @@ class StrategyRuntime:
             strategy_id=self.strategy_id,
             run_id=intent.run_id or f"fixture:{event_id}",
             event_id=event_id,
-            signal_type="REFERENCE_SIGNAL",
+            signal_type=getattr(self, "signal_type", "REFERENCE_SIGNAL"),
             symbol=intent.symbol,
             side=intent.side,
             intent_id=intent.intent_id,

@@ -1,3 +1,5 @@
+> Autotrade 本機試用與五項整合修正：[啟動與驗證說明](docs/architecture/trading-runtime.md)。
+
 # Shioaji Pro — 專業交易終端 Trading Terminal
 
 **[官方網站 / Landing Page](https://sinotrade.github.io/shioaji-pro-app/)** ・

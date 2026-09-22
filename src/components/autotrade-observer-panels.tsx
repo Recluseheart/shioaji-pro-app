@@ -1,3 +1,4 @@
+import { TradingRuntimeControls } from './trading-runtime-controls';
 import { useEffect, useState } from 'react';
 import {
     applyAutotradeKillSwitch,
@@ -133,7 +134,7 @@ export function panelSummary(
     switch (kind) {
         case 'risk_limits':
             return Object.keys(overview.risk.limits).length > 0
-                ? '已載入 simulation 風控限額；ARMED 前必須有權威市場與帳務快照，缺少時會拒絕。所有新 mutation 目前仍由 DISARMED Gateway 拒絕。'
+                ? `已載入風控限額；目前閘門 ${overview.health.trading_gate}。行情或帳務資料不足時拒絕新委託。`
                 : PANEL_COPY[kind].empty;
         case 'signal_timeline':
             return overview.signals.length > 0 || overview.decisions.length > 0 || overview.audit_events.length > 0
@@ -149,15 +150,18 @@ export function panelSummary(
                 : PANEL_COPY[kind].empty;
         case 'run_performance':
             return overview.performance.run_count > 0
-                ? '以下只呈現 durable 策略執行績效，不以估算資料補齊。'
+                ? '以下呈現策略執行紀錄與帳戶損益快照；帳戶損益不等於個別策略績效。'
                 : PANEL_COPY[kind].empty;
         case 'strategy_control':
-            return PANEL_COPY[kind].empty;
+            return overview.strategies.some(item => (item as { market_driven?: boolean }).market_driven)
+                ? '策略依已儲存設定監測行情；交易閘門啟用時可能產生委託。暫停與停止不取消既有委託。'
+                : PANEL_COPY[kind].empty;
     }
 }
 
 export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel }) {
     const [observer, setObserver] = useState<AutotradeObserverState>(autotradeObserverStore.snapshot());
+    const [controlReason, setControlReason] = useState('');
     const [strategyPreview, setStrategyPreview] = useState<string | null>(null);
     const [killSwitchMessage, setKillSwitchMessage] = useState<string | null>(null);
     const [reconciliationMessage, setReconciliationMessage] = useState<string | null>(null);
@@ -185,8 +189,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
         Boolean(item && typeof item === 'object' && (item as { lifecycle_enabled?: unknown }).lifecycle_enabled === true),
     ) ?? false;
     const observerOnly = overview?.health.capability_mode === 'OBSERVER';
+    const activeStrategy = overview?.strategies[0] as { strategy_id?: string; market_driven?: boolean } | undefined;
+    const strategyId = activeStrategy?.strategy_id ?? 'reference-fixture';
     const runPreview = (action: 'validate' | 'dry-run') => {
-        void previewReferenceStrategy(action)
+        void previewReferenceStrategy(action, strategyId)
             .then((result) => setStrategyPreview(result.message))
             .catch(() => setStrategyPreview('策略預覽目前無法連線到 Gateway'));
     };
@@ -195,7 +201,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             setKillSwitchMessage('Kill Switch 已啟用；此介面沒有解除鎖定功能。');
             return;
         }
-        const reason = globalThis.prompt('請輸入啟用 Kill Switch 的原因；此操作只會阻擋新 mutation。');
+        const reason = activeStrategy?.market_driven ? controlReason : globalThis.prompt('請輸入啟用 Kill Switch 的原因；此操作只會阻擋新 mutation。');
         if (!reason?.trim()) return;
         const idempotencyKey = globalThis.crypto.randomUUID();
         void applyAutotradeKillSwitch(reason.trim(), idempotencyKey)
@@ -210,9 +216,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
         const labels: Record<StrategyControlAction, string> = {
             start: '啟動', pause: '暫停', resume: '恢復', stop: '停止',
         };
-        const reason = globalThis.prompt(`請輸入${labels[action]}策略的原因；此操作不會 ARM 或送單。`);
+        const reason = activeStrategy?.market_driven ? controlReason : globalThis.prompt(`請輸入${labels[action]}策略的原因；此操作不會解除交易閘門；閘門啟用時策略可能產生委託。`);
         if (!reason?.trim()) return;
-        void applyReferenceStrategyControl(action, reason.trim(), globalThis.crypto.randomUUID())
+        void applyReferenceStrategyControl(action, reason.trim(), globalThis.crypto.randomUUID(), strategyId)
             .then((receipt) => {
                 setStrategyPreview(`${labels[action]}${receipt.applied ? '完成' : '已重播'}：${receipt.state} · run ${receipt.run_id.slice(0, 8)}`);
                 return autotradeObserverStore.refresh();
@@ -268,7 +274,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     /> 顯示全部委託（含手動）
                 </label>
             )}
-            {kind === 'auto_orders' && !observerOnly && (
+            {kind === 'auto_orders' && !observerOnly && overview?.health.environment !== 'PAPER' && (
                 <div>
                     <button onClick={runPositionRefresh} title='只讀取已登入的 SIM sidecar 並保存 durable 快照；不會登入、啟用 CA 或送單'>同步 SIM 持倉快照</button>
                     {positionRefreshMessage && <div role='status' style={{ color: '#aeb7c6', marginTop: 4 }}>{positionRefreshMessage}</div>}
@@ -339,6 +345,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 )}
             {kind === 'strategy_control' && (
                 <>
+                    {activeStrategy?.market_driven && !observerOnly && <>
+                        <label>操作原因 <input value={controlReason} onChange={event => setControlReason(event.target.value)} placeholder="閘門與策略操作的紀錄原因" /></label>
+                        <TradingRuntimeControls strategyId={strategyId} reason={controlReason} />
+                    </>}
                     {overview?.strategies.map((item, index) => {
                         const strategy = item as { strategy_id?: string; version?: string; state?: string; enabled?: boolean };
                         return <div key={`${strategy.strategy_id ?? 'strategy'}-${index}`} style={{ color: '#aeb7c6' }}>
@@ -350,10 +360,10 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                             <button onClick={() => runPreview('validate')} title='唯讀檢查；不啟動策略'>驗證策略</button>
                             <button onClick={() => runPreview('dry-run')} title='不建立 intent、outbox 或 broker 請求'>Dry Run</button>
-                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('start')} title={lifecycleEnabled ? '只建立 durable strategy run；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>開始</button>
-                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('pause')} title={lifecycleEnabled ? '暫停新策略訊號；既有委託不變' : 'Gateway 未啟用 SIM lifecycle'}>暫停</button>
-                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('resume')} title={lifecycleEnabled ? '恢復策略 lifecycle；不會 ARM 或送單' : 'Gateway 未啟用 SIM lifecycle'}>恢復</button>
-                            <button disabled={!lifecycleEnabled} onClick={() => runStrategyControl('stop')} title={lifecycleEnabled ? '停止策略；既有委託與持倉不變' : 'Gateway 未啟用 SIM lifecycle'}>停止</button>
+                            <button disabled={!lifecycleEnabled || (activeStrategy?.market_driven === true && !controlReason.trim())} onClick={() => runStrategyControl('start')} title={lifecycleEnabled ? '依已儲存設定開始監測行情；不會自動解除交易閘門' : 'Gateway 未啟用 SIM lifecycle'}>開始</button>
+                            <button disabled={!lifecycleEnabled || (activeStrategy?.market_driven === true && !controlReason.trim())} onClick={() => runStrategyControl('pause')} title={lifecycleEnabled ? '暫停新策略訊號；既有委託不變' : 'Gateway 未啟用 SIM lifecycle'}>暫停</button>
+                            <button disabled={!lifecycleEnabled || (activeStrategy?.market_driven === true && !controlReason.trim())} onClick={() => runStrategyControl('resume')} title={lifecycleEnabled ? '恢復行情監測；已啟用交易閘門時可能產生委託' : 'Gateway 未啟用 SIM lifecycle'}>恢復</button>
+                            <button disabled={!lifecycleEnabled || (activeStrategy?.market_driven === true && !controlReason.trim())} onClick={() => runStrategyControl('stop')} title={lifecycleEnabled ? '停止策略；既有委託與持倉不變' : 'Gateway 未啟用 SIM lifecycle'}>停止</button>
                             <button onClick={runKillSwitch} title='需要輸入原因；只能將 Gateway 加嚴為 KILLED'>啟用 Kill Switch</button>
                         </div>
                     )}
@@ -382,7 +392,8 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
             {kind === 'run_performance' && overview && (
                 <div style={{ display: 'grid', gap: 5, color: '#8892a6' }}>
                     <div>已確認成交委託：{overview.performance.filled_order_count}</div>
-                    <div>已實現 {overview.performance.realized_pnl}／未實現 {overview.performance.unrealized_pnl}</div>
+                    <div>帳戶已實現 {overview.performance.realized_pnl ?? '尚無資料'}／未實現 {overview.performance.unrealized_pnl ?? '尚無資料'}</div>
+                    <div>來源：{overview.performance.source === 'PAPER_ESTIMATE' ? '本機紙上估算（不含手續費與稅）' : overview.performance.source === 'BROKER_ACCOUNT' ? '券商帳戶快照' : '尚無資料'}{overview.performance.stale ? ' · 資料過期或尚未取得' : ''}</div>
                     {overview.runs.map((run) => (
                         <div key={run.run_id} style={{ borderLeft: '3px solid #8892a6', paddingLeft: 7 }}>
                             {run.strategy_id ?? '未命名策略'}{run.version ? ` ${run.version}` : ''} · {run.run_id}
@@ -392,7 +403,9 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                     ))}
                 </div>
             )}
-            <small style={{ color: '#6f7888' }}>唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。</small>
+            <small style={{ color: '#6f7888' }}>{activeStrategy?.market_driven && !observerOnly
+                ? '操作模式：啟用閘門後，策略訊號會經風控送單；UNKNOWN 不會自動重送。'
+                : '唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。'}</small>
         </section>
     );
 }

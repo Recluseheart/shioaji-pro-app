@@ -199,6 +199,7 @@ export function HudHeader({
     const streamStatus = useStreamStatus();
     const privMoney = usePrivacyMoney();
     const headerItems = useHeaderItems();
+    const [paper, setPaper] = useState(false);
     const [simulation, setSimulation] = useState<boolean | null>(null);
     const [appVer, setAppVer] = useState('');
     const [now, setNow] = useState(() => new Date());
@@ -231,7 +232,7 @@ export function HudHeader({
                 .then((info) => {
                     done = true;
                     clearInterval(retry);
-                    setSimulation(info.simulation);
+                    setSimulation(info.simulation); setPaper(info.mode === 'PAPER');
                 })
                 .catch(() => undefined);
         const retry = setInterval(() => {
@@ -257,7 +258,7 @@ export function HudHeader({
 
             {simulation !== null &&
                 (simulation ? (
-                    <span className={styles.simBadge}>模擬環境</span>
+                    <span className={styles.simBadge}>{paper ? 'PAPER · 本機紙上交易' : '模擬環境'}</span>
                 ) : (
                     <span className={styles.prodBadge}>正式環境</span>
                 ))}
@@ -276,7 +277,7 @@ export function HudHeader({
             {headerItems.liveStatus && (
                 <div className={styles.chip}>
                     <span className={styles.led[streamStatus]} />
-                    <span>{STATUS_LABEL[streamStatus]}</span>
+                    <span>{paper ? '合成行情' : STATUS_LABEL[streamStatus]}</span>
                 </div>
             )}
 

@@ -14,7 +14,7 @@ const overview = {
         reconciliation_count: 0, authoritative_remaining_available: false,
     } },
     reconciliation: [],
-    performance: { run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0' },
+    performance: { source: 'UNAVAILABLE', stale: true, observed_at: null, run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0' },
 } satisfies AutotradeOverview;
 
 describe('AutotradeObserverStore', () => {

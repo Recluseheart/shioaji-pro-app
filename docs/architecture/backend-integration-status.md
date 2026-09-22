@@ -1,8 +1,8 @@
 # Autotrade backend integration status
 
-> Snapshot: 2026-09-16. This is an implementation/evidence matrix, not a
-> declaration that simulation execution is enabled. The required posture is
-> always `SIM`, `DISARMED`, and CA disabled.
+> 現況入口（2026-09-22）：[交易整合修正與本機試用](trading-runtime.md)。
+> 下表保留 2026-09-16 backend 整合證據；「當時有服務」不是目前仍在運行的證據。
+> 新版預設 PAPER/DISARMED 可重現啟動，SIM 執行需獨立設定與操作。
 
 ## Gap matrix
 
@@ -13,14 +13,14 @@
 | Shioaji SIM session posture | Implemented, awaiting a sidecar session | The Gateway only observes an already logged-in loopback sidecar and publishes `DISCONNECTED`, `CONNECTING`, `AUTHENTICATED`, `MARKET_DATA_READY`, `DEGRADED` or `LOST`. It never accepts credentials, invokes login/logout, enables CA or arms trading. |
 | SIM position snapshot wiring | Implemented and fixture-verified | A local operator can explicitly read verified SIM stock/futures `position_unit` facts, validate the complete response, atomically retain the full snapshot, and project only masked account labels to the UI. `GET` remains durable-only; observer mode cannot invoke refresh. |
 | UI connection and positions presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout, displays only masked account labels, and offers an explicit SIM position snapshot refresh. It retains the existing `SIM` and `DISARMED` indicators and renders an explicit empty state instead of demo positions. |
-| User-owned PostgreSQL final verification | Partially verified | The configured DSN was connectivity-checked without exposing it, its test-database naming and schema DDL isolation were confirmed, and all 23 PostgreSQL repository tests ran against UUID schemas. The remaining backup/restore drill needs `pg_dump`/`pg_restore` and permission to create a temporary restore database. Disposable-container evidence is not substituted for this check. |
+| User-owned PostgreSQL final verification | Historical verification completed on 2026-09-16 | The completion-audit addendum records the purpose-built archive/list/restore drill, matching row counts for 17 tables and migration 3/3. This supersedes the earlier pending-restore note; it does not establish continuous service availability. |
 | User-owned Shioaji SIM read integration | Read-only verified | The loopback sidecar reported `MARKET_DATA_READY` for one masked, signed simulation account. Gateway reads of balance, positions, trades and market subscriptions succeeded; the account had no current positions or trades, which is retained as an explicit empty state. CA remains unset/disabled and no simulation canary or order was sent. |
 
-## Current local observation
+## Historical local observation（2026-09-16）
 
-The loopback sidecar now listens on port 21322, loaded its local untracked
+At that verification, the loopback sidecar listened on port 21322, loaded its local untracked
 environment, and was observed only through read contracts. The replacement
-Gateway listens on port 18082 with `api_version: 2`, `SIM`, `DISARMED` and an
+Gateway listened on port 18082 with `api_version: 2`, `SIM`, `DISARMED` and an
 operator-only capability. Its connection projection exposes only a masked
 account label. The running Gateway uses a new schema-local durable journal:
 the previously configured schema is retained unchanged after an earlier test
@@ -59,6 +59,6 @@ boundary fix; it does not delete or alter the retained schema.
    持倉快照` only after the connection state is authenticated. This invokes
    only a read-only sidecar query, writes a local durable projection, and does
    not enable CA, arm the Gateway, or submit/cancel an order.
-6. Ask Codex to continue this Goal. The next run will validate the dedicated
-   DSN, sidecar read session, Gateway connection endpoint, state recovery and
-   UI/SSE behavior without enabling CA or submitting an order.
+6. Use the current [runtime guide](trading-runtime.md) and its status command to
+   verify the running source/mode. Historical observations above do not authorize
+   broker mutations or prove that those processes are still available.

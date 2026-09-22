@@ -2,7 +2,7 @@ import { apiGet, apiPost } from '../lib/api';
 
 export type AutotradeHealth = {
     api_version: number;
-    environment: 'SIM' | 'LIVE' | 'UNKNOWN';
+    environment: 'SIM' | 'PAPER' | 'LIVE' | 'UNKNOWN';
     trading_gate: 'DISARMED' | 'ARMED' | 'KILLED' | 'UNKNOWN';
     strategy_count: number;
     enabled_strategy_count: number;
@@ -43,8 +43,11 @@ export type AutotradeOverview = {
     performance: {
         run_count: number;
         filled_order_count: number;
-        realized_pnl: string;
-        unrealized_pnl: string;
+        realized_pnl: string | null;
+        unrealized_pnl: string | null;
+        source: string;
+        stale: boolean;
+        observed_at: string | null;
     };
 };
 
@@ -172,7 +175,7 @@ export type PositionSnapshotRefreshReceipt = {
 export type StrategyControlAction = 'start' | 'pause' | 'resume' | 'stop';
 
 export type StrategyControlReceipt = {
-    strategy_id: 'reference-fixture';
+    strategy_id: string;
     action: StrategyControlAction;
     reason: string;
     state: 'RUNNING' | 'PAUSED' | 'STOPPED';
@@ -213,7 +216,7 @@ const fallback: AutotradeHealth = {
 export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
     if (!value || typeof value !== 'object') return fallback;
     const raw = value as Record<string, unknown>;
-    const environment = raw.environment === 'SIM' || raw.environment === 'LIVE'
+    const environment = raw.environment === 'SIM' || raw.environment === 'PAPER' || raw.environment === 'LIVE'
         ? raw.environment : 'UNKNOWN';
     const trading_gate = raw.trading_gate === 'DISARMED' || raw.trading_gate === 'ARMED' || raw.trading_gate === 'KILLED'
         ? raw.trading_gate : 'UNKNOWN';
@@ -442,8 +445,11 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
         performance: {
             run_count: typeof performance.run_count === 'number' ? performance.run_count : 0,
             filled_order_count: typeof performance.filled_order_count === 'number' ? performance.filled_order_count : 0,
-            realized_pnl: typeof performance.realized_pnl === 'string' ? performance.realized_pnl : '0',
-            unrealized_pnl: typeof performance.unrealized_pnl === 'string' ? performance.unrealized_pnl : '0',
+            realized_pnl: typeof performance.realized_pnl === 'string' ? performance.realized_pnl : null,
+            unrealized_pnl: typeof performance.unrealized_pnl === 'string' ? performance.unrealized_pnl : null,
+            source: typeof performance.source === 'string' ? performance.source : 'UNAVAILABLE',
+            stale: performance.stale !== false,
+            observed_at: typeof performance.observed_at === 'string' ? performance.observed_at : null,
         },
     };
 }
@@ -496,9 +502,9 @@ export async function refreshAutotradePositionSnapshots(): Promise<PositionSnaps
     return { item_count: document.item_count, observed_at: document.observed_at };
 }
 
-export async function previewReferenceStrategy(action: 'validate' | 'dry-run'): Promise<StrategyPreview> {
+export async function previewReferenceStrategy(action: 'validate' | 'dry-run', strategyId = 'reference-fixture'): Promise<StrategyPreview> {
     const document = await apiPost<Record<string, unknown>>(
-        `/api/v1/autotrade/strategies/reference-fixture/${action}`,
+        `/api/v1/autotrade/strategies/${encodeURIComponent(strategyId)}/${action}`,
         {},
     );
     if (document.mode === 'VALIDATE') {
@@ -537,19 +543,20 @@ export async function applyReferenceStrategyControl(
     action: StrategyControlAction,
     reason: string,
     idempotencyKey: string,
+    strategyId = 'reference-fixture',
 ): Promise<StrategyControlReceipt> {
     const document = await apiPost<Record<string, unknown>>(
-        `/api/v1/autotrade/strategies/reference-fixture/${action}`,
+        `/api/v1/autotrade/strategies/${encodeURIComponent(strategyId)}/${action}`,
         { reason }, { headers: { 'Idempotency-Key': idempotencyKey } },
     );
     const validState = document.state === 'RUNNING' || document.state === 'PAUSED' || document.state === 'STOPPED';
-    if (document.strategy_id !== 'reference-fixture' || document.action !== action
+    if (document.strategy_id !== strategyId || document.action !== action
         || typeof document.reason !== 'string' || !validState || typeof document.enabled !== 'boolean'
         || typeof document.run_id !== 'string' || typeof document.applied !== 'boolean') {
         throw new Error('Gateway returned an invalid strategy control receipt');
     }
     return {
-        strategy_id: 'reference-fixture', action, reason: document.reason,
+        strategy_id: strategyId, action, reason: document.reason,
         state: document.state as StrategyControlReceipt['state'], enabled: document.enabled, run_id: document.run_id,
         applied: document.applied,
     };

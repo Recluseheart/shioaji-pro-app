@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import cast
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from .broker_http import HttpOpener, ShioajiHttpDispatcher
 from .order_core import PositionSnapshot, RiskContext, RiskPosition
@@ -115,6 +116,9 @@ class SimulationSnapshotProvider:
         }]})
         if not isinstance(positions, list) or not isinstance(snapshots, list):
             return None
+        realized = self.realized_pnl(account)
+        if realized is None:
+            return None
         snapshot = next((item for item in snapshots if isinstance(item, dict) and item.get("code") == symbol), None)
         if not isinstance(snapshot, dict):
             return None
@@ -124,18 +128,48 @@ class SimulationSnapshotProvider:
             return None
         facts: dict[str, RiskPosition] = {}
         unrealized = Decimal("0")
+        gross = Decimal("0")
         for position in positions:
             if not isinstance(position, dict) or not isinstance(position.get("code"), str):
                 return None
             quantity = position.get("quantity")
             price = self._decimal(position.get("last_price")) or self._decimal(position.get("price"))
-            pnl = self._decimal(position.get("pnl"))
-            if not isinstance(quantity, int) or price is None or pnl is None:
+            pnl = self._signed_decimal(position.get("pnl"))
+            if (not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 0
+                    or price is None or price <= 0 or pnl is None
+                    or position.get("direction") not in {"Buy", "Sell"}):
                 return None
             signed = -quantity if position.get("direction") == "Sell" else quantity
-            facts[position["code"]] = RiskPosition(signed, price)
+            previous = facts.get(position["code"], RiskPosition())
+            facts[position["code"]] = RiskPosition(previous.quantity + signed, price)
             unrealized += pnl
-        return RiskContext(quote_price=quote, quote_at=quote_at, positions=facts, unrealized_pnl=unrealized)
+            gross += abs(quantity) * price
+        return RiskContext(quote_price=quote, quote_at=quote_at, positions=facts,
+                           realized_pnl=realized, unrealized_pnl=unrealized, gross_exposure=gross)
+
+    def realized_pnl(self, account: SimulationStockAccount) -> Decimal | None:
+        """Use today's SIM realized-trade list, never the empty summary fallback."""
+        day = datetime.now(ZoneInfo("Asia/Taipei")).date()
+        rows = self._request("/api/v1/portfolio/profit_loss", {
+            "account_type": "S", "broker_id": account.broker_id, "account_id": account.account_id,
+            "begin_date": day.isoformat(), "end_date": day.isoformat(),
+        })
+        if not isinstance(rows, list):
+            return None
+        result = Decimal("0")
+        identities: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("date", "")).replace("-", "") != day.strftime("%Y%m%d"):
+                return None
+            pnl = self._signed_decimal(row.get("pnl"))
+            if pnl is None or "id" not in row:
+                return None
+            identity = str(row["id"])
+            if identity in identities:
+                return None
+            identities.add(identity)
+            result += pnl
+        return result
 
     def _request(self, path: str, body: dict[str, object] | None = None) -> object:
         request = Request(
@@ -155,7 +189,7 @@ class SimulationSnapshotProvider:
             result = Decimal(str(value))
         except (InvalidOperation, ValueError):
             return None
-        return result if result > 0 or result == 0 else None
+        return result if result.is_finite() and result >= 0 else None
 
     @staticmethod
     def _signed_decimal(value: object) -> Decimal | None:

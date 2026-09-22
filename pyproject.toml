@@ -29,6 +29,11 @@ files = [
     "services/autotrade_gateway/simulation_execution_window.py",
     "services/autotrade_gateway/strategy_runtime.py",
     "services/autotrade_gateway/worker.py",
+    "services/autotrade_gateway/execution_service.py",
+    "services/autotrade_gateway/market_strategy.py",
+    "services/autotrade_gateway/simulation_snapshot.py",
+    "services/autotrade_gateway/runtime_lease.py",
+    "services/autotrade_gateway/paper_api.py",
 ]
 explicit_package_bases = true
 follow_imports = "normal"

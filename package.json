@@ -9,6 +9,7 @@
         "build": "tsc -b && vite build",
         "test": "vitest run",
         "test:e2e": "playwright test",
+        "test:e2e:paper": "playwright test --config playwright.paper.config.ts",
         "preview": "vite preview"
     },
     "dependencies": {

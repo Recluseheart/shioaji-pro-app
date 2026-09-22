@@ -25,3 +25,6 @@ playwright-report/
 src-tauri/target/
 src-tauri/binaries/
 src-tauri/gen/schemas/
+
+# Isolated development journals and owner locks
+.runtime/

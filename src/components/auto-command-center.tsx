@@ -72,7 +72,7 @@ export function AutoCommandCenter() {
             </div>
             {value.broker_connection.accounts.length > 0 && (
                 <div style={{ color: '#aeb7c6', lineHeight: 1.6 }}>
-                    已發現 simulation 帳戶：{value.broker_connection.accounts.map(account =>
+                    {value.environment === 'PAPER' ? '本機 PAPER 帳戶：' : '已發現 simulation 帳戶：'}{value.broker_connection.accounts.map(account =>
                         `${account.account_type} ${account.account_label}${account.signed ? '（已簽署）' : '（未簽署）'}`,
                     ).join('、')}
                 </div>

@@ -60,8 +60,8 @@ describe('Autotrade observer panel summaries', () => {
             risk: { limits: { max_order_quantity: 10000 } },
         });
 
-        expect(panelSummary('risk_limits', overview, null)).toContain('已載入 simulation');
-        expect(panelSummary('risk_limits', overview, null)).toContain('缺少時會拒絕');
+        expect(panelSummary('risk_limits', overview, null)).toContain('已載入風控限額');
+        expect(panelSummary('risk_limits', overview, null)).toContain('資料不足時拒絕新委託');
         expect(panelSummary('risk_limits', overview, null)).not.toContain('尚未載入');
     });
 

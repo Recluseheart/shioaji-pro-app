@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from services.autotrade_gateway.order_core import Verdict
+
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
@@ -404,7 +406,7 @@ class GatewayServerTest(unittest.TestCase):
             coordinator = getattr(server, "order_coordinator")
             coordinator.gate = Gate.ARMED
             coordinator.accept(target)
-            coordinator.accept(other)
+            store.persist(other, Verdict(True))
             store.mark_pending_submit(target.intent_id, "broker-target")
             store.mark_pending_submit(other.intent_id, "broker-other")
             self.assertIn(store.claim_outbox(), {target.intent_id, other.intent_id})
@@ -582,7 +584,7 @@ class GatewayServerTest(unittest.TestCase):
                 return [{"enabled": True}, {"enabled": False}, {"enabled": "true"}]
 
         self.assertEqual(health_document(Runtime()), {
-            "api_version": GATEWAY_API_VERSION, "environment": "SIM", "trading_gate": "DISARMED", "strategy_count": 3,
+            "api_version": GATEWAY_API_VERSION, "environment": "SIM", "runtime_mode": "OBSERVE", "trading_gate": "DISARMED", "strategy_count": 3,
             "enabled_strategy_count": 1, "gateway_status": "READY", "capability_mode": "OPERATOR",
         })
 
@@ -1334,18 +1336,10 @@ class GatewayServerTest(unittest.TestCase):
             },
         }).encode()
         store = getattr(self.server, "order_store")
-        original_has_intent = store.has_intent
         first_reads = threading.Barrier(2)
-        calls = 0
-
-        def synchronize_initial_reads(intent_id: str) -> bool:
-            nonlocal calls
-            calls += 1
-            if calls <= 2:
-                first_reads.wait(timeout=5)
-            return original_has_intent(intent_id)
 
         def post() -> tuple[int, dict[str, object]]:
+            first_reads.wait(timeout=5)
             try:
                 urlopen(Request(
                     f"{self.base}/api/v1/order/place_order", data=body, method="POST",
@@ -1355,9 +1349,8 @@ class GatewayServerTest(unittest.TestCase):
                 return error.code, json.load(error)
             self.fail("DISARMED mutation unexpectedly returned success")
 
-        with patch.object(store, "has_intent", side_effect=synchronize_initial_reads):
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                results = list(executor.map(lambda _unused: post(), range(2)))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _unused: post(), range(2)))
         self.assertEqual([status for status, _receipt in results], [409, 409])
         self.assertEqual(results[0][1]["intent_id"], results[1][1]["intent_id"])
         self.assertEqual(len(store.observation_orders()), 1)

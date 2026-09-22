@@ -141,7 +141,7 @@ class PostgresIntentStore:
                 """SELECT intent.payload_json FROM broker_orders AS broker
                 JOIN order_intents AS intent ON intent.intent_id=broker.intent_id
                 WHERE broker.broker_order_id=%s
-                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED')""",
+                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED','PART_FILLED')""",
                 (broker_order_id,),
             ).fetchone()
         return intent_from_persisted_payload(str(row["payload_json"])) if row else None
@@ -215,6 +215,20 @@ class PostgresIntentStore:
                 (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
             )
 
+    def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None:
+        intent = self.load_intent(intent_id)
+        if intent.operation == "PLACE" or intent.target_order_id != broker_order_id:
+            raise ValueError("operation receipt identity mismatch")
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                "UPDATE order_intents SET status='PENDING_SUBMIT', broker_order_id=%s, updated_at=%s WHERE intent_id=%s",
+                (broker_order_id, now().isoformat(), intent_id),
+            )
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s",
+                (now().isoformat(), intent_id),
+            )
+
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None:
         if not broker_order_id:
             self.mark_delivery_unknown(intent_id, "missing_broker_identity")
@@ -234,7 +248,7 @@ class PostgresIntentStore:
             )
 
     def record_terminal_callback(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
-        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
             raise ValueError("callback status must be terminal")
         with self._lock, self.connection.transaction():
             row = self.connection.execute(
@@ -247,7 +261,7 @@ class PostgresIntentStore:
             current = Status(row["status"])
             if current is terminal:
                 return
-            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED}:
+            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED}:
                 raise ValueError("callback is not valid for current intent status")
             timestamp = now().isoformat()
             self.connection.execute(
@@ -265,7 +279,7 @@ class PostgresIntentStore:
             )
 
     def record_reconciled_terminal(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
-        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
             raise ValueError("reconciled status must be terminal")
         with self._lock, self.connection.transaction():
             row = self.connection.execute("SELECT status, broker_order_id FROM order_intents WHERE intent_id=%s", (intent_id,)).fetchone()
@@ -486,10 +500,10 @@ class PostgresIntentStore:
 
     def record_fill(self, fill: Fill) -> None:
         """Record a broker-confirmed fill only for its already-bound identity."""
-        if not fill.fill_id or fill.quantity <= 0:
+        if not fill.fill_id or type(fill.quantity) is not int or fill.quantity <= 0 or fill.filled_at.tzinfo is None:
             raise ValueError("fill identity and quantity are required")
         try:
-            if Decimal(fill.price) <= 0:
+            if not Decimal(fill.price).is_finite() or Decimal(fill.price) <= 0:
                 raise ValueError("fill price must be positive")
         except (InvalidOperation, ValueError) as error:
             raise ValueError("fill price must be positive") from error
@@ -517,7 +531,7 @@ class PostgresIntentStore:
                 ):
                     return
                 raise ValueError("fill identity conflicts with an existing fill")
-            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.FILLED}:
+            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED, Status.FILLED, Status.CANCELLED, Status.UNKNOWN, Status.RECONCILING}:
                 raise ValueError("fill is not valid for current intent status")
             timestamp = now().isoformat()
             self.connection.execute(

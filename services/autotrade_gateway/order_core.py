@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Callable, Protocol
 from uuid import uuid4
 
@@ -43,6 +44,8 @@ class Status(str, Enum):
     SENDING = "SENDING"
     PENDING_SUBMIT = "PENDING_SUBMIT"
     SUBMITTED = "SUBMITTED"
+    PART_FILLED = "PART_FILLED"
+    COMPLETED = "COMPLETED"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     BROKER_REJECTED = "BROKER_REJECTED"
@@ -60,6 +63,7 @@ _UNCERTAIN = {
     Status.SENDING,
     Status.PENDING_SUBMIT,
     Status.SUBMITTED,
+    Status.PART_FILLED,
 }
 
 
@@ -343,6 +347,7 @@ class IntentStore(Protocol):
     def claim_outbox(self) -> str | None: ...
     def mark_delivery_unknown(self, intent_id: str, reason: str) -> None: ...
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None: ...
+    def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None: ...
     def record_terminal_callback(
         self, intent_id: str, broker_order_id: str, terminal: Status,
     ) -> None: ...
@@ -402,6 +407,8 @@ class RiskLimits:
     max_daily_loss: Decimal = Decimal("100000")
     max_quote_age_seconds: int = 5
     max_price_deviation: Decimal = Decimal("0.10")
+    max_orders_per_minute: int = 30
+    cooldown_seconds: float = 0
 
     def document(self) -> dict[str, object]:
         return {
@@ -414,7 +421,36 @@ class RiskLimits:
             "max_daily_loss": str(self.max_daily_loss),
             "max_quote_age_seconds": self.max_quote_age_seconds,
             "max_price_deviation": str(self.max_price_deviation),
+            "max_orders_per_minute": self.max_orders_per_minute,
+            "cooldown_seconds": self.cooldown_seconds,
         }
+
+
+def risk_quantity(intent: Intent) -> int:
+    """Stock risk uses shares; retain the original broker quantity in the intent.
+
+    Domain-only intents are already expressed in shares. HTTP stock requests
+    carry their lot type; unsupported instruments must not borrow stock units.
+    """
+    if isinstance(intent.quantity, bool) or not isinstance(intent.quantity, int):
+        raise ValueError("quantity must be an integer")
+    request = intent.broker_request
+    if request is None:
+        return intent.quantity
+    body = request.get("body")
+    if not isinstance(body, dict):
+        raise ValueError("missing broker body")
+    stock = body.get("stock_order")
+    if not isinstance(stock, dict):
+        raise ValueError("instrument risk model unavailable")
+    if stock.get("quantity") != intent.quantity:
+        raise ValueError("broker quantity differs from intent")
+    lot = stock.get("order_lot", "Common")
+    if lot in {"Common", "Fixing"}:
+        return intent.quantity * 1000
+    if lot in {"Odd", "IntradayOdd"}:
+        return intent.quantity
+    raise ValueError("unsupported stock lot")
 
 
 class RiskEngine:
@@ -433,6 +469,11 @@ class RiskEngine:
         if gate is not Gate.ARMED:
             reasons.append("trading_gate_not_armed")
         if intent.operation == "PLACE":
+            try:
+                quantity = risk_quantity(intent)
+            except ValueError:
+                quantity = 0
+                reasons.append("instrument_risk_unavailable")
             # Account numbers do not encode their environment.  The caller
             # must populate this allowlist only from a verified simulation
             # sidecar discovery; a cosmetic `SIM-` prefix is not evidence.
@@ -444,9 +485,9 @@ class RiskEngine:
                 reasons.append("symbol_not_allowed")
             if intent.side not in {"BUY", "SELL"}:
                 reasons.append("invalid_side")
-            if intent.quantity <= 0:
+            if quantity <= 0:
                 reasons.append("invalid_quantity")
-            elif intent.quantity > self.limits.max_order_quantity:
+            elif quantity > self.limits.max_order_quantity:
                 reasons.append("quantity_limit_exceeded")
             if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
                 reasons.append("invalid_order_price_type")
@@ -455,12 +496,12 @@ class RiskEngine:
                     price = Decimal(intent.limit_price)
                     if not price.is_finite() or price <= 0:
                         reasons.append("invalid_limit_price")
-                    elif price * intent.quantity > self.limits.max_order_notional:
+                    elif price * quantity > self.limits.max_order_notional:
                         reasons.append("notional_limit_exceeded")
                 except (InvalidOperation, ValueError):
                     reasons.append("invalid_limit_price")
-            if gate is Gate.ARMED:
-                reasons.extend(self._dynamic_reasons(intent, context))
+            if gate is Gate.ARMED and quantity > 0:
+                reasons.extend(self._dynamic_reasons(intent, context, quantity))
         elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:
                 reasons.append("target_order_id_required")
@@ -475,8 +516,8 @@ class RiskEngine:
                 except (InvalidOperation, ValueError):
                     reasons.append("invalid_update_price")
             if intent.operation == "UPDATE_QUANTITY":
-                quantity = changes.get("quantity")
-                if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
+                updated_quantity = changes.get("quantity")
+                if not isinstance(updated_quantity, int) or isinstance(updated_quantity, bool) or updated_quantity <= 0:
                     reasons.append("invalid_update_quantity")
         else:
             reasons.append("invalid_operation")
@@ -484,7 +525,7 @@ class RiskEngine:
             reasons.append("strategy_identity_required")
         return Verdict(not reasons, tuple(reasons))
 
-    def _dynamic_reasons(self, intent: Intent, context: RiskContext | None) -> list[str]:
+    def _dynamic_reasons(self, intent: Intent, context: RiskContext | None, quantity: int) -> list[str]:
         """Evaluate limits that require an authoritative market/account snapshot.
 
         A future execution gateway must supply this snapshot from its durable
@@ -514,6 +555,8 @@ class RiskEngine:
             or not quote_price.is_finite()
             or quote_price <= 0
             or quote_at is None
+            or quote_at.tzinfo is None
+            or (timestamp - quote_at).total_seconds() < -1
             or (timestamp - quote_at).total_seconds() > self.limits.max_quote_age_seconds
         ):
             reasons.append("stale_quote")
@@ -528,20 +571,26 @@ class RiskEngine:
                     reasons.append("invalid_limit_price")
             if intent.order_price_type == "LMT":
                 assert limit_price is not None
-                proposed_notional = Decimal(intent.quantity) * limit_price
+                proposed_notional = Decimal(quantity) * limit_price
             else:
-                proposed_notional = Decimal(intent.quantity) * quote_price
+                proposed_notional = Decimal(quantity) * quote_price
+            if proposed_notional > self.limits.max_order_notional:
+                reasons.append("notional_limit_exceeded")
             current_quantity = context.positions.get(intent.symbol, RiskPosition()).quantity
-            projected_quantity = current_quantity + (intent.quantity if intent.side == "BUY" else -intent.quantity)
+            projected_quantity = current_quantity + (quantity if intent.side == "BUY" else -quantity)
             if abs(projected_quantity) > self.limits.max_position_per_symbol:
                 reasons.append("position_limit_exceeded")
-            gross_exposure = sum(
+            gross_exposure = context.gross_exposure if context.gross_exposure is not None else sum(
                 abs(position.quantity) * position.market_price
                 for position in context.positions.values()
             )
             if gross_exposure + proposed_notional > self.limits.max_gross_exposure:
                 reasons.append("gross_exposure_limit_exceeded")
-        if context.realized_pnl + context.unrealized_pnl <= -self.limits.max_daily_loss:
+        if context.realized_pnl is None or context.unrealized_pnl is None:
+            reasons.append("pnl_unavailable")
+        elif not context.realized_pnl.is_finite() or not context.unrealized_pnl.is_finite():
+            reasons.append("pnl_unavailable")
+        elif context.realized_pnl + context.unrealized_pnl <= -self.limits.max_daily_loss:
             reasons.append("daily_loss_limit_exceeded")
         return reasons
 
@@ -561,8 +610,9 @@ class RiskContext:
     quote_price: Decimal | None = None
     quote_at: datetime | None = None
     positions: dict[str, RiskPosition] = field(default_factory=dict)
-    realized_pnl: Decimal = Decimal("0")
-    unrealized_pnl: Decimal = Decimal("0")
+    realized_pnl: Decimal | None = Decimal("0")
+    unrealized_pnl: Decimal | None = Decimal("0")
+    gross_exposure: Decimal | None = None
 
 
 class SQLiteIntentStore:
@@ -783,7 +833,7 @@ class SQLiteIntentStore:
                 """SELECT intent.payload_json FROM broker_orders AS broker
                 JOIN order_intents AS intent ON intent.intent_id=broker.intent_id
                 WHERE broker.broker_order_id=?
-                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED')""",
+                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED','PART_FILLED')""",
                 (broker_order_id,),
             ).fetchone()
         return intent_from_persisted_payload(str(row["payload_json"])) if row else None
@@ -861,6 +911,20 @@ class SQLiteIntentStore:
                 (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
             )
 
+    def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None:
+        intent = self.load_intent(intent_id)
+        if intent.operation == "PLACE" or intent.target_order_id != broker_order_id:
+            raise ValueError("operation receipt identity mismatch")
+        with self._lock, self.connection:
+            self.connection.execute(
+                "UPDATE order_intents SET status='PENDING_SUBMIT', broker_order_id=?, updated_at=? WHERE intent_id=?",
+                (broker_order_id, now().isoformat(), intent_id),
+            )
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='DISPATCHED', updated_at=? WHERE intent_id=?",
+                (now().isoformat(), intent_id),
+            )
+
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None:
         if not broker_order_id:
             self.mark_delivery_unknown(intent_id, "missing_broker_identity")
@@ -886,7 +950,7 @@ class SQLiteIntentStore:
         path belongs to explicit reconciliation and must never silently assert
         which broker order the ambiguous delivery referred to.
         """
-        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
             raise ValueError("callback status must be terminal")
         with self._lock, self.connection:
             row = self.connection.execute(
@@ -899,7 +963,7 @@ class SQLiteIntentStore:
             current = Status(row["status"])
             if current is terminal:
                 return
-            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED}:
+            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED}:
                 raise ValueError("callback is not valid for current intent status")
             timestamp = now().isoformat()
             self.connection.execute(
@@ -921,7 +985,7 @@ class SQLiteIntentStore:
             )
 
     def record_reconciled_terminal(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
-        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED}:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
             raise ValueError("reconciled status must be terminal")
         with self._lock, self.connection:
             row = self.connection.execute("SELECT status, broker_order_id FROM order_intents WHERE intent_id=?", (intent_id,)).fetchone()
@@ -1156,10 +1220,10 @@ class SQLiteIntentStore:
 
     def record_fill(self, fill: Fill) -> None:
         """Record a broker-confirmed fill only for its already-bound identity."""
-        if not fill.fill_id or fill.quantity <= 0:
+        if not fill.fill_id or type(fill.quantity) is not int or fill.quantity <= 0 or fill.filled_at.tzinfo is None:
             raise ValueError("fill identity and quantity are required")
         try:
-            if Decimal(fill.price) <= 0:
+            if not Decimal(fill.price).is_finite() or Decimal(fill.price) <= 0:
                 raise ValueError("fill price must be positive")
         except (InvalidOperation, ValueError) as error:
             raise ValueError("fill price must be positive") from error
@@ -1180,7 +1244,7 @@ class SQLiteIntentStore:
                 }:
                     return
                 raise ValueError("fill identity conflicts with an existing fill")
-            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.FILLED}:
+            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED, Status.FILLED, Status.CANCELLED, Status.UNKNOWN, Status.RECONCILING}:
                 raise ValueError("fill is not valid for current intent status")
             timestamp = now().isoformat()
             self.connection.execute(
@@ -1560,8 +1624,89 @@ class OrderCoordinator:
         self.gate = gate
         self.risk = risk or RiskEngine()
         self.risk_context_provider = risk_context_provider
+        # The Gateway owns one coordinator shared by HTTP and the runner.
+        # Serialize evaluation + durable reservation so concurrent requests
+        # observe each other's rate limits and outstanding exposure.
+        self.lock = RLock()
+
+    def evaluated_intent(self, intent: Intent) -> Intent:
+        if intent.operation not in {"UPDATE_PRICE", "UPDATE_QUANTITY"}:
+            return intent
+        target = self.store.verified_target_intent(intent.target_order_id or "")
+        if target is None or not target.broker_request:
+            return intent
+        request = deepcopy(target.broker_request)
+        body = request.get("body")
+        stock = body.get("stock_order") if isinstance(body, dict) else None
+        if not isinstance(stock, dict):
+            return intent
+        changes: dict = {"quantity": target.quantity, "price": target.limit_price}
+        for row in reversed(self.store.observation_orders()):
+            if row["status"] == Status.COMPLETED.value:
+                command = self.store.load_intent(str(row["intent_id"]))
+                if command.target_order_id == intent.target_order_id and command.operation in {"UPDATE_PRICE", "UPDATE_QUANTITY"}:
+                    changes.update(command.operation_payload or {})
+        changes.update(intent.operation_payload or {})
+        quantity = changes["quantity"] if type(changes["quantity"]) is int else 0
+        price = str(changes["price"])
+        stock.update(quantity=quantity, price=price)
+        return replace(target, quantity=quantity, limit_price=price, broker_request=request)
 
     def accept(self, intent: Intent) -> tuple[Status, Verdict]:
-        context = self.risk_context_provider(intent) if self.risk_context_provider else None
-        verdict = self.risk.evaluate(intent, self.gate, context)
-        return self.store.persist(intent, verdict), verdict
+        with self.lock:
+            if self.store.trading_gate() is Gate.KILLED:
+                self.gate = Gate.KILLED
+            evaluated = self.evaluated_intent(intent)
+            context = self.risk_context_provider(evaluated) if self.risk_context_provider and intent.operation != "CANCEL" else None
+            verdict = self.risk.evaluate(intent, self.gate, context)
+            reasons = list(verdict.reasons)
+            if intent.operation in {"UPDATE_PRICE", "UPDATE_QUANTITY"}:
+                original = self.store.verified_target_intent(intent.target_order_id or "")
+                if original:
+                    body = (original.broker_request or {}).get("body", {})
+                    stock = body.get("stock_order", {}) if isinstance(body, dict) else {}
+                    if intent.operation == "UPDATE_PRICE" and stock.get("order_lot") == "IntradayOdd":
+                        reasons.append("intraday_odd_price_update_unsupported")
+                    if intent.operation == "UPDATE_QUANTITY":
+                        previous = self.evaluated_intent(replace(intent, operation_payload={}))
+                        if evaluated.quantity >= previous.quantity:
+                            reasons.append("quantity_update_must_reduce")
+                        filled = sum(int(str(fill["quantity"])) for fill in self.store.observation_fills()
+                                     if fill["intent_id"] == original.intent_id)
+                        if evaluated.quantity > 0 and risk_quantity(evaluated) < filled:
+                            reasons.append("quantity_below_filled")
+            if intent.operation in {"UPDATE_PRICE", "UPDATE_QUANTITY"} and self.gate is Gate.ARMED:
+                if evaluated is intent:
+                    reasons.append("instrument_risk_unavailable")
+                else:
+                    reasons.extend(self.risk.evaluate(evaluated, self.gate, context).reasons)
+            if self.gate is Gate.ARMED and intent.operation != "CANCEL":
+                accepted = [row for row in self.store.observation_orders()
+                            if row.get("status") != Status.RISK_REJECTED.value
+                            and row.get("intent_id") != intent.intent_id]
+                if intent.operation in {"UPDATE_PRICE", "UPDATE_QUANTITY"} and any(
+                    row["status"] in {s.value for s in _UNCERTAIN} | {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}
+                    and self.store.load_intent(str(row["intent_id"])).target_order_id == intent.target_order_id
+                    for row in accepted
+                ):
+                    reasons.append("outstanding_amendment_requires_reconciliation")
+                recent = []
+                for row in accepted:
+                    old = self.store.load_intent(str(row["intent_id"]))
+                    if old.account_id == intent.account_id:
+                        age = (now() - old.created_at).total_seconds()
+                        if age < 60:
+                            recent.append(old)
+                        if age < self.risk.limits.cooldown_seconds:
+                            reasons.append("order_cooldown")
+                if len(recent) >= self.risk.limits.max_orders_per_minute:
+                    reasons.append("order_rate_exceeded")
+                # Without a complete reservation model, serialize outstanding
+                # orders per account. Unknown deliveries reserve capacity too.
+                if any(row.get("status") in {s.value for s in _UNCERTAIN} | {
+                    Status.UNKNOWN.value, Status.RECONCILING.value, Status.MANUAL_REVIEW.value,
+                } and self.store.load_intent(str(row["intent_id"])).account_id == intent.account_id
+                       for row in accepted) and intent.operation == "PLACE":
+                    reasons.append("outstanding_order_requires_reconciliation")
+            verdict = Verdict(not reasons, tuple(dict.fromkeys(reasons)))
+            return self.store.persist(intent, verdict), verdict

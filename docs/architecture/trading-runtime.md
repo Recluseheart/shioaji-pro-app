@@ -84,7 +84,7 @@ PAPER 整合測試涵蓋張股轉換、市價上限、負損益、風控、策�
 
 ## 本次驗收紀錄
 
-2026-09-22：Python unittest 172 項通過（PostgreSQL class 在一般測試中略過，另行
+2026-09-22：Python unittest 173 項通過（PostgreSQL class 在一般測試中略過，另行
 執行 25 項 PostgreSQL 測試與 disposable backup/restore，均通過）；前端 361 項
 通過、2 項既有 skip；TypeScript build、Vite build、ruff、mypy 通過。
 既有 50 項桌面／手機 E2E 通過。新 PAPER E2E 於桌面及手機兩種 viewport 直接操作實際 Gateway，全流程通過，

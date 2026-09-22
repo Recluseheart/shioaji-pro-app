@@ -314,7 +314,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 </div>
             )}
             {kind === 'auto_orders' && overview && overview.positions.length > 0 && (
-                <div style={{ display: 'grid', gap: 5 }} aria-label='durable SIM 持倉'>
+                <div style={{ display: 'grid', gap: 5 }} aria-label={`durable ${overview.health.environment} 持倉`}>
                     {overview.positions.map((position) => <PositionObservation key={position.snapshot_id} position={position} />)}
                 </div>
             )}

@@ -80,7 +80,7 @@ describe('accepted Gateway mutation readback', () => {
         vi.stubGlobal('fetch', request);
         expect(await apiPost('/api/v1/order/place_order', {})).toEqual(trade);
         expect(request.mock.calls.map(call => call[1].method)).toEqual(['POST', 'GET']);
-        expect(request.mock.calls[0][1].headers['Idempotency-Key']).toBeTruthy();
+        expect(request.mock.calls[0]?.[1]?.headers?.['Idempotency-Key']).toBeTruthy();
     });
     it('preserves uncertain receipt on failed GET without resending POST', async () => {
         const request = vi.fn()

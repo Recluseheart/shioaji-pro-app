@@ -247,6 +247,26 @@ class ExecutionIntegrationTest(unittest.TestCase):
         self.assertEqual(self.events[-1]["status"], "FILLED")
         self.assertEqual(performance_document(self.store)["source"], "PAPER_ESTIMATE")
 
+    def test_paper_position_projection_selects_latest_complete_snapshot(self):
+        from services.autotrade_gateway.server import position_snapshots_document
+
+        self.service.control("arm", "paper test", "arm-positions")
+        order = manual(account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        self.service.tick()
+        for _ in range(2):
+            self.service._last_account_snapshot = 0
+            self.service.tick()
+        self.assertGreater(len(self.store.observation_position_snapshots()), 1)
+        self.assertEqual(len(position_snapshots_document(self.store)), 1)
+        self.store.record_audit_event(
+            None,
+            "PAPER_POSITION_VIEW",
+            {"snapshot_ids": [], "observed_at": datetime.now(timezone.utc).isoformat()},
+        )
+        self.assertEqual(position_snapshots_document(self.store), [])
+
     def test_market_strategy_configuration_preview_lifecycle_and_fill(self):
         strategy = self.service.strategy
         strategy.configure(

@@ -548,7 +548,11 @@ def performance_document(store: IntentStore | None) -> dict[str, object]:
 def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
     """Project durable broker facts without leaking a raw account identifier."""
     items: list[dict[str, object]] = []
+    latest_paper_view = next((event["details"] for event in store.observation_audit_events()
+        if event["event_type"] == "PAPER_POSITION_VIEW"), None)
     for snapshot in store.observation_position_snapshots():
+        if isinstance(latest_paper_view, dict) and snapshot["snapshot_id"] not in latest_paper_view["snapshot_ids"]:
+            continue
         account_id = snapshot.get("account_id")
         account_type = snapshot.get("account_type")
         if not isinstance(account_id, str) or not isinstance(account_type, str):

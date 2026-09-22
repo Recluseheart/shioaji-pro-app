@@ -467,6 +467,17 @@ class ExecutionService:
                     self.store.record_position_snapshots(
                         self.transport.position_snapshots
                     )
+                    self.store.record_audit_event(
+                        None,
+                        "PAPER_POSITION_VIEW",
+                        {
+                            "snapshot_ids": [
+                                snapshot.snapshot_id
+                                for snapshot in self.transport.position_snapshots
+                            ],
+                            "observed_at": now().isoformat(),
+                        },
+                    )
                 self.store.record_audit_event(
                     None,
                     "ACCOUNT_PNL_SNAPSHOT",

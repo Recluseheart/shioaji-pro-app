@@ -199,6 +199,15 @@ function riskReasonLabel(reason: string): string {
         position_limit_exceeded: '預估商品部位超過限額',
         gross_exposure_limit_exceeded: '預估總曝險超過限額',
         daily_loss_limit_exceeded: '每日損失已達限額',
+        instrument_risk_unavailable: '此商品或委託型態沒有風控模型',
+        pnl_unavailable: '無法取得帳戶損益',
+        order_cooldown: '委託間隔未滿冷卻時間',
+        order_rate_exceeded: '每分鐘委託數已達上限',
+        outstanding_order_requires_reconciliation: '仍有未完成或待對帳的委託',
+        execution_authority_expired: '送單時交易閘門已關閉或逾時',
+        no_signal_condition: '目前行情未觸發策略條件',
+        symbol_not_configured: '商品不在策略設定內',
+        strategy_error: '策略程式錯誤',
     } as Record<string, string>)[reason] ?? reason;
 }
 

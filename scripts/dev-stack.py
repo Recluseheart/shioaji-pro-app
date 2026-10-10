@@ -23,7 +23,21 @@ def main():
     )
     parser.add_argument("--mode", choices=("paper", "observe", "sim"), default="paper")
     parser.add_argument("--web-port", type=int, default=4174)
+    parser.add_argument(
+        "--strategy",
+        default="price-threshold",
+        help="price-threshold, or the id of a private strategy in --private-strategy-dir",
+    )
+    parser.add_argument(
+        "--private-strategy-dir",
+        help="directory outside every git work tree holding private strategy modules",
+    )
+    parser.add_argument(
+        "--cb-symbols", default="", help="comma-separated convertible bond codes allowed to trade"
+    )
     args = parser.parse_args()
+    if args.strategy != "price-threshold" and not args.private_strategy_dir:
+        parser.error("--private-strategy-dir is required for a private strategy")
     if args.command == "status":
         for port, path in (
             (18082, "/api/v1/autotrade/runtime"),
@@ -75,7 +89,13 @@ def main():
         PORT=str(args.web_port),
         SHIOAJI_HTTP_ORIGIN="http://127.0.0.1:21322",
         PYTHONUNBUFFERED="1",
+        AUTOTRADE_STRATEGY=args.strategy,
+        AUTOTRADE_CB_SYMBOLS=args.cb_symbols,
     )
+    if args.private_strategy_dir:
+        environment["AUTOTRADE_PRIVATE_STRATEGY_DIR"] = str(
+            Path(args.private_strategy_dir).expanduser().resolve()
+        )
     # SIM starts with execution disabled and cannot silently inherit an opt-in.
     # Explicit broker execution uses the documented operator service setup.
     children = []

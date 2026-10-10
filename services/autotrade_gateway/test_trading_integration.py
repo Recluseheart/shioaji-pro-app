@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import BytesIO
 import json
@@ -20,6 +20,7 @@ from services.autotrade_gateway.order_core import (
     RiskContext,
     RiskEngine,
     RiskLimits,
+    RiskPosition,
     SQLiteIntentStore,
     Source,
     Status,
@@ -33,10 +34,10 @@ from services.autotrade_gateway.test_simulation_snapshot import Response
 
 
 def manual(
-    quantity=1, price=1000, lot="IntradayOdd", price_type="LMT", account="SIM-001"
+    quantity=1, price=1000, lot="IntradayOdd", price_type="LMT", account="SIM-001", code="2330"
 ) -> Intent:
     body = {
-        "contract": {"code": "2330", "security_type": "STK"},
+        "contract": {"code": code, "security_type": "STK"},
         "stock_order": {
             "account": {"account_id": account},
             "action": "Buy",
@@ -46,6 +47,27 @@ def manual(
             "order_lot": lot,
         },
     }
+    return _manual_body(body)
+
+
+def manual_futures(
+    quantity=1, price=48700, code="TXFJ6", account="SIM-FUT", price_type="LMT", action="Buy"
+) -> Intent:
+    return _manual_body({
+        "contract": {"code": code, "security_type": "FUT", "exchange": "TAIFEX"},
+        "futures_order": {
+            "account": {"account_id": account},
+            "action": action,
+            "quantity": quantity,
+            "price": price,
+            "price_type": price_type,
+            "order_type": "ROD",
+            "octype": "Auto",
+        },
+    })
+
+
+def _manual_body(body) -> Intent:
     raw = json.dumps(body).encode()
     handler = SimpleNamespace(
         headers={"Content-Length": str(len(raw))},
@@ -205,6 +227,64 @@ class RiskRegressionTest(unittest.TestCase):
         )
         self.assertIn("daily_loss_limit_exceeded", reasons)
         self.assertIn("gross_exposure_limit_exceeded", reasons)
+
+    def test_futures_risk_counts_contracts_and_contract_value(self):
+        engine = RiskEngine(RiskLimits(allowed_accounts=("SIM-FUT",)))
+        flat = self.context("48700")
+        self.assertTrue(engine.evaluate(manual_futures(), Gate.ARMED, flat).allowed)
+        self.assertTrue(engine.evaluate(manual_futures(code="TXFR1"), Gate.ARMED, flat).allowed)
+        self.assertIn(
+            "quantity_limit_exceeded",
+            engine.evaluate(manual_futures(2), Gate.ARMED, flat).reasons,
+        )
+        long_two = replace(flat, positions={"TXF": RiskPosition(2, Decimal("48700"))})
+        self.assertIn(
+            "position_limit_exceeded",
+            engine.evaluate(manual_futures(), Gate.ARMED, long_two).reasons,
+        )
+        self.assertTrue(
+            engine.evaluate(manual_futures(action="Sell"), Gate.ARMED, long_two).allowed
+        )
+        # One TXF contract is ~9.7M of contract value; the stock 5M order
+        # notional must not apply, but the futures contract-value cap must.
+        tight = RiskEngine(RiskLimits(
+            allowed_accounts=("SIM-FUT",), max_futures_notional=Decimal("9000000"),
+        ))
+        self.assertIn(
+            "notional_limit_exceeded",
+            tight.evaluate(manual_futures(), Gate.ARMED, flat).reasons,
+        )
+
+    def test_unknown_futures_product_or_contract_mismatch_fails_closed(self):
+        engine = RiskEngine(RiskLimits(allowed_accounts=("SIM-FUT",)))
+        self.assertIn(
+            "instrument_risk_unavailable",
+            engine.evaluate(manual_futures(code="MXFJ6"), Gate.ARMED, self.context()).reasons,
+        )
+        mismatched = replace(manual_futures(), symbol="TXFK6")
+        self.assertIn(
+            "instrument_risk_unavailable",
+            engine.evaluate(mismatched, Gate.ARMED, self.context()).reasons,
+        )
+        disallowed = RiskEngine(RiskLimits(allowed_accounts=("SIM-FUT",), allowed_futures_roots=()))
+        self.assertIn(
+            "symbol_not_allowed",
+            disallowed.evaluate(manual_futures(), Gate.ARMED, self.context("48700")).reasons,
+        )
+
+    def test_convertible_bond_board_lot_and_slow_quote_age(self):
+        cb = manual(1, 101.5, lot="Common", code="11011")
+        aged = RiskContext(Decimal("101.5"), datetime.now(timezone.utc) - timedelta(seconds=30))
+        self.assertIn("stale_quote", RiskEngine().evaluate(cb, Gate.ARMED, aged).reasons)
+        slow = RiskEngine(RiskLimits(slow_quote_symbols=("11011",), slow_quote_max_age_seconds=60))
+        self.assertTrue(slow.evaluate(cb, Gate.ARMED, aged).allowed)
+        # One CB board lot is 1,000 units: 2 lots exceed a 2,000-unit symbol cap
+        # once one lot is already held.
+        holding = replace(aged, positions={"11011": RiskPosition(1000, Decimal("101.5"))})
+        self.assertIn(
+            "position_limit_exceeded",
+            slow.evaluate(manual(2, 101.5, lot="Common", code="11011"), Gate.ARMED, holding).reasons,
+        )
 
     def test_nonfinite_and_unavailable_pnl_fail_closed(self):
         for value in ("NaN", "Infinity", "-Infinity"):
@@ -538,6 +618,152 @@ class RuntimeBoundaryTest(unittest.TestCase):
         config = self.service.strategy.observations()[0]["config"]
         self.service.strategy.configure({**config, "threshold": "999"})
         self.assertEqual(len(self.service.strategy.observations()), 1)
+
+
+class InstrumentExecutionTest(unittest.TestCase):
+    """Board lots, convertible bonds and TXF futures through the one owner."""
+
+    def setUp(self):
+        self.store = SQLiteIntentStore(":memory:")
+        self.broker = PaperTransport(self.store)
+        self.service = ExecutionService(
+            self.store, self.broker, lambda _: None, allow_execution=True,
+            limits=RiskLimits(cooldown_seconds=0),
+        )
+        self.service.control("arm", "paper instruments", "arm-instruments")
+
+    def tearDown(self):
+        self.service.stop()
+        self.store.close()
+
+    def test_paper_futures_fill_counts_contracts_and_values_with_multiplier(self):
+        order = manual_futures(code="TXFR1", account=self.broker.futures_account_id)
+        status, verdict = self.service.coordinator.accept(order)
+        self.assertEqual(status, Status.APPROVED, verdict.reasons)
+        self.service.tick()
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.FILLED)
+        self.assertEqual(int(str(self.store.observation_fills()[0]["quantity"])), 1)
+        self.broker.set_price("TXFR1", Decimal("48800"))
+        futures = [item for item in self.broker.position_snapshots if item.account_type == "F"]
+        self.assertEqual([(item.symbol, item.quantity) for item in futures], [("TXF", "1")])
+        self.assertEqual(Decimal(futures[0].unrealized_pnl), Decimal("20000"))
+
+    def test_instruments_must_use_their_own_account(self):
+        stock_on_futures = manual(account=self.broker.futures_account_id)
+        futures_on_stock = manual_futures(code="TXFR1", account=self.broker.account_id)
+        for order in (stock_on_futures, futures_on_stock):
+            status, verdict = self.service.coordinator.accept(order)
+            self.assertEqual(status, Status.RISK_REJECTED)
+            self.assertIn("risk_context_unavailable", verdict.reasons)
+
+    def test_convertible_bond_board_lot_fills_in_units(self):
+        order = manual(1, 100, lot="Common", code="11011", account=self.broker.account_id)
+        status, verdict = self.service.coordinator.accept(order)
+        self.assertEqual(status, Status.APPROVED, verdict.reasons)
+        self.service.tick()
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.FILLED)
+        self.assertEqual(int(str(self.store.observation_fills()[0]["quantity"])), 1000)
+        stock = [item for item in self.broker.position_snapshots if item.account_type == "S"]
+        self.assertEqual([(item.symbol, item.quantity) for item in stock], [("11011", "1000")])
+
+    def test_dispatch_preflight_refusal_is_rejected_and_never_sent(self):
+        order = manual(account=self.broker.account_id)
+        self.assertEqual(self.service.coordinator.accept(order)[0], Status.APPROVED)
+        sent = []
+        original_context, original_dispatch = self.broker.context, self.broker.dispatch
+        self.broker.context = lambda intent: None
+        self.broker.dispatch = lambda intent: sent.append(intent) or "never"
+        self.assertTrue(self.service.worker.dispatch_once())
+        self.assertEqual(sent, [])
+        self.assertEqual(self.store.status(order.intent_id), Status.RISK_REJECTED)
+        self.assertEqual(self.store.outbox_state(order.intent_id), "REFUSED")
+        row = next(item for item in self.store.observation_orders() if item["intent_id"] == order.intent_id)
+        self.assertIn("risk_context_unavailable", row["risk_reasons"])
+        # A refusal is not an uncertain delivery, so re-arming is allowed.
+        self.broker.context, self.broker.dispatch = original_context, original_dispatch
+        self.service.control("disarm", "paper instruments", "disarm-1")
+        self.assertTrue(self.service.control("arm", "paper instruments", "arm-2")["applied"])
+
+    def test_sidecar_routes_futures_to_the_verified_futures_account(self):
+        from unittest import mock
+
+        from services.autotrade_gateway.execution_service import SidecarTransport
+        from services.autotrade_gateway.simulation_snapshot import SimulationSnapshotProvider
+
+        seen: list[tuple[str, object]] = []
+        now = datetime.now(ZoneInfo("Asia/Taipei")).replace(tzinfo=None).isoformat()
+
+        def fake(self, path, body=None):
+            del self
+            seen.append((path, body))
+            if path == "/api/v1/info":
+                return {"simulation": True}
+            if path == "/api/v1/auth/accounts":
+                return [
+                    {"account_type": "S", "broker_id": "B", "account_id": "stock-1"},
+                    {"account_type": "F", "broker_id": "F", "account_id": "future-1"},
+                ]
+            if path.startswith("/api/v1/data/contracts/"):
+                return {"security_type": "FUT", "exchange": "TAIFEX", "code": "TXFR1", "target_code": "TXFJ6"}
+            if path == "/api/v1/data/snapshots":
+                return [{"code": "TXFJ6", "close": 48700, "datetime": now}]
+            if path in {"/api/v1/portfolio/position_unit", "/api/v1/portfolio/profit_loss", "/api/v1/order/trades"}:
+                return []
+            raise AssertionError(path)
+
+        with mock.patch.object(SimulationSnapshotProvider, "_request", fake):
+            transport = SidecarTransport("http://127.0.0.1:21322")
+            self.assertEqual(transport.account_ids, ("stock-1", "future-1"))
+            self.assertEqual(transport.broker_id_for("future-1"), "F")
+            context = transport.context(manual_futures(code="TXFR1", account="future-1"))
+            self.assertIsNotNone(context)
+            self.assertIsNone(transport.context(manual_futures(code="TXFR1", account="stock-1")))
+            transport.trades()
+        position_reads = [body for path, body in seen if path == "/api/v1/portfolio/position_unit"]
+        self.assertEqual(position_reads[0]["account_type"], "F")
+        self.assertEqual(position_reads[0]["unit"], "Common")
+        trade_reads = [body["account_type"] for path, body in seen if path == "/api/v1/order/trades"]
+        self.assertEqual(trade_reads, ["S", "F"])
+
+    def test_environment_limits_enable_listed_cbs_and_refuse_bad_values(self):
+        from services.autotrade_gateway.execution_service import risk_limits_from_environment
+
+        limits = risk_limits_from_environment({
+            "AUTOTRADE_CB_SYMBOLS": "11011, 23301",
+            "AUTOTRADE_MAX_FUTURES_POSITION": "3",
+        })
+        self.assertIn("23301", limits.allowed_symbols)
+        self.assertEqual(limits.slow_quote_symbols, ("11011", "23301"))
+        self.assertEqual(limits.max_futures_position, 3)
+        self.assertEqual(limits.cooldown_seconds, 2)
+        for bad in (
+            {"AUTOTRADE_CB_SYMBOLS": "11011;DROP"},
+            {"AUTOTRADE_MAX_FUTURES_ORDER_CONTRACTS": "0"},
+            {"AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS": "abc"},
+        ):
+            with self.assertRaises(ValueError):
+                risk_limits_from_environment(bad)
+
+    def test_stock_only_sidecar_keeps_futures_unavailable(self):
+        from unittest import mock
+
+        from services.autotrade_gateway.execution_service import SidecarTransport
+        from services.autotrade_gateway.simulation_snapshot import SimulationSnapshotProvider
+
+        def fake(self, path, body=None):
+            del self, body
+            if path == "/api/v1/info":
+                return {"simulation": True}
+            return [{"account_type": "S", "broker_id": "B", "account_id": "stock-1"}]
+
+        with mock.patch.object(SimulationSnapshotProvider, "_request", fake):
+            transport = SidecarTransport("http://127.0.0.1:21322")
+            self.assertEqual(transport.account_ids, ("stock-1",))
+            self.assertIsNone(transport.futures_account_id)
+            with self.assertRaises(ValueError):
+                SidecarTransport("http://127.0.0.1:21322", futures_account_id="future-1")
 
 
 class GatewayRuntimeIsolationTest(unittest.TestCase):

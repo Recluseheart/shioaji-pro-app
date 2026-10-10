@@ -226,6 +226,14 @@ class MarketStrategyRuntime(StrategyRuntime):
             else price >= threshold
         )
 
+    def on_tick(self) -> RiskContext:
+        """Evaluate one market snapshot; return the account facts it used."""
+        context = self._context()
+        if context is None:
+            raise ValueError("market/account snapshot unavailable")
+        self.on_market(context)
+        return context
+
     def on_market(self, context: RiskContext) -> None:
         with self._coordinator.lock:
             if (

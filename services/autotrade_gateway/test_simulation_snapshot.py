@@ -41,6 +41,72 @@ class SimulationSnapshotTest(unittest.TestCase):
         from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
         self.assertIsNone(provider.stock_risk_context(SimulationStockAccount("B", "paper-1"), "2330"))
 
+    def test_naive_snapshot_time_is_taiwan_market_time(self) -> None:
+        self.assertEqual(
+            SimulationSnapshotProvider._timestamp("2026-10-08T10:36:46.505258"),
+            datetime(2026, 10, 8, 2, 36, 46, 505258, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            SimulationSnapshotProvider._timestamp("2026-10-08T02:36:46Z"),
+            datetime(2026, 10, 8, 2, 36, 46, tzinfo=timezone.utc),
+        )
+
+    def test_contract_resolution_uses_broker_exchange(self) -> None:
+        contracts = {
+            "11011": {"security_type": "STK", "exchange": "OTC", "code": "11011", "target_code": None},
+            "TXFR1": {"security_type": "FUT", "exchange": "TAIFEX", "code": "TXFR1", "target_code": "TXFJ6"},
+        }
+
+        def opener(request, *, timeout: float):
+            del timeout
+            return Response(contracts.get(request.full_url.rsplit("/", 1)[1], {"detail": "not found"}))
+
+        provider = SimulationSnapshotProvider("http://127.0.0.1:21322", opener=opener)
+        cb = provider.contract("11011")
+        future = provider.contract("TXFR1")
+        self.assertEqual((cb.security_type, cb.exchange), ("STK", "OTC"))  # type: ignore[union-attr]
+        self.assertEqual(future.target_code, "TXFJ6")  # type: ignore[union-attr]
+        self.assertIsNone(provider.contract("9999"))
+        self.assertIsNone(provider.contract("../order/place_order"))
+
+    def test_futures_context_counts_contracts_per_root_and_contract_value(self) -> None:
+        from decimal import Decimal
+
+        from services.autotrade_gateway.simulation_snapshot import ContractRef, SimulationFuturesAccount
+
+        requests: list[tuple[str, dict[str, object]]] = []
+
+        def opener(request, *, timeout: float):
+            del timeout
+            body = json.loads(request.data) if request.data else {}
+            requests.append((request.full_url, body))
+            if request.full_url.endswith("/position_unit"):
+                return Response([
+                    {"code": "TXFJ6", "direction": "Buy", "quantity": 1, "price": 48000, "last_price": 48700, "pnl": 140000},
+                    {"code": "TXFK6", "direction": "Sell", "quantity": 1, "price": 48900, "last_price": 48800, "pnl": 20000},
+                ])
+            if request.full_url.endswith("/snapshots"):
+                return Response([{"code": "TXFJ6", "close": 48705, "datetime": "2026-10-12T09:00:01",
+                                  "buy_price": 48704, "sell_price": 48706}])
+            if request.full_url.endswith("/profit_loss"):
+                return Response([])
+            raise AssertionError(request.full_url)
+
+        provider = SimulationSnapshotProvider("http://127.0.0.1:21322", opener=opener)
+        context = provider.futures_risk_context(
+            SimulationFuturesAccount("B", "future-1"),
+            ContractRef("FUT", "TAIFEX", "TXFR1", "TXFJ6"),
+            multiplier=Decimal("200"),
+        )
+        assert context is not None
+        self.assertEqual(context.positions["TXF"].quantity, 0)
+        self.assertEqual(context.gross_exposure, Decimal(48700 * 200 + 48800 * 200))
+        self.assertEqual(context.quote_price, Decimal("48705"))
+        self.assertEqual((context.quote_bid, context.quote_ask), (Decimal("48704"), Decimal("48706")))
+        self.assertEqual({body["account_type"] for _, body in requests if "account_type" in body}, {"F"})
+        snapshot_body = next(body for url, body in requests if url.endswith("/snapshots"))
+        self.assertEqual(snapshot_body["contracts"][0]["exchange"], "TAIFEX")
+
     def test_position_snapshots_read_stock_and_futures_without_exposing_identity(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
 

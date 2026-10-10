@@ -8,10 +8,11 @@ Neither transport obtains credentials or creates a Shioaji SDK session.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from threading import Event, Thread
-from typing import Any, Callable, Protocol, cast
+from typing import Any, Callable, Mapping, Protocol, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -29,27 +30,51 @@ from .order_core import (
     RiskPosition,
     PositionSnapshot,
     Status,
+    futures_root,
     now,
     risk_quantity,
 )
-from .simulation_snapshot import SimulationSnapshotProvider
-from .worker import ExecutionWorker
+from .simulation_snapshot import (
+    ContractRef,
+    SimulationFuturesAccount,
+    SimulationSnapshotProvider,
+)
+from .strategy_plugins import PluginStrategyRuntime, StrategyPlugin
+from .worker import DispatchRefused, ExecutionWorker
 
 
 class Transport(Protocol):
     mode: str
     account_id: str
     broker_id: str
+    futures_account_id: str | None
+    multipliers: dict[str, Decimal]
 
+    @property
+    def account_ids(self) -> tuple[str, ...]: ...
+    def broker_id_for(self, account_id: str) -> str | None: ...
+    def resolve_contract(self, symbol: str) -> ContractRef | None: ...
     def context(self, intent: Intent) -> RiskContext | None: ...
     def dispatch(self, intent: Intent) -> str: ...
     def trades(self) -> list[dict]: ...
 
 
 class SidecarTransport:
+    """Stock (S) account always; a futures (F) account only when verified.
+
+    Futures stay unavailable unless the SIM session exposes exactly one
+    verified F account (or the configured one), so a stock-only API key can
+    never route a futures order to an unrelated account.
+    """
+
     mode = "SIM"
 
-    def __init__(self, origin: str, account_id: str | None = None) -> None:
+    def __init__(
+        self,
+        origin: str,
+        account_id: str | None = None,
+        futures_account_id: str | None = None,
+    ) -> None:
         self.provider = SimulationSnapshotProvider(origin)
         accounts = self.provider.simulation_stock_accounts()
         if account_id:
@@ -63,74 +88,228 @@ class SidecarTransport:
             self.account.account_id,
             self.account.broker_id,
         )
+        futures = self.provider.simulation_futures_accounts()
+        if futures_account_id:
+            futures = tuple(
+                account for account in futures if account.account_id == futures_account_id
+            )
+            if len(futures) != 1:
+                raise ValueError("Selected SIM futures account is not available")
+        self.futures_account: SimulationFuturesAccount | None = (
+            futures[0] if len(futures) == 1 else None
+        )
+        self.futures_account_id = (
+            self.futures_account.account_id if self.futures_account else None
+        )
+        self.multipliers: dict[str, Decimal] = dict(RiskLimits().futures_multipliers)
         self.dispatcher = ShioajiHttpDispatcher(origin)
         self.authorize: Callable[[], None] = lambda: None
+        self._contracts: dict[str, ContractRef] = {}
+
+    @property
+    def account_ids(self) -> tuple[str, ...]:
+        return (self.account_id,) + (
+            (self.futures_account_id,) if self.futures_account_id else ()
+        )
+
+    def broker_id_for(self, account_id: str) -> str | None:
+        if account_id == self.account_id:
+            return self.broker_id
+        if self.futures_account and account_id == self.futures_account.account_id:
+            return self.futures_account.broker_id
+        return None
+
+    def resolve_contract(self, symbol: str) -> ContractRef | None:
+        if symbol not in self._contracts:
+            contract = self.provider.contract(symbol)
+            if contract is None:
+                return None
+            self._contracts[symbol] = contract
+        return self._contracts[symbol]
+
+    def _verified(self, account_id: str) -> bool:
+        if account_id == self.account_id:
+            return self.account in self.provider.simulation_stock_accounts()
+        if self.futures_account and account_id == self.futures_account.account_id:
+            return self.futures_account in self.provider.simulation_futures_accounts()
+        return False
 
     def context(self, intent: Intent) -> RiskContext | None:
-        if intent.account_id != self.account_id:
+        if not self._verified(intent.account_id):
             return None
-        if self.account not in self.provider.simulation_stock_accounts():
+        contract = self.resolve_contract(intent.symbol)
+        if contract is None:
             return None
-        return self.provider.stock_risk_context(self.account, intent.symbol)
+        if intent.account_id == self.account_id:
+            if contract.security_type != "STK":
+                return None
+            return self.provider.stock_risk_context(
+                self.account, intent.symbol, exchange=contract.exchange
+            )
+        multiplier = self.multipliers.get(futures_root(intent.symbol) or "")
+        if (
+            contract.security_type != "FUT"
+            or multiplier is None
+            or self.futures_account is None
+        ):
+            return None
+        return self.provider.futures_risk_context(
+            self.futures_account, contract, multiplier=multiplier
+        )
 
     def dispatch(self, intent: Intent) -> str:
         # Check environment again at the mutation boundary, not just boot.
-        if (
-            intent.account_id != self.account_id
-            or self.account not in self.provider.simulation_stock_accounts()
-        ):
+        if not self._verified(intent.account_id):
             raise ValueError("verified SIM account is no longer available")
         self.authorize()
         return self.dispatcher.dispatch(intent)
 
     def trades(self) -> list[dict]:
-        if self.account not in self.provider.simulation_stock_accounts():
-            raise ValueError("verified SIM session is unavailable")
-        rows = self.provider._request(
-            "/api/v1/order/trades",
-            {
-                "account_type": "S",
-                "broker_id": self.broker_id,
-                "account_id": self.account_id,
-            },
-        )
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise ValueError("broker trade snapshot unavailable")
+        accounts = [("S", self.account.broker_id, self.account.account_id)]
+        if self.futures_account is not None:
+            accounts.append(
+                ("F", self.futures_account.broker_id, self.futures_account.account_id)
+            )
+        rows: list[dict] = []
+        for account_type, broker_id, account_id in accounts:
+            if not self._verified(account_id):
+                raise ValueError("verified SIM session is unavailable")
+            result = self.provider._request(
+                "/api/v1/order/trades",
+                {
+                    "account_type": account_type,
+                    "broker_id": broker_id,
+                    "account_id": account_id,
+                },
+            )
+            if not isinstance(result, list) or any(
+                not isinstance(row, dict) for row in result
+            ):
+                raise ValueError("broker trade snapshot unavailable")
+            rows.extend(result)
         return rows
 
 
+def _symbol_list(value: str | None) -> tuple[str, ...]:
+    symbols = tuple(dict.fromkeys(item.strip().upper() for item in (value or "").split(",") if item.strip()))
+    if any(not symbol.isalnum() or len(symbol) > 12 for symbol in symbols):
+        raise ValueError("symbol lists must contain alphanumeric codes only")
+    return symbols
+
+
+def risk_limits_from_environment(environment: Mapping[str, str]) -> RiskLimits:
+    """Operator-tunable SIM/PAPER limits. Accounts are never configurable here.
+
+    ``AUTOTRADE_CB_SYMBOLS`` lists convertible bonds that may trade; they are
+    allowed and use the longer last-trade age because they print rarely.
+    Invalid values refuse to start the Gateway instead of falling back.
+    """
+    base = RiskLimits(cooldown_seconds=2)
+    cb = _symbol_list(environment.get("AUTOTRADE_CB_SYMBOLS"))
+    extra = _symbol_list(environment.get("AUTOTRADE_ALLOWED_SYMBOLS"))
+
+    def integer(name: str, default: int, minimum: int, maximum: int) -> int:
+        raw = environment.get(name)
+        if raw is None or raw == "":
+            return default
+        value = int(raw)
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+        return value
+
+    return replace(
+        base,
+        allowed_symbols=tuple(dict.fromkeys((*base.allowed_symbols, *extra, *cb))),
+        slow_quote_symbols=cb,
+        slow_quote_max_age_seconds=integer("AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS", 60, 5, 3600),
+        max_position_per_symbol=integer(
+            "AUTOTRADE_MAX_POSITION_PER_SYMBOL", base.max_position_per_symbol, 1, 1_000_000
+        ),
+        max_futures_order_contracts=integer("AUTOTRADE_MAX_FUTURES_ORDER_CONTRACTS", 1, 1, 10),
+        max_futures_position=integer("AUTOTRADE_MAX_FUTURES_POSITION", 2, 1, 20),
+    )
+
+
+PAPER_CONTRACTS: dict[str, ContractRef] = {
+    "2330": ContractRef("STK", "TSE", "2330"),
+    "2317": ContractRef("STK", "TSE", "2317"),
+    "0050": ContractRef("STK", "TSE", "0050"),
+    "11011": ContractRef("STK", "OTC", "11011"),
+    "TXFR1": ContractRef("FUT", "TAIFEX", "TXFR1"),
+}
+
+
 class PaperTransport:
-    """A clearly labelled local fill simulator. Prices are synthetic."""
+    """A clearly labelled local fill simulator. Prices are synthetic.
+
+    Like the broker, stocks/CBs and futures live in separate accounts.
+    Synthetic prices can be moved in PAPER mode only, to exercise strategy
+    triggers without a market.
+    """
 
     mode = "PAPER"
     account_id = "PAPER-LOCAL"
+    futures_account_id: str | None = "PAPER-FUT"
     broker_id = "LOCAL"
 
-    def __init__(self, store: IntentStore) -> None:
+    def __init__(self, store: IntentStore, prices: dict[str, Decimal] | None = None) -> None:
         self.store = store
         self.rows: dict[str, dict] = {}
-        self.position_snapshots: tuple[PositionSnapshot, ...] = ()
+        self.multipliers: dict[str, Decimal] = dict(RiskLimits().futures_multipliers)
         self.prices = {
             "2330": Decimal("1000"),
             "2317": Decimal("200"),
             "0050": Decimal("100"),
+            "11011": Decimal("100"),
+            "TXFR1": Decimal("48700"),
         }
+        for symbol, price in (prices or {}).items():
+            self.set_price(symbol, price)
 
-    def context(self, intent: Intent) -> RiskContext | None:
-        if intent.account_id != self.account_id or intent.symbol not in self.prices:
-            return None
-        # Rebuild paper cost basis from immutable executions, including after
-        # restart. This is explicitly an estimate without commission or tax.
+    @property
+    def account_ids(self) -> tuple[str, ...]:
+        return (self.account_id, self.futures_account_id or "")
+
+    def broker_id_for(self, account_id: str) -> str | None:
+        return self.broker_id if account_id in self.account_ids else None
+
+    def resolve_contract(self, symbol: str) -> ContractRef | None:
+        return PAPER_CONTRACTS.get(symbol)
+
+    def set_price(self, symbol: str, price: Decimal) -> None:
+        if symbol not in PAPER_CONTRACTS or not price.is_finite() or price <= 0:
+            raise ValueError("unknown PAPER symbol or invalid synthetic price")
+        self.prices[symbol] = price
+
+    def _book(
+        self, account_id: str
+    ) -> tuple[dict[str, tuple[int, Decimal]], dict[str, Decimal], dict[str, Decimal], Decimal]:
+        """Rebuild cost basis from immutable executions, including after restart.
+
+        This is explicitly an estimate without commission or tax. Futures are
+        keyed by product root and valued with the contract multiplier.
+        """
+        futures = account_id == self.futures_account_id
         balances: dict[str, tuple[int, Decimal]] = {}
+        marks: dict[str, Decimal] = {}
+        multipliers: dict[str, Decimal] = {}
         realized = Decimal("0")
         today = now().astimezone(ZoneInfo("Asia/Taipei")).date()
         for fill in reversed(self.store.observation_fills()):
             order = self.store.load_intent(str(fill["intent_id"]))
-            if order.account_id != self.account_id or order.operation != "PLACE":
+            if order.account_id != account_id or order.operation != "PLACE":
                 continue
+            key = (futures_root(order.symbol) or order.symbol) if futures else order.symbol
+            multiplier = (
+                self.multipliers.get(futures_root(order.symbol) or "", Decimal("1"))
+                if futures
+                else Decimal("1")
+            )
             amount = int(str(fill["quantity"])) * (1 if order.side == "BUY" else -1)
             price = Decimal(str(fill["price"]))
-            quantity, average = balances.get(order.symbol, (0, Decimal("0")))
+            marks[key] = self.prices.get(order.symbol, price)
+            multipliers[key] = multiplier
+            quantity, average = balances.get(key, (0, Decimal("0")))
             if quantity and (quantity > 0) != (amount > 0):
                 closed = min(abs(quantity), abs(amount))
                 if (
@@ -143,6 +322,7 @@ class PaperTransport:
                         Decimal(closed)
                         * (price - average)
                         * (1 if quantity > 0 else -1)
+                        * multiplier
                     )
                 remaining = quantity + amount
                 average = (
@@ -155,41 +335,64 @@ class PaperTransport:
                 average = (abs(quantity) * average + abs(amount) * price) / abs(
                     remaining
                 )
-            balances[order.symbol] = (remaining, average)
+            balances[key] = (remaining, average)
+        return balances, marks, multipliers, realized
+
+    @property
+    def position_snapshots(self) -> tuple[PositionSnapshot, ...]:
+        observed = now()
+        snapshots: list[PositionSnapshot] = []
+        for account_type, account_id in (("S", self.account_id), ("F", self.futures_account_id)):
+            if not account_id:
+                continue
+            balances, marks, multipliers, _ = self._book(account_id)
+            snapshots.extend(
+                PositionSnapshot(
+                    snapshot_id=f"paper:{uuid4()}",
+                    account_type=account_type,
+                    account_id=account_id,
+                    symbol=key,
+                    side="LONG" if quantity > 0 else "SHORT",
+                    quantity=str(abs(quantity)),
+                    average_price=str(average),
+                    market_price=str(marks[key]),
+                    unrealized_pnl=str(
+                        Decimal(quantity) * (marks[key] - average) * multipliers[key]
+                    ),
+                    observed_at=observed,
+                )
+                for key, (quantity, average) in balances.items()
+                if quantity
+            )
+        return tuple(snapshots)
+
+    def context(self, intent: Intent) -> RiskContext | None:
+        contract = self.resolve_contract(intent.symbol)
+        if contract is None or intent.symbol not in self.prices:
+            return None
+        expected = (
+            self.futures_account_id if contract.security_type == "FUT" else self.account_id
+        )
+        if intent.account_id != expected:
+            return None
+        balances, marks, multipliers, realized = self._book(intent.account_id)
         positions = {
-            symbol: RiskPosition(quantity, self.prices[symbol])
-            for symbol, (quantity, _) in balances.items()
+            key: RiskPosition(quantity, marks[key])
+            for key, (quantity, _) in balances.items()
         }
         unrealized = sum(
             (
-                Decimal(quantity) * (self.prices[symbol] - average)
-                for symbol, (quantity, average) in balances.items()
+                Decimal(quantity) * (marks[key] - average) * multipliers[key]
+                for key, (quantity, average) in balances.items()
             ),
             Decimal("0"),
         )
-        observed = now()
-        self.position_snapshots = tuple(
-            PositionSnapshot(
-                snapshot_id=f"paper:{uuid4()}",
-                account_type="S",
-                account_id=self.account_id,
-                symbol=symbol,
-                side="LONG" if quantity > 0 else "SHORT",
-                quantity=str(abs(quantity)),
-                average_price=str(average),
-                market_price=str(self.prices[symbol]),
-                unrealized_pnl=str(Decimal(quantity) * (self.prices[symbol] - average)),
-                observed_at=observed,
-            )
-            for symbol, (quantity, average) in balances.items()
-            if quantity
-        )
         return RiskContext(
-            self.prices[intent.symbol], observed, positions, realized, unrealized
+            self.prices[intent.symbol], now(), positions, realized, unrealized
         )
 
     def dispatch(self, intent: Intent) -> str:
-        if intent.account_id != self.account_id:
+        if intent.account_id not in self.account_ids:
             raise ValueError("paper account required")
         if intent.operation != "PLACE":
             target = self.rows.get(intent.target_order_id or "")
@@ -209,6 +412,15 @@ class PaperTransport:
                 )
             return str(target["order"]["id"])
         identity = f"PAPER-{uuid4()}"
+        body = cast(dict[str, Any], (intent.broker_request or {}).get("body", {}))
+        if isinstance(body.get("futures_order"), dict):
+            kind = {"oc_type": body["futures_order"].get("octype", "Auto")}
+        else:
+            kind = {
+                "order_lot": body.get("stock_order", {}).get(
+                    "order_lot", "Common" if intent.broker_request else "IntradayOdd"
+                )
+            }
         self.rows[identity] = {
             "contract": {"code": intent.symbol},
             "order": {
@@ -216,12 +428,8 @@ class PaperTransport:
                 "quantity": intent.quantity,
                 "price": intent.limit_price,
                 "action": intent.side.title(),
-                "order_lot": cast(
-                    dict[str, Any], (intent.broker_request or {}).get("body", {})
-                )
-                .get("stock_order", {})
-                .get("order_lot", "Common" if intent.broker_request else "IntradayOdd"),
-                "account": {"account_id": self.account_id, "broker_id": self.broker_id},
+                **kind,
+                "account": {"account_id": intent.account_id, "broker_id": self.broker_id},
             },
             "status": {
                 "id": identity,
@@ -271,6 +479,8 @@ class ExecutionService:
         *,
         allow_execution: bool = False,
         interval: float = 2,
+        limits: RiskLimits | None = None,
+        strategy_plugin: StrategyPlugin | None = None,
     ) -> None:
         self.store, self.transport, self.publish = store, transport, publish
         self.allow_execution, self.interval = allow_execution, interval
@@ -299,20 +509,25 @@ class ExecutionService:
         store.record_audit_event(
             None, "EXECUTION_RUNTIME_STARTED", {"mode": transport.mode}
         )
+        base = limits or RiskLimits(cooldown_seconds=2)
+        # Accounts come only from the verified transport, never from config.
+        transport.multipliers = dict(base.futures_multipliers)
         self.coordinator = OrderCoordinator(
             store,
             gate=store.trading_gate(),
-            risk=RiskEngine(
-                RiskLimits(allowed_accounts=(transport.account_id,), cooldown_seconds=2)
-            ),
+            risk=RiskEngine(replace(base, allowed_accounts=transport.account_ids)),
             risk_context_provider=transport.context,
         )
         self.worker = ExecutionWorker(store, self)
-        self.strategy = MarketStrategyRuntime(
-            self.coordinator,
-            account_id=transport.account_id,
-            broker_id=transport.broker_id,
-        )
+        self.strategy: MarketStrategyRuntime | PluginStrategyRuntime
+        if strategy_plugin is not None:
+            self.strategy = PluginStrategyRuntime(self.coordinator, strategy_plugin, transport)
+        else:
+            self.strategy = MarketStrategyRuntime(
+                self.coordinator,
+                account_id=transport.account_id,
+                broker_id=transport.broker_id,
+            )
 
     def dispatch(self, intent: Intent) -> str:
         # Revalidate the actual pending order, after all potentially slow reads.
@@ -320,12 +535,16 @@ class ExecutionService:
         context = (
             self.transport.context(evaluated) if intent.operation != "CANCEL" else None
         )
-        self._require_authority()
+        try:
+            self._require_authority()
+        except ValueError as error:
+            raise DispatchRefused(("execution_authority_expired",)) from error
         verdict = self.coordinator.risk.evaluate(
             evaluated, self.coordinator.gate, context
         )
         if not verdict.allowed:
-            raise ValueError("dispatch risk preflight rejected")
+            # Raised before any broker I/O: the order is rejected, not UNKNOWN.
+            raise DispatchRefused(verdict.reasons)
         return self.transport.dispatch(intent)
 
     def _require_authority(self) -> None:
@@ -450,10 +669,7 @@ class ExecutionService:
                             str(row["intent_id"]), "broker_readback_unavailable"
                         )
                 raise
-            context = self.strategy._context()
-            if context is None:
-                raise ValueError("market/account snapshot unavailable")
-            self.strategy.on_market(context)
+            context = self.strategy.on_tick()
             if self.coordinator.gate is Gate.ARMED:
                 self.worker.dispatch_once()
             else:
@@ -464,16 +680,14 @@ class ExecutionService:
                         )
             if now().timestamp() - self._last_account_snapshot >= 10:
                 if isinstance(self.transport, PaperTransport):
-                    self.store.record_position_snapshots(
-                        self.transport.position_snapshots
-                    )
+                    snapshots = self.transport.position_snapshots
+                    self.store.record_position_snapshots(snapshots)
                     self.store.record_audit_event(
                         None,
                         "PAPER_POSITION_VIEW",
                         {
                             "snapshot_ids": [
-                                snapshot.snapshot_id
-                                for snapshot in self.transport.position_snapshots
+                                snapshot.snapshot_id for snapshot in snapshots
                             ],
                             "observed_at": now().isoformat(),
                         },
@@ -538,7 +752,7 @@ class ExecutionService:
                 continue
             intent_id = str(row["intent_id"])
             intent = self.store.load_intent(intent_id)
-            if intent.account_id != self.transport.account_id:
+            if intent.account_id not in self.transport.account_ids:
                 continue
             status = trade["status"]
             terminal = {
@@ -633,23 +847,27 @@ class ExecutionService:
             if original is None or intent.target_order_id != order["id"]:
                 raise ValueError("command target is not bound")
             expected_side = self.store.load_intent(str(original["intent_id"])).side
+        code = trade.get("contract", {}).get("code")
         if (
             not isinstance(account, dict)
             or account.get("account_id") != intent.account_id
-            or account.get("broker_id") != self.transport.broker_id
-            or trade.get("contract", {}).get("code") != intent.symbol
+            or account.get("broker_id") != self.transport.broker_id_for(intent.account_id)
+            or not self._same_contract(intent.symbol, code)
             or order.get("action", "").upper() != expected_side
         ):
             raise ValueError("broker account or instrument mismatch")
         if intent.operation != "PLACE":
             return
-        expected_lot = (
-            cast(dict[str, Any], (intent.broker_request or {}).get("body", {}))
-            .get("stock_order", {})
-            .get("order_lot", "Common" if intent.broker_request else "IntradayOdd")
-        )
-        if order.get("order_lot") != expected_lot:
-            raise ValueError("broker lot mismatch")
+        body = cast(dict[str, Any], (intent.broker_request or {}).get("body", {}))
+        if isinstance(body.get("futures_order"), dict):
+            if "order_lot" in order:
+                raise ValueError("broker lot mismatch")
+        else:
+            expected_lot = body.get("stock_order", {}).get(
+                "order_lot", "Common" if intent.broker_request else "IntradayOdd"
+            )
+            if order.get("order_lot") != expected_lot:
+                raise ValueError("broker lot mismatch")
         quantities = {intent.quantity}
         for row in self.store.observation_orders():
             command = self.store.load_intent(str(row["intent_id"]))
@@ -722,6 +940,15 @@ class ExecutionService:
             raise ValueError("excess broker executions")
         if status.get("status") == "Filled" and total != effective_quantity:
             raise ValueError("incomplete filled snapshot")
+
+    def _same_contract(self, symbol: str, code: object) -> bool:
+        """A rolling futures alias (TXFR1) may be reported as its month code."""
+        if code == symbol:
+            return True
+        if not isinstance(code, str) or not symbol.endswith(("R1", "R2")):
+            return False
+        contract = self.transport.resolve_contract(symbol)
+        return contract is not None and contract.target_code == code
 
     def trade_document(self, intent_id: str) -> dict:
         row = next(

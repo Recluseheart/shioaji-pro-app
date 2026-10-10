@@ -1428,6 +1428,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, OSError):
                 self._json(HTTPStatus.CONFLICT, {"message": "execution preflight or control request failed"})
             return
+        if path == "/api/v1/autotrade/paper/prices":
+            # Synthetic prices exist only in PAPER mode, to exercise strategy
+            # triggers without a market. SIM prices always come from the broker.
+            transport = getattr(runtime, "transport", None)
+            if runtime is None or getattr(transport, "mode", None) != "PAPER":
+                self._json(HTTPStatus.FORBIDDEN, {"message": "synthetic prices exist only in PAPER mode"})
+                return
+            try:
+                price_request = self._json_object()
+                symbol, price = str(price_request["symbol"]), Decimal(str(price_request["price"]))
+                transport.set_price(symbol, price)  # type: ignore[union-attr]
+            except (KeyError, TypeError, ValueError, ArithmeticError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "invalid PAPER symbol or price"})
+                return
+            getattr(self.server, "order_store").record_audit_event(
+                None, "PAPER_PRICE_SET", {"symbol": symbol, "price": str(price)},
+            )
+            self._json(HTTPStatus.OK, {"symbol": symbol, "price": str(price), "source": "PAPER_SYNTHETIC"})
+            return
         if path == f"/api/v1/autotrade/strategies/{strategy_runtime.strategy_id}/configure":
             if runtime is None:
                 self._json(HTTPStatus.FORBIDDEN, {"message": "market strategy is not configured"})
@@ -1742,12 +1761,28 @@ def _create_server(
             server.server_close()
             store.close()
             raise ValueError("observer cannot own an execution runtime")
-        from .execution_service import ExecutionService, PaperTransport, SidecarTransport
+        from .execution_service import (
+            ExecutionService,
+            PaperTransport,
+            SidecarTransport,
+            risk_limits_from_environment,
+        )
+        from .strategy_plugins import load_private_strategy
         try:
+            limits = risk_limits_from_environment(os.environ)
+            strategy_name = os.getenv("AUTOTRADE_STRATEGY", "price-threshold")
+            plugin = None
+            if strategy_name != "price-threshold":
+                directory = os.getenv("AUTOTRADE_PRIVATE_STRATEGY_DIR")
+                if not directory:
+                    raise ValueError("AUTOTRADE_PRIVATE_STRATEGY_DIR is required for a private strategy")
+                plugin = load_private_strategy(directory, strategy_name)
             transport = (PaperTransport(store) if selected_runtime == "PAPER" else
-                         SidecarTransport(resolved_upstream_origin, os.getenv("AUTOTRADE_SIM_ACCOUNT_ID")))
+                         SidecarTransport(resolved_upstream_origin, os.getenv("AUTOTRADE_SIM_ACCOUNT_ID"),
+                                          os.getenv("AUTOTRADE_SIM_FUTURES_ACCOUNT_ID")))
             runtime = ExecutionService(store, transport, getattr(server, "autotrade_event_hub").publish,
-                allow_execution=selected_runtime == "PAPER" or os.getenv("AUTOTRADE_ALLOW_SIMULATION_ORDERS") == "1")
+                allow_execution=selected_runtime == "PAPER" or os.getenv("AUTOTRADE_ALLOW_SIMULATION_ORDERS") == "1",
+                limits=limits, strategy_plugin=plugin)
             runtime.strategy.execution_mode = selected_runtime
             if selected_runtime == "PAPER":
                 from .paper_api import PaperConnectionMonitor

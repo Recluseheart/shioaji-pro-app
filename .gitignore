@@ -28,3 +28,7 @@ src-tauri/gen/schemas/
 
 # Isolated development journals and owner locks
 .runtime/
+
+# Private strategy logic must never be committed (see docs/architecture/private-strategies.md)
+private_strategies/
+autotrade-private-strategies/

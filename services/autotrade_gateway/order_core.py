@@ -9,6 +9,7 @@ risk-evaluated and persisted before it could ever reach a broker.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import asdict, dataclass, field, replace
 from copy import deepcopy
@@ -346,6 +347,7 @@ class IntentStore(Protocol):
     def recover(self) -> int: ...
     def claim_outbox(self) -> str | None: ...
     def mark_delivery_unknown(self, intent_id: str, reason: str) -> None: ...
+    def mark_dispatch_refused(self, intent_id: str, reasons: tuple[str, ...]) -> None: ...
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None: ...
     def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None: ...
     def record_terminal_callback(
@@ -409,6 +411,17 @@ class RiskLimits:
     max_price_deviation: Decimal = Decimal("0.10")
     max_orders_per_minute: int = 30
     cooldown_seconds: float = 0
+    # Thinly traded symbols (e.g. convertible bonds) may print only every few
+    # seconds; their last-trade time is checked against a longer, explicit age.
+    slow_quote_symbols: tuple[str, ...] = ()
+    slow_quote_max_age_seconds: int = 60
+    # Futures are limited by contract count and contract value, never by the
+    # share-based stock limits above. Only explicitly allowed roots may trade.
+    allowed_futures_roots: tuple[str, ...] = ("TXF",)
+    futures_multipliers: tuple[tuple[str, Decimal], ...] = (("TXF", Decimal("200")),)
+    max_futures_order_contracts: int = 1
+    max_futures_position: int = 2
+    max_futures_notional: Decimal = Decimal("25000000")
 
     def document(self) -> dict[str, object]:
         return {
@@ -423,34 +436,90 @@ class RiskLimits:
             "max_price_deviation": str(self.max_price_deviation),
             "max_orders_per_minute": self.max_orders_per_minute,
             "cooldown_seconds": self.cooldown_seconds,
+            "slow_quote_symbols": list(self.slow_quote_symbols),
+            "slow_quote_max_age_seconds": self.slow_quote_max_age_seconds,
+            "allowed_futures_roots": list(self.allowed_futures_roots),
+            "futures_multipliers": {root: str(value) for root, value in self.futures_multipliers},
+            "max_futures_order_contracts": self.max_futures_order_contracts,
+            "max_futures_position": self.max_futures_position,
+            "max_futures_notional": str(self.max_futures_notional),
         }
 
+    def futures_multiplier(self, root: str | None) -> Decimal | None:
+        return dict(self.futures_multipliers).get(root or "")
 
-def risk_quantity(intent: Intent) -> int:
-    """Stock risk uses shares; retain the original broker quantity in the intent.
+
+_FUTURES_CODE = re.compile(r"([A-Z]{3})(?:[A-L][0-9]|R[12])")
+
+
+def futures_root(symbol: str) -> str | None:
+    """Return the product root of a monthly (TXFJ6) or rolling (TXFR1) code."""
+    match = _FUTURES_CODE.fullmatch(symbol or "")
+    return match.group(1) if match else None
+
+
+@dataclass(frozen=True)
+class InstrumentProfile:
+    """Risk units for one intent: shares for stocks/CBs, contracts for futures."""
+
+    kind: str
+    units: int
+    multiplier: Decimal = Decimal("1")
+    root: str | None = None
+
+    @property
+    def is_futures(self) -> bool:
+        return self.kind == "FUTURES"
+
+    def position_key(self, symbol: str) -> str:
+        # All months of one futures product share a single position limit.
+        return self.root if self.is_futures and self.root else symbol
+
+
+def instrument_profile(intent: Intent, limits: RiskLimits | None = None) -> InstrumentProfile:
+    """Map the immutable broker request to risk units; unknown shapes fail.
 
     Domain-only intents are already expressed in shares. HTTP stock requests
-    carry their lot type; unsupported instruments must not borrow stock units.
+    carry their lot type (one board lot is 1,000 shares or 1,000 CB units);
+    futures requests are counted in contracts with the product multiplier.
     """
     if isinstance(intent.quantity, bool) or not isinstance(intent.quantity, int):
         raise ValueError("quantity must be an integer")
     request = intent.broker_request
     if request is None:
-        return intent.quantity
+        return InstrumentProfile("STOCK", intent.quantity)
     body = request.get("body")
     if not isinstance(body, dict):
         raise ValueError("missing broker body")
-    stock = body.get("stock_order")
-    if not isinstance(stock, dict):
-        raise ValueError("instrument risk model unavailable")
-    if stock.get("quantity") != intent.quantity:
-        raise ValueError("broker quantity differs from intent")
-    lot = stock.get("order_lot", "Common")
-    if lot in {"Common", "Fixing"}:
-        return intent.quantity * 1000
-    if lot in {"Odd", "IntradayOdd"}:
-        return intent.quantity
-    raise ValueError("unsupported stock lot")
+    stock, futures = body.get("stock_order"), body.get("futures_order")
+    if isinstance(stock, dict) and futures is None:
+        if stock.get("quantity") != intent.quantity:
+            raise ValueError("broker quantity differs from intent")
+        lot = stock.get("order_lot", "Common")
+        if lot in {"Common", "Fixing"}:
+            return InstrumentProfile("STOCK", intent.quantity * 1000)
+        if lot in {"Odd", "IntradayOdd"}:
+            return InstrumentProfile("STOCK", intent.quantity)
+        raise ValueError("unsupported stock lot")
+    if isinstance(futures, dict) and stock is None:
+        if futures.get("quantity") != intent.quantity:
+            raise ValueError("broker quantity differs from intent")
+        contract = body.get("contract")
+        if not isinstance(contract, dict) or contract.get("code") != intent.symbol:
+            raise ValueError("futures contract differs from intent")
+        if contract.get("security_type", "FUT") != "FUT":
+            raise ValueError("futures order requires a futures contract")
+        root = futures_root(intent.symbol)
+        multiplier = (limits or RiskLimits()).futures_multiplier(root)
+        if multiplier is None:
+            raise ValueError("unsupported futures product")
+        return InstrumentProfile("FUTURES", intent.quantity, multiplier, root)
+    raise ValueError("instrument risk model unavailable")
+
+
+def risk_quantity(intent: Intent) -> int:
+    """Shares for stock intents and contracts for futures intents."""
+    return instrument_profile(intent).units
 
 
 class RiskEngine:
@@ -469,11 +538,15 @@ class RiskEngine:
         if gate is not Gate.ARMED:
             reasons.append("trading_gate_not_armed")
         if intent.operation == "PLACE":
+            profile: InstrumentProfile | None
             try:
-                quantity = risk_quantity(intent)
+                profile = instrument_profile(intent, self.limits)
+                quantity = profile.units
             except ValueError:
+                profile = None
                 quantity = 0
                 reasons.append("instrument_risk_unavailable")
+            futures = profile is not None and profile.is_futures
             # Account numbers do not encode their environment.  The caller
             # must populate this allowlist only from a verified simulation
             # sidecar discovery; a cosmetic `SIM-` prefix is not evidence.
@@ -481,13 +554,22 @@ class RiskEngine:
                 reasons.append("simulation_account_not_allowed")
             if not intent.symbol or not intent.symbol.isalnum():
                 reasons.append("invalid_symbol")
+            elif futures:
+                assert profile is not None
+                if profile.root not in self.limits.allowed_futures_roots:
+                    reasons.append("symbol_not_allowed")
             elif intent.symbol not in self.limits.allowed_symbols and intent.symbol != "COMBO":
                 reasons.append("symbol_not_allowed")
             if intent.side not in {"BUY", "SELL"}:
                 reasons.append("invalid_side")
+            quantity_limit = (
+                self.limits.max_futures_order_contracts if futures else self.limits.max_order_quantity
+            )
+            notional_limit = self.limits.max_futures_notional if futures else self.limits.max_order_notional
+            multiplier = profile.multiplier if profile else Decimal("1")
             if quantity <= 0:
                 reasons.append("invalid_quantity")
-            elif quantity > self.limits.max_order_quantity:
+            elif quantity > quantity_limit:
                 reasons.append("quantity_limit_exceeded")
             if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
                 reasons.append("invalid_order_price_type")
@@ -496,12 +578,12 @@ class RiskEngine:
                     price = Decimal(intent.limit_price)
                     if not price.is_finite() or price <= 0:
                         reasons.append("invalid_limit_price")
-                    elif price * quantity > self.limits.max_order_notional:
+                    elif price * quantity * multiplier > notional_limit:
                         reasons.append("notional_limit_exceeded")
                 except (InvalidOperation, ValueError):
                     reasons.append("invalid_limit_price")
-            if gate is Gate.ARMED and quantity > 0:
-                reasons.extend(self._dynamic_reasons(intent, context, quantity))
+            if gate is Gate.ARMED and quantity > 0 and profile is not None:
+                reasons.extend(self._dynamic_reasons(intent, context, profile))
         elif intent.operation in {"CANCEL", "UPDATE_PRICE", "UPDATE_QUANTITY"}:
             if not intent.target_order_id:
                 reasons.append("target_order_id_required")
@@ -525,7 +607,9 @@ class RiskEngine:
             reasons.append("strategy_identity_required")
         return Verdict(not reasons, tuple(reasons))
 
-    def _dynamic_reasons(self, intent: Intent, context: RiskContext | None, quantity: int) -> list[str]:
+    def _dynamic_reasons(
+        self, intent: Intent, context: RiskContext | None, profile: InstrumentProfile,
+    ) -> list[str]:
         """Evaluate limits that require an authoritative market/account snapshot.
 
         A future execution gateway must supply this snapshot from its durable
@@ -550,6 +634,13 @@ class RiskEngine:
         timestamp = now()
         quote_price = context.quote_price
         quote_at = context.quote_at
+        quantity = profile.units
+        multiplier = profile.multiplier
+        max_quote_age = (
+            self.limits.slow_quote_max_age_seconds
+            if intent.symbol in self.limits.slow_quote_symbols
+            else self.limits.max_quote_age_seconds
+        )
         if (
             quote_price is None
             or not quote_price.is_finite()
@@ -557,7 +648,7 @@ class RiskEngine:
             or quote_at is None
             or quote_at.tzinfo is None
             or (timestamp - quote_at).total_seconds() < -1
-            or (timestamp - quote_at).total_seconds() > self.limits.max_quote_age_seconds
+            or (timestamp - quote_at).total_seconds() > max_quote_age
         ):
             reasons.append("stale_quote")
         else:
@@ -571,20 +662,34 @@ class RiskEngine:
                     reasons.append("invalid_limit_price")
             if intent.order_price_type == "LMT":
                 assert limit_price is not None
-                proposed_notional = Decimal(quantity) * limit_price
+                proposed_notional = Decimal(quantity) * limit_price * multiplier
             else:
-                proposed_notional = Decimal(quantity) * quote_price
-            if proposed_notional > self.limits.max_order_notional:
+                proposed_notional = Decimal(quantity) * quote_price * multiplier
+            notional_limit = (
+                self.limits.max_futures_notional if profile.is_futures else self.limits.max_order_notional
+            )
+            if proposed_notional > notional_limit:
                 reasons.append("notional_limit_exceeded")
-            current_quantity = context.positions.get(intent.symbol, RiskPosition()).quantity
+            key = profile.position_key(intent.symbol)
+            current_quantity = context.positions.get(key, RiskPosition()).quantity
             projected_quantity = current_quantity + (quantity if intent.side == "BUY" else -quantity)
-            if abs(projected_quantity) > self.limits.max_position_per_symbol:
+            position_limit = (
+                self.limits.max_futures_position if profile.is_futures else self.limits.max_position_per_symbol
+            )
+            if abs(projected_quantity) > position_limit:
                 reasons.append("position_limit_exceeded")
             gross_exposure = context.gross_exposure if context.gross_exposure is not None else sum(
-                abs(position.quantity) * position.market_price
+                abs(position.quantity) * position.market_price * multiplier
                 for position in context.positions.values()
             )
-            if gross_exposure + proposed_notional > self.limits.max_gross_exposure:
+            exposure_limit = (
+                self.limits.max_futures_notional if profile.is_futures else self.limits.max_gross_exposure
+            )
+            # Only the part of the order that grows the absolute position adds
+            # exposure; a closing order must never be blocked by this limit.
+            added_units = max(0, abs(projected_quantity) - abs(current_quantity))
+            added_exposure = proposed_notional * Decimal(added_units) / Decimal(quantity)
+            if added_units and gross_exposure + added_exposure > exposure_limit:
                 reasons.append("gross_exposure_limit_exceeded")
         if context.realized_pnl is None or context.unrealized_pnl is None:
             reasons.append("pnl_unavailable")
@@ -613,6 +718,9 @@ class RiskContext:
     realized_pnl: Decimal | None = Decimal("0")
     unrealized_pnl: Decimal | None = Decimal("0")
     gross_exposure: Decimal | None = None
+    # Best bid/ask from the same snapshot; informational for strategies only.
+    quote_bid: Decimal | None = None
+    quote_ask: Decimal | None = None
 
 
 class SQLiteIntentStore:
@@ -910,6 +1018,32 @@ class SQLiteIntentStore:
                 VALUES (?, ?, 'DELIVERY_UNKNOWN', ?, ?)""",
                 (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
             )
+
+    def mark_dispatch_refused(self, intent_id: str, reasons: tuple[str, ...]) -> None:
+        """Reject a leased order whose final preflight failed before any broker I/O.
+
+        Only an APPROVED intent with a LEASED outbox entry qualifies; anything
+        else may already have reached the broker and is marked UNKNOWN.
+        """
+        timestamp = now().isoformat()
+        with self._lock, self.connection:
+            changed = self.connection.execute(
+                "UPDATE execution_outbox SET state='REFUSED', updated_at=? WHERE intent_id=? AND state='LEASED' "
+                "AND EXISTS (SELECT 1 FROM order_intents WHERE intent_id=? AND status='APPROVED')",
+                (timestamp, intent_id, intent_id),
+            ).rowcount
+            if changed == 1:
+                self.connection.execute(
+                    "UPDATE order_intents SET status=?, risk_reasons_json=?, updated_at=? WHERE intent_id=?",
+                    (Status.RISK_REJECTED.value, json.dumps(list(reasons)), timestamp, intent_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (?, ?, 'DISPATCH_REFUSED', ?, ?)""",
+                    (str(uuid4()), intent_id, json.dumps({"risk_reasons": list(reasons)}, separators=(",", ":")), timestamp),
+                )
+        if changed != 1:
+            self.mark_delivery_unknown(intent_id, "dispatch_refusal_state_mismatch")
 
     def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None:
         intent = self.load_intent(intent_id)

@@ -215,6 +215,28 @@ class PostgresIntentStore:
                 (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
             )
 
+    def mark_dispatch_refused(self, intent_id: str, reasons: tuple[str, ...]) -> None:
+        """Reject a leased order whose final preflight failed before any broker I/O."""
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            changed = self.connection.execute(
+                "UPDATE execution_outbox SET state='REFUSED', updated_at=%s WHERE intent_id=%s AND state='LEASED' "
+                "AND EXISTS (SELECT 1 FROM order_intents WHERE intent_id=%s AND status='APPROVED')",
+                (timestamp, intent_id, intent_id),
+            ).rowcount
+            if changed == 1:
+                self.connection.execute(
+                    "UPDATE order_intents SET status=%s, risk_reasons_json=%s, updated_at=%s WHERE intent_id=%s",
+                    (Status.RISK_REJECTED.value, json.dumps(list(reasons)), timestamp, intent_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (%s, %s, 'DISPATCH_REFUSED', %s, %s)""",
+                    (str(uuid4()), intent_id, json.dumps({"risk_reasons": list(reasons)}, separators=(",", ":")), timestamp),
+                )
+        if changed != 1:
+            self.mark_delivery_unknown(intent_id, "dispatch_refusal_state_mismatch")
+
     def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None:
         intent = self.load_intent(intent_id)
         if intent.operation == "PLACE" or intent.target_order_id != broker_order_id:

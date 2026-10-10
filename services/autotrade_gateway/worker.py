@@ -11,6 +11,14 @@ class Dispatcher(Protocol):
     def dispatch(self, intent: Intent) -> str: ...
 
 
+class DispatchRefused(ValueError):
+    """Raised only before any broker I/O: the order was definitely not sent."""
+
+    def __init__(self, reasons: tuple[str, ...]) -> None:
+        super().__init__(",".join(reasons))
+        self.reasons = reasons
+
+
 class ExecutionWorker:
     def __init__(self, store: IntentStore, dispatcher: Dispatcher) -> None:
         self.store = store
@@ -27,6 +35,10 @@ class ExecutionWorker:
                 self.store.mark_pending_submit(intent_id, broker_order_id)
             else:
                 self.store.mark_operation_pending(intent_id, broker_order_id)
+        except DispatchRefused as refused:
+            # The final preflight ran before the broker call; nothing was sent,
+            # so this is a rejection rather than an ambiguous delivery.
+            self.store.mark_dispatch_refused(intent_id, refused.reasons)
         except Exception as error:
             # A timeout/crash never implies delivery did not happen.
             self.store.mark_delivery_unknown(intent_id, f"dispatch_uncertain:{type(error).__name__}")

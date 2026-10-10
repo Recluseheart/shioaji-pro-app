@@ -3,21 +3,33 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import cast
+from typing import Callable, cast
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
 from .broker_http import HttpOpener, ShioajiHttpDispatcher
-from .order_core import PositionSnapshot, RiskContext, RiskPosition
+from .order_core import PositionSnapshot, RiskContext, RiskPosition, futures_root
+
+TAIPEI = ZoneInfo("Asia/Taipei")
+_CONTRACT_CODE = re.compile(r"[A-Z0-9]{2,12}")
 
 
 @dataclass(frozen=True)
 class SimulationStockAccount:
     """Minimal broker identity retained in memory; no person or credential data."""
+
+    broker_id: str
+    account_id: str
+
+
+@dataclass(frozen=True)
+class SimulationFuturesAccount:
+    """A verified SIM futures/options account identity (account_type F)."""
 
     broker_id: str
     account_id: str
@@ -30,6 +42,25 @@ class SimulationAccount:
     account_type: str
     broker_id: str
     account_id: str
+
+
+@dataclass(frozen=True)
+class ContractRef:
+    """The broker's own contract identity; never inferred from a symbol shape."""
+
+    security_type: str
+    exchange: str
+    code: str
+    target_code: str | None = None
+
+    def wire(self) -> dict[str, object]:
+        return {
+            "security_type": self.security_type,
+            "region": "TW",
+            "exchange": self.exchange,
+            "code": self.code,
+            "target_code": self.target_code,
+        }
 
 
 class SimulationSnapshotProvider:
@@ -49,6 +80,28 @@ class SimulationSnapshotProvider:
             for account in self.simulation_accounts()
             if account.account_type == "S"
         )
+
+    def simulation_futures_accounts(self) -> tuple[SimulationFuturesAccount, ...]:
+        return tuple(
+            SimulationFuturesAccount(account.broker_id, account.account_id)
+            for account in self.simulation_accounts()
+            if account.account_type == "F"
+        )
+
+    def contract(self, code: str) -> ContractRef | None:
+        """Resolve exchange/security type from the sidecar's contract table."""
+        if not _CONTRACT_CODE.fullmatch(code or ""):
+            return None
+        value = self._request(f"/api/v1/data/contracts/{code}")
+        if not isinstance(value, dict) or value.get("code") != code:
+            return None
+        security_type, exchange = value.get("security_type"), value.get("exchange")
+        target = value.get("target_code")
+        if security_type not in {"STK", "FUT"} or not isinstance(exchange, str) or not exchange:
+            return None
+        if target is not None and (not isinstance(target, str) or not _CONTRACT_CODE.fullmatch(target)):
+            return None
+        return ContractRef(str(security_type), exchange, code, target)
 
     def simulation_accounts(self) -> tuple[SimulationAccount, ...]:
         """Discover only accounts from an already-authenticated SIM session."""
@@ -108,18 +161,49 @@ class SimulationSnapshotProvider:
         return tuple(snapshots)
 
     def stock_risk_context(self, account: SimulationStockAccount, symbol: str, *, exchange: str = "TSE") -> RiskContext | None:
-        """Return current stock position/quote facts, never a permissive fallback."""
-        body = {"account_type": "S", "broker_id": account.broker_id, "account_id": account.account_id}
-        positions = self._request("/api/v1/portfolio/position_unit", {**body, "unit": "Share"})
-        snapshots = self._request("/api/v1/data/snapshots", {"contracts": [{
-            "security_type": "STK", "region": "TW", "exchange": exchange, "code": symbol, "target_code": None,
-        }]})
+        """Return current stock/CB position (shares) and quote facts, never a permissive fallback."""
+        return self._risk_context(
+            "S", account.broker_id, account.account_id,
+            ContractRef("STK", exchange, symbol), unit="Share", multiplier=Decimal("1"),
+        )
+
+    def futures_risk_context(
+        self, account: SimulationFuturesAccount, contract: ContractRef, *, multiplier: Decimal,
+    ) -> RiskContext | None:
+        """Return futures positions in contracts, aggregated per product root.
+
+        Monthly codes (TXFJ6) and rolling aliases (TXFR1) of one product share
+        a single position limit, so positions are keyed by the root (``TXF``).
+        Exposure is contract value: contracts x price x multiplier.
+        """
+        if contract.security_type != "FUT":
+            return None
+        return self._risk_context(
+            "F", account.broker_id, account.account_id, contract,
+            unit="Common", multiplier=multiplier, key=futures_root,
+        )
+
+    def _risk_context(
+        self,
+        account_type: str,
+        broker_id: str,
+        account_id: str,
+        contract: ContractRef,
+        *,
+        unit: str,
+        multiplier: Decimal,
+        key: Callable[[str], str | None] = lambda code: code,
+    ) -> RiskContext | None:
+        body = {"account_type": account_type, "broker_id": broker_id, "account_id": account_id}
+        positions = self._request("/api/v1/portfolio/position_unit", {**body, "unit": unit})
+        snapshots = self._request("/api/v1/data/snapshots", {"contracts": [contract.wire()]})
         if not isinstance(positions, list) or not isinstance(snapshots, list):
             return None
-        realized = self.realized_pnl(account)
+        realized = self.realized_pnl(account_type, broker_id, account_id)
         if realized is None:
             return None
-        snapshot = next((item for item in snapshots if isinstance(item, dict) and item.get("code") == symbol), None)
+        quoted = {contract.code, contract.target_code}
+        snapshot = next((item for item in snapshots if isinstance(item, dict) and item.get("code") in quoted), None)
         if not isinstance(snapshot, dict):
             return None
         quote = self._decimal(snapshot.get("close"))
@@ -135,23 +219,26 @@ class SimulationSnapshotProvider:
             quantity = position.get("quantity")
             price = self._decimal(position.get("last_price")) or self._decimal(position.get("price"))
             pnl = self._signed_decimal(position.get("pnl"))
+            position_key = key(position["code"])
             if (not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 0
-                    or price is None or price <= 0 or pnl is None
+                    or price is None or price <= 0 or pnl is None or position_key is None
                     or position.get("direction") not in {"Buy", "Sell"}):
                 return None
             signed = -quantity if position.get("direction") == "Sell" else quantity
-            previous = facts.get(position["code"], RiskPosition())
-            facts[position["code"]] = RiskPosition(previous.quantity + signed, price)
+            previous = facts.get(position_key, RiskPosition())
+            facts[position_key] = RiskPosition(previous.quantity + signed, price)
             unrealized += pnl
-            gross += abs(quantity) * price
+            gross += abs(quantity) * price * multiplier
         return RiskContext(quote_price=quote, quote_at=quote_at, positions=facts,
-                           realized_pnl=realized, unrealized_pnl=unrealized, gross_exposure=gross)
+                           realized_pnl=realized, unrealized_pnl=unrealized, gross_exposure=gross,
+                           quote_bid=self._decimal(snapshot.get("buy_price")) or None,
+                           quote_ask=self._decimal(snapshot.get("sell_price")) or None)
 
-    def realized_pnl(self, account: SimulationStockAccount) -> Decimal | None:
+    def realized_pnl(self, account_type: str, broker_id: str, account_id: str) -> Decimal | None:
         """Use today's SIM realized-trade list, never the empty summary fallback."""
-        day = datetime.now(ZoneInfo("Asia/Taipei")).date()
+        day = datetime.now(TAIPEI).date()
         rows = self._request("/api/v1/portfolio/profit_loss", {
-            "account_type": "S", "broker_id": account.broker_id, "account_id": account.account_id,
+            "account_type": account_type, "broker_id": broker_id, "account_id": account_id,
             "begin_date": day.isoformat(), "end_date": day.isoformat(),
         })
         if not isinstance(rows, list):
@@ -242,4 +329,8 @@ class SimulationSnapshotProvider:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        # Sidecar 1.7.5 snapshots report naive Taiwan market wall-clock time
+        # (an OTC print at 10:36 falls inside the 09:00-13:30 session).  Read
+        # as UTC, every fresh quote would appear eight hours in the future and
+        # the Risk Engine would reject all SIM orders as stale.
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=TAIPEI)

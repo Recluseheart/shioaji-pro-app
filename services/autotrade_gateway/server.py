@@ -35,6 +35,13 @@ from .order_core import (
     Source,
     Status,
 )
+from .observer_metrics import (
+    pending_exposure,
+    reconciliation_notes,
+    risk_usage_document,
+    run_performance_document,
+    today_document,
+)
 from .simulation_snapshot import SimulationSnapshotProvider
 from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor
 from .reconciliation import ReconciliationRefresher, SimulationTradeProvider
@@ -237,6 +244,15 @@ def strategy_control_action(path: str) -> str | None:
     return action if path.startswith(prefix) and action in {"start", "pause", "resume", "stop"} else None
 
 
+def reconciliation_note_intent_id(path: str) -> str | None:
+    """Return the intent id for recording an operator reconciliation note."""
+    prefix, suffix = "/api/v1/autotrade/reconciliation/", "/note"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    intent_id = path[len(prefix):-len(suffix)]
+    return intent_id if re.fullmatch(r"[A-Za-z0-9-]{1,128}", intent_id) else None
+
+
 def reconciliation_refresh_intent_id(path: str) -> str | None:
     """Return the exact durable intent id for the narrow refresh operation."""
     prefix = "/api/v1/autotrade/reconciliation/"
@@ -409,13 +425,18 @@ def latest_risk_verdict(orders: list[dict[str, object]]) -> dict[str, object] | 
 
 
 def reconciliation_document(store: IntentStore, orders: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Join open reconciliation evidence to immutable order observations."""
+    """Join open reconciliation evidence and operator notes to order observations."""
     cases = {
         case["intent_id"]: case for case in store.observation_reconciliation_cases()
         if isinstance(case.get("intent_id"), str)
     }
+    notes = reconciliation_notes(store)
     return [
-        {**item, "reconciliation_case": cases.get(item.get("intent_id"))}
+        {
+            **item,
+            "reconciliation_case": cases.get(item.get("intent_id")),
+            "operator_note": notes.get(str(item.get("intent_id"))),
+        }
         for item in orders if item["status"] in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}
     ]
 
@@ -441,38 +462,32 @@ def decisions_document(store: IntentStore, orders: list[dict[str, object]]) -> l
 
 def orders_document(store: IntentStore) -> list[dict[str, object]]:
     """Attach only broker-confirmed fill summaries to immutable order facts."""
-    summaries: dict[str, dict[str, int]] = {}
+    summaries: dict[str, dict[str, object]] = {}
     for fill in store.observation_fills():
         intent_id = fill.get("intent_id")
         quantity = fill.get("quantity")
         if not isinstance(intent_id, str) or not isinstance(quantity, int) or quantity <= 0:
             continue
-        summary = summaries.setdefault(intent_id, {"filled_quantity": 0, "fill_count": 0})
-        summary["filled_quantity"] += quantity
-        summary["fill_count"] += 1
-    return [
-        {**order, **summaries.get(str(order.get("intent_id")), {"filled_quantity": 0, "fill_count": 0})}
-        for order in store.observation_orders()
-    ]
-
-
-def risk_usage_document(
-    orders: list[dict[str, object]], fills: list[dict[str, object]], reconciliation: list[dict[str, object]],
-) -> dict[str, object]:
-    """Report only durable risk-adjacent usage, not an inferred account snapshot."""
-    confirmed_quantities = [
-        quantity for fill in fills for quantity in [fill.get("quantity")]
-        if isinstance(quantity, int) and quantity > 0
-    ]
-    return {
-        "intent_count": len(orders),
-        "confirmed_fill_count": len(confirmed_quantities),
-        "confirmed_filled_quantity": sum(confirmed_quantities),
-        "reconciliation_count": len(reconciliation),
-        # Daily loss, positions, and gross exposure require a broker-backed
-        # account snapshot; this fixed SIM gateway deliberately does not infer it.
-        "authoritative_remaining_available": False,
-    }
+        summary = summaries.setdefault(intent_id, {"filled_quantity": 0, "fill_count": 0, "_value": Decimal("0")})
+        summary["filled_quantity"] = int(str(summary["filled_quantity"])) + quantity
+        summary["fill_count"] = int(str(summary["fill_count"])) + 1
+        try:
+            summary["_value"] = Decimal(str(summary["_value"])) + Decimal(str(fill.get("price"))) * quantity
+        except (ArithmeticError, ValueError):
+            pass
+    documents: list[dict[str, object]] = []
+    for order in store.observation_orders():
+        found = summaries.get(str(order.get("intent_id")))
+        if found is None:
+            documents.append({**order, "filled_quantity": 0, "fill_count": 0})
+            continue
+        filled = int(str(found["filled_quantity"]))
+        value = Decimal(str(found["_value"]))
+        documents.append({
+            **order, "filled_quantity": filled, "fill_count": found["fill_count"],
+            "avg_fill_price": format((value / filled).normalize(), "f") if filled else None,
+        })
+    return documents
 
 
 def overview_document(
@@ -481,6 +496,7 @@ def overview_document(
     coordinator: OrderCoordinator | None = None,
     capability_mode: str = "OPERATOR",
     connection: ConnectionObservation | None = None,
+    execution: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Read model for the Autotrade panels.
 
@@ -494,7 +510,12 @@ def overview_document(
     runs = strategy_runs_document(store) if store is not None else []
     decisions = decisions_document(store, orders) if store is not None else []
     reconciliation = reconciliation_document(store, orders) if store is not None else []
+    limits = coordinator.risk.limits if coordinator else None
+    account = performance_document(store)
+    pending = pending_exposure(store, orders, limits or RiskLimits()) if store is not None else Decimal("0")
     return {
+        "runtime": execution or {"mode": "OBSERVE", "execution_available": False, "running": False},
+        "today": today_document(orders),
         "health": health_document(
             strategy_runtime, coordinator.gate if coordinator else Gate.DISARMED, capability_mode, connection,
         ),
@@ -510,13 +531,16 @@ def overview_document(
             "limits_source": "gateway_static_simulation_v1" if coordinator else "not_configured",
             "limits": coordinator.risk.limits.document() if coordinator else {},
             "last_verdict": latest_risk_verdict(decisions),
-            "usage": risk_usage_document(orders, fills, reconciliation),
+            "usage": risk_usage_document(
+                orders, fills, reconciliation, limits=limits, account=account, pending=pending,
+            ),
         },
         "reconciliation": reconciliation,
         "performance": {
             "run_count": len(runs),
             "filled_order_count": len({fill["intent_id"] for fill in fills}),
-            **performance_document(store),
+            **account,
+            "runs": run_performance_document(store, limits) if store is not None else [],
         },
     }
 
@@ -1272,6 +1296,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     getattr(self.server, "order_coordinator", None),
                     "OBSERVER" if getattr(self.server, "observer_mode", False) else "OPERATOR",
                     connection,
+                    runtime.document() if (runtime := getattr(self.server, "execution_service", None)) else None,
                 ),
             )
             return
@@ -1464,6 +1489,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         if intent_id := reconciliation_refresh_intent_id(path):
             self._reconciliation_refresh(intent_id)
+            return
+        if intent_id := reconciliation_note_intent_id(path):
+            # Records the operator's conclusion only; it never changes the order
+            # state, resends anything, or contacts the broker.
+            store = getattr(self.server, "order_store")
+            try:
+                note_request = self._json_object()
+                conclusion = str(note_request.get("conclusion", "")).strip()
+                if not 3 <= len(conclusion) <= 500 or not store.has_intent(intent_id):
+                    raise ValueError("invalid reconciliation note")
+                status = store.status(intent_id).value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._json(HTTPStatus.BAD_REQUEST, {"message": "請輸入 3–500 字的人工對帳結論"})
+                return
+            if status not in {"UNKNOWN", "RECONCILING", "MANUAL_REVIEW"}:
+                self._json(HTTPStatus.CONFLICT, {"message": "此委託不在對帳佇列"})
+                return
+            store.record_audit_event(intent_id, "RECONCILIATION_NOTE", {"conclusion": conclusion, "status": status})
+            self._json(HTTPStatus.OK, {"intent_id": intent_id, "conclusion": conclusion, "status": status})
             return
         if path == "/api/v1/autotrade/positions/refresh":
             if getattr(self.server, "runtime_mode", None) == "PAPER":

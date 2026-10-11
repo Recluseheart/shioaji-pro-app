@@ -717,6 +717,19 @@ class ExecutionService:
                         if self.transport.mode == "PAPER"
                         else "BROKER_ACCOUNT",
                         "scope": "ACCOUNT",
+                        # Stock-account position value (shares x price), as
+                        # used by the gross exposure limit.
+                        "gross_exposure": str(
+                            context.gross_exposure
+                            if context.gross_exposure is not None
+                            else sum(
+                                (
+                                    abs(position.quantity) * position.market_price
+                                    for position in context.positions.values()
+                                ),
+                                Decimal("0"),
+                            )
+                        ),
                         "observed_at": now().isoformat(),
                     },
                 )

@@ -35,6 +35,7 @@ files = [
     "services/autotrade_gateway/runtime_lease.py",
     "services/autotrade_gateway/paper_api.py",
     "services/autotrade_gateway/strategy_plugins.py",
+    "services/autotrade_gateway/observer_metrics.py",
 ]
 explicit_package_bases = true
 follow_imports = "normal"

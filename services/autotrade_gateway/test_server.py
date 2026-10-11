@@ -895,8 +895,38 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(overview["risk"]["usage"], {
             "intent_count": 1, "confirmed_fill_count": 1,
             "confirmed_filled_quantity": 1, "reconciliation_count": 0,
+            "orders_last_minute": 1, "pending_exposure": "0",
+            # Without a fresh account snapshot no remaining headroom is claimed.
             "authoritative_remaining_available": False,
         })
+        self.assertEqual(overview["runtime"]["mode"], "OBSERVE")
+        self.assertIn("today", overview)
+        self.assertIsInstance(overview["performance"]["runs"], list)
+        self.assertEqual(ReadServiceHandler.received, [])
+
+    def test_reconciliation_note_records_a_conclusion_without_changing_state(self) -> None:
+        store = getattr(self.server, "order_store")
+        intent = Intent(Source.MANUAL_UI, "SIM-001", "2330", "BUY", 1, "1000")
+        armed_coordinator(store).accept(intent)
+        store.mark_delivery_unknown(intent.intent_id, "test")
+
+        def post(target: str, body: bytes) -> tuple[int, dict]:
+            request = Request(f"{self.base}{target}", data=body, method="POST",
+                              headers={"Content-Type": "application/json"})
+            try:
+                with urlopen(request) as response:
+                    return response.status, json.load(response)
+            except HTTPError as error:
+                return error.code, json.load(error)
+
+        path = f"/api/v1/autotrade/reconciliation/{intent.intent_id}/note"
+        self.assertEqual(post(path, b'{"conclusion":"x"}')[0], 400)
+        status, receipt = post(path, '{"conclusion":"券商查無此單，確認未送達"}'.encode())
+        self.assertEqual((status, receipt["status"]), (200, "UNKNOWN"))
+        self.assertEqual(store.status(intent.intent_id), Status.UNKNOWN)
+        with urlopen(f"{self.base}/api/v1/autotrade/overview") as response:
+            overview = json.load(response)
+        self.assertEqual(overview["reconciliation"][0]["operator_note"]["conclusion"], "券商查無此單，確認未送達")
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_runs_endpoint_projects_only_durable_strategy_intents(self) -> None:

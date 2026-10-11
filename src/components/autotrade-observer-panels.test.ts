@@ -12,11 +12,15 @@ import {
     CopyableIdentity,
     DurableOrderDetail,
     AutotradeObserverPanels,
+    decisionChain,
     filterTimeline,
+    heartbeatText,
     orderObservationText,
     panelSummary,
+    riskUsageRows,
     riskValueText,
     riskVerdictText,
+    sortOrdersForReview,
 } from './autotrade-observer-panels';
 
 beforeEach(() => vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true));
@@ -246,6 +250,189 @@ describe('Autotrade observer capability presentation', () => {
         });
         await vi.waitFor(() => expect(JSON.stringify(renderer.toJSON())).toContain('重新查詢對帳'));
         expect(JSON.stringify(renderer.toJSON())).toContain('不會重送或建立委託');
+        await act(async () => renderer.unmount());
+    });
+});
+
+function textOf(node: { children?: unknown[] } | string): string {
+    if (typeof node === 'string') return node;
+    return (node.children ?? []).map((child) => textOf(child as { children?: unknown[] } | string)).join('');
+}
+
+function order(fields: Record<string, unknown>) {
+    return {
+        intent_id: 'intent-1', correlation_id: 'correlation-1', source: 'STRATEGY', status: 'APPROVED',
+        symbol: '2330', side: 'BUY', quantity: 1, limit_price: '1000', order_price_type: 'LMT',
+        strategy_id: 'demo', run_id: 'run-1', broker_order_id: null, operation: 'PLACE',
+        target_order_id: null, operation_payload: null, instrument: null, risk_reasons: [],
+        updated_at: '2026-10-01T01:00:00+00:00', created_at: '2026-10-01T01:00:00+00:00',
+        ...fields,
+    };
+}
+
+describe('Spec panel helpers', () => {
+    it('distinguishes loading from an error and from empty data', () => {
+        expect(panelSummary('auto_orders', null, null)).toBe('載入中…');
+        expect(panelSummary('auto_orders', null, 'Gateway 尚未連線')).toBe('Gateway 尚未連線');
+        expect(panelSummary('auto_orders', normalizeAutotradeOverview({}), null)).toContain('尚無自動委託');
+    });
+
+    it('chains a filled order from trigger to fill with the broker id and average price', () => {
+        const overview = normalizeAutotradeOverview({
+            decisions: [order({ status: 'FILLED', allowed: true, decided_at: '2026-10-01T01:00:01+00:00' })],
+            orders: [order({ status: 'FILLED', broker_order_id: 'B1', filled_quantity: 1, avg_fill_price: '999', quantity_unit: '張' })],
+            audit_events: [{ event_id: 'e1', intent_id: 'intent-1', event_type: 'BROKER_ORDER_BOUND', details: {}, occurred_at: '2026-10-01T01:00:02+00:00' }],
+        });
+        const chain = decisionChain(overview, overview.decisions[0]!);
+        expect(chain.steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'done', 'done']);
+        expect(chain.steps[2]!.text).toContain('B1');
+        expect(chain.steps[4]!.text).toBe('全部成交 1張 · 均價 999');
+        expect(chain.title).toContain('2330 買 1張 @ 1000');
+    });
+
+    it('shows a queued same-product order as waiting for the earlier broker acknowledgement', () => {
+        const overview = normalizeAutotradeOverview({ decisions: [order({ allowed: true })], orders: [order({})] });
+        const send = decisionChain(overview, overview.decisions[0]!).steps[2]!;
+        expect(send.state).toBe('waiting');
+        expect(send.text).toContain('同商品前一筆委託取得券商確認後才送出');
+    });
+
+    it('stops the chain at a risk rejection and at an uncertain delivery', () => {
+        const rejected = normalizeAutotradeOverview({
+            decisions: [order({ status: 'RISK_REJECTED', allowed: false, risk_reasons: ['trading_gate_not_armed'] })],
+        });
+        const steps = decisionChain(rejected, rejected.decisions[0]!).steps;
+        expect(steps[1]!).toMatchObject({ state: 'failed', text: '拒絕（交易閘門尚未啟用）' });
+        expect(steps.slice(2).every((step) => step.state === 'skipped')).toBe(true);
+
+        const unknown = normalizeAutotradeOverview({ decisions: [order({ status: 'UNKNOWN', allowed: true })] });
+        const send = decisionChain(unknown, unknown.decisions[0]!).steps[2]!;
+        expect(send.state).toBe('failed');
+        expect(send.text).toContain('不會自動重送');
+    });
+
+    it('puts uncertain orders first, then the newest', () => {
+        const sorted = sortOrdersForReview([
+            order({ intent_id: 'old', created_at: '2026-10-01T01:00:00+00:00' }),
+            order({ intent_id: 'new', created_at: '2026-10-01T02:00:00+00:00' }),
+            order({ intent_id: 'unknown', status: 'UNKNOWN', created_at: '2026-10-01T00:00:00+00:00' }),
+        ] as never[]) as { intent_id: string }[];
+        expect(sorted.map((item) => item.intent_id)).toEqual(['unknown', 'new', 'old']);
+    });
+
+    it('reports remaining headroom only from a fresh account snapshot', () => {
+        const limits = { max_orders_per_minute: 10, max_daily_loss: '100000', max_gross_exposure: '10000000' };
+        const stale = riskUsageRows(normalizeAutotradeOverview({
+            risk: { limits, usage: { orders_last_minute: 3, pending_exposure: '5000', authoritative_remaining_available: false } },
+        }));
+        expect(stale[0]!).toEqual({ label: '每分鐘委託數', used: '3', limit: '10', remaining: '7' });
+        expect(stale[1]!.remaining).toBe('需最新帳務快照');
+        const fresh = riskUsageRows(normalizeAutotradeOverview({
+            risk: { limits, usage: {
+                orders_last_minute: 0, pending_exposure: '5000', authoritative_remaining_available: true,
+                daily_loss_used: '40000', daily_loss_remaining: '60000',
+                gross_exposure: '2000000', gross_exposure_remaining: '7995000',
+            } },
+        }));
+        expect(fresh[1]!).toMatchObject({ used: '40000', remaining: '60000' });
+        expect(fresh[2]!).toMatchObject({ used: '2000000 ＋ 5000', remaining: '7995000' });
+    });
+
+    it('warns when a running strategy stops sending heartbeats', () => {
+        const now = Date.parse('2026-10-01T01:01:00+00:00');
+        const run = {
+            run_id: 'run-1', strategy_id: 'demo', version: 'v1', config_checksum: null, state: 'RUNNING',
+            last_intent_id: null, last_status: null, started_at: null, ended_at: null,
+            updated_at: '2026-10-01T01:00:00+00:00', intent_count: 0,
+        };
+        expect(heartbeatText({ ...run, heartbeat_at: '2026-10-01T01:00:55+00:00' }, 'RUNNING', now)).toEqual({ text: '5 秒前', stale: false });
+        expect(heartbeatText({ ...run, heartbeat_at: '2026-10-01T01:00:00+00:00' }, 'RUNNING', now).stale).toBe(true);
+        expect(heartbeatText({ ...run, heartbeat_at: '2026-10-01T01:00:00+00:00' }, 'PAUSED', now).stale).toBe(false);
+    });
+});
+
+describe('Spec panel interactions', () => {
+    const health = {
+        api_version: 2, environment: 'PAPER', trading_gate: 'DISARMED', strategy_count: 1,
+        enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+    };
+
+    async function render(kind: Parameters<typeof AutotradeObserverPanels>[0]['kind'], overview: unknown, onSelectCode?: (code: string) => void) {
+        api.get.mockImplementation(async (path: string) => {
+            if (path === '/api/v1/autotrade/overview') return overview;
+            if (path === '/api/v1/autotrade/runtime') return { mode: 'PAPER', execution_available: true, running: true, last_tick: null, last_error: null, trading_gate: 'DISARMED' };
+            return { config: { quantity: 1 }, config_schema: [{ name: 'quantity', label: '數量', type: 'integer' }] };
+        });
+        let renderer!: ReturnType<typeof create>;
+        await act(async () => {
+            renderer = create(createElement(AutotradeObserverPanels, { kind, onSelectCode }));
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(JSON.stringify(renderer.toJSON())).not.toContain('載入中'));
+        return renderer;
+    }
+
+    function button(renderer: ReturnType<typeof create>, label: string) {
+        const found = renderer.root.findAllByType('button').find((node) => textOf(node as never) === label);
+        if (!found) throw new Error(`button ${label} not found`);
+        return found;
+    }
+
+    it('flags uncertain auto orders first and links a row to the K-line', async () => {
+        const onSelectCode = vi.fn();
+        const renderer = await render('auto_orders', {
+            health,
+            orders: [order({ intent_id: 'ok', symbol: '2317' }), order({ intent_id: 'lost', status: 'UNKNOWN', account_id: 'SIM-001' })],
+        }, onSelectCode);
+        const output = JSON.stringify(renderer.toJSON());
+        expect(output).toContain('筆委託無法確定是否已到券商');
+        expect(output).toContain('帳號 SIM-001');
+        await act(async () => button(renderer, '在 K 線顯示').props.onClick());
+        expect(onSelectCode).toHaveBeenCalledWith('2330');
+        await act(async () => renderer.unmount());
+    });
+
+    it('requires a dry run and an explicit confirmation before starting a strategy', async () => {
+        api.post.mockReset();
+        api.post.mockImplementation(async (path: string) => path.endsWith('/dry-run')
+            ? { mode: 'DRY_RUN', risk: { allowed: true, reasons: [] }, market_ready: true, condition_met: false, proposals: [] }
+            : { strategy_id: 'demo', action: 'start', reason: '測試', state: 'RUNNING', enabled: true, run_id: 'run-1234567890', applied: true });
+        const renderer = await render('strategy_control', {
+            health,
+            strategies: [{
+                strategy_id: 'demo', display_name: '示範策略', version: 'v1', state: 'DISABLED', enabled: false,
+                allowed_symbols: ['2330'], config: { quantity: 1 }, config_schema: [{ name: 'quantity', label: '數量' }],
+                market_driven: true, lifecycle_enabled: true,
+            }],
+            risk: { limits: { max_order_quantity: 10000, max_orders_per_minute: 10 } },
+        });
+        const reason = renderer.root.findAllByType('input').find((node) => node.props.placeholder === '閘門與策略操作的紀錄原因')!;
+        await act(async () => reason.props.onChange({ target: { value: '測試' } }));
+        await act(async () => { button(renderer, '開始').props.onClick(); await Promise.resolve(); });
+        await vi.waitFor(() => expect(JSON.stringify(renderer.toJSON())).toContain('條件：目前不成立'));
+        const output = JSON.stringify(renderer.toJSON());
+        expect(output).toContain('數量：1');
+        expect(output).toContain('每分鐘最多委託數 10');
+        expect(api.post).toHaveBeenCalledTimes(1);
+        await act(async () => { button(renderer, '確認啟動').props.onClick(); await Promise.resolve(); });
+        await vi.waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+        expect(api.post.mock.calls[1]![0]).toBe('/api/v1/autotrade/strategies/demo/start');
+        await act(async () => renderer.unmount());
+    });
+
+    it('records an operator reconciliation conclusion without touching the order', async () => {
+        api.post.mockReset();
+        api.post.mockResolvedValue({});
+        const renderer = await render('reconciliation', {
+            health,
+            reconciliation: [{ ...order({ status: 'UNKNOWN' }), operator_note: { conclusion: '先前結論', noted_at: null } }],
+        });
+        expect(textOf(renderer.toJSON() as never)).toContain('人工結論：先前結論');
+        const input = renderer.root.findAllByType('input').find((node) => node.props['aria-label'] === '對帳結論')!;
+        await act(async () => input.props.onChange({ target: { value: '券商查無此單' } }));
+        const form = renderer.root.findAllByType('form').find((node) => node.props['aria-label'] === '記錄對帳結論')!;
+        await act(async () => { form.props.onSubmit({ preventDefault: () => undefined }); await Promise.resolve(); });
+        expect(api.post).toHaveBeenCalledWith('/api/v1/autotrade/reconciliation/intent-1/note', { conclusion: '券商查無此單' });
         await act(async () => renderer.unmount());
     });
 });

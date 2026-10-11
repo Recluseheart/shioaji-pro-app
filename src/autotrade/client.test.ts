@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('../lib/api', () => ({ apiGet: mocks.get, apiPost: mocks.post }));
 
 import {
+    dryRunDetails,
     fetchAutotradeIntent,
     fetchAutotradeOrder,
     applyAutotradeKillSwitch,
@@ -309,5 +310,23 @@ describe('durable observation detail clients', () => {
         mocks.get.mockRejectedValue(new Error('Gateway unavailable'));
 
         await expect(fetchAutotradeOrder('intent-3')).rejects.toThrow('Gateway unavailable');
+    });
+});
+
+describe('Strategy dry-run details', () => {
+    it('explains market, condition, and the board-lot / odd-lot split of each proposal', () => {
+        expect(dryRunDetails({
+            mode: 'DRY_RUN', market_ready: true, condition_met: true,
+            proposals: [{
+                proposal: { symbol: '2330', side: 'BUY', quantity: 1500, price: '100' },
+                orders: [{ lot: 'Common', quantity: 1 }, { lot: 'IntradayOdd', quantity: 500 }],
+                risk: { allowed: false, reasons: ['trading_gate_not_armed'] },
+            }],
+        })).toEqual([
+            '行情：已取得有效成交價',
+            '條件：目前成立，啟動並啟用交易閘門後可能立即下單',
+            '預計委託：2330 買 1500 股 @ 100（整股 1 張＋零股 500 股） · 風控拒絕（交易閘門尚未啟用）',
+        ]);
+        expect(dryRunDetails({ mode: 'DRY_RUN' })).toEqual([]);
     });
 });

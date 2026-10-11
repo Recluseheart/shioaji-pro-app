@@ -54,6 +54,7 @@ import { WarrantPanel } from './components/warrant-panel';
 import { Watchlist } from './components/watchlist';
 import { AutoCommandCenter } from './components/auto-command-center';
 import { AutotradeObserverPanels } from './components/autotrade-observer-panels';
+import { registerPresetLoader } from './autotrade/workspace-commands';
 import * as grid from './grid.css';
 import { useHotkeys } from './hooks/use-hotkeys';
 import { useWatchlist } from './hooks/use-watchlist';
@@ -375,7 +376,7 @@ function BlockBody({
         case 'risk_limits':
         case 'reconciliation':
         case 'run_performance':
-            return <AutotradeObserverPanels kind={block.type} />;
+            return <AutotradeObserverPanels kind={block.type} onSelectCode={onSelectCode} />;
     }
 }
 
@@ -1002,6 +1003,9 @@ function MainApp() {
         },
         [updateWorkspace],
     );
+
+    // Lets the Autotrade command center switch layouts with one click.
+    useEffect(() => registerPresetLoader(loadPreset), [loadPreset]);
 
     // ---- profiles ----
 

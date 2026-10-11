@@ -371,7 +371,7 @@ forward-only migration。每一版會寫入該 schema 的
 `gateway_schema_migrations` ledger（版號、名稱、checksum、套用時間）；重新啟動只會
 驗證既有 checksum，不會重放 DDL。新 schema 的持久化 timestamp 一律使用
 `TIMESTAMPTZ`，成交與 broker position snapshot 的數值欄位使用 `NUMERIC(20,8)`，而 API 仍輸出 ISO-8601 UTC offset
-timestamp 與非補零 decimal 字串。position snapshot 保留在本機 store 供風控／對帳使用；任何 observer projection 都必須先遮罩帳戶識別。
+timestamp 與非補零 decimal 字串。position snapshot 保留在本機 store 供風控／對帳使用；observer projection 只輸出帳號，不輸出身分證號、使用者名稱或分公司等個人識別。
 `GET /api/v1/autotrade/positions` 永遠只讀取這個 durable projection，不會因為
 頁面 reload 或 polling 而向 sidecar 查帳。只有本機 `OPERATOR` 可明確呼叫
 `POST /api/v1/autotrade/positions/refresh`（body 必須為空物件），其讀取已登入且
@@ -399,7 +399,7 @@ sidecar／desktop secret store，不是 Gateway 或瀏覽器。Gateway 絕不接
 CA path 或 CA password，也不提供 login/logout mutation。當 sidecar 已完成 simulation login
 後，UI 的 Auto Command Center 會輪詢唯讀
 `GET /api/v1/autotrade/connection`；該 endpoint 依序讀取 sidecar 的 health、SIM info、
-accounts 與 market subscription posture，並只回傳遮罩帳戶 label。
+accounts 與 market subscription posture，並回傳帳號（不含身分證號、使用者名稱與分公司）。
 
 狀態語意為 `DISCONNECTED`（尚未連線）、`CONNECTING`（probe 進行中）、
 `AUTHENTICATED`（已確認 SIM session、但尚未發現市場資料 ready）、

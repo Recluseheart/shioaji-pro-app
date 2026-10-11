@@ -474,6 +474,20 @@ def futures_root(symbol: str) -> str | None:
     return match.group(1) if match else None
 
 
+def quantity_unit(payload: object) -> str:
+    """Display unit of an intent quantity: 張 (board lot), 股 (odd lot), 口 (futures)."""
+    request = payload.get("broker_request") if isinstance(payload, dict) else None
+    body = request.get("body") if isinstance(request, dict) else None
+    if not isinstance(body, dict):
+        return "股"
+    if isinstance(body.get("futures_order"), dict):
+        return "口"
+    stock = body.get("stock_order")
+    if isinstance(stock, dict) and stock.get("order_lot", "Common") in {"Common", "Fixing"}:
+        return "張"
+    return "股"
+
+
 @dataclass(frozen=True)
 class InstrumentProfile:
     """Risk units for one intent: shares for stocks/CBs, contracts for futures."""
@@ -1322,6 +1336,7 @@ class SQLiteIntentStore:
             observation["symbol"] = parsed_payload.get("symbol", "") if isinstance(parsed_payload, dict) else ""
             observation["account_id"] = parsed_payload.get("account_id", "") if isinstance(parsed_payload, dict) else ""
             observation["created_at"] = parsed_payload.get("created_at", "") if isinstance(parsed_payload, dict) else ""
+            observation["quantity_unit"] = quantity_unit(parsed_payload)
             observation["side"] = parsed_payload.get("side", "") if isinstance(parsed_payload, dict) else ""
             observation["quantity"] = parsed_payload.get("quantity", 0) if isinstance(parsed_payload, dict) else 0
             observation["limit_price"] = parsed_payload.get("limit_price", "") if isinstance(parsed_payload, dict) else ""

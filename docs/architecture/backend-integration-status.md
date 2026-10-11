@@ -12,7 +12,7 @@
 | PostgreSQL schema and recovery | Implemented and disposable-verified | Forward-only migrations are checksummed in `gateway_schema_migrations`; all timestamps use `TIMESTAMPTZ`, monetary/position values use `NUMERIC(20,8)`. The disposable integration script exercises migration rerun, concurrent idempotency and an archive/list/restore drill. |
 | Shioaji SIM session posture | Implemented, awaiting a sidecar session | The Gateway only observes an already logged-in loopback sidecar and publishes `DISCONNECTED`, `CONNECTING`, `AUTHENTICATED`, `MARKET_DATA_READY`, `DEGRADED` or `LOST`. It never accepts credentials, invokes login/logout, enables CA or arms trading. |
 | SIM position snapshot wiring | Implemented and fixture-verified | A local operator can explicitly read verified SIM stock/futures `position_unit` facts, validate the complete response, atomically retain the full snapshot, and project only masked account labels to the UI. `GET` remains durable-only; observer mode cannot invoke refresh. |
-| UI connection and positions presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout, displays only masked account labels, and offers an explicit SIM position snapshot refresh. It retains the existing `SIM` and `DISARMED` indicators and renders an explicit empty state instead of demo positions. |
+| UI connection and positions presentation | Implemented and fixture/E2E verified | The accepted Auto Command Center keeps its layout, displays account numbers (no person ID, username or branch), and offers an explicit SIM position snapshot refresh. It retains the existing `SIM` and `DISARMED` indicators and renders an explicit empty state instead of demo positions. |
 | User-owned PostgreSQL final verification | Historical verification completed on 2026-09-16 | The completion-audit addendum records the purpose-built archive/list/restore drill, matching row counts for 17 tables and migration 3/3. This supersedes the earlier pending-restore note; it does not establish continuous service availability. |
 | User-owned Shioaji SIM read integration | Read-only verified | The loopback sidecar reported `MARKET_DATA_READY` for one masked, signed simulation account. Gateway reads of balance, positions, trades and market subscriptions succeeded; the account had no current positions or trades, which is retained as an explicit empty state. CA remains unset/disabled and no simulation canary or order was sent. |
 
@@ -21,8 +21,8 @@
 At that verification, the loopback sidecar listened on port 21322, loaded its local untracked
 environment, and was observed only through read contracts. The replacement
 Gateway listened on port 18082 with `api_version: 2`, `SIM`, `DISARMED` and an
-operator-only capability. Its connection projection exposes only a masked
-account label. The running Gateway uses a new schema-local durable journal:
+operator-only capability. Its connection projection exposed only a masked
+account label at that time (account numbers are shown unmasked since 2026-10-11). The running Gateway uses a new schema-local durable journal:
 the previously configured schema is retained unchanged after an earlier test
 isolation defect recorded fixture facts (including a kill switch) there. No
 history was deleted or reset; future persistent service configuration must use

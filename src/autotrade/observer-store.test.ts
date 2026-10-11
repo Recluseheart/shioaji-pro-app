@@ -14,7 +14,9 @@ const overview = {
         reconciliation_count: 0, authoritative_remaining_available: false,
     } },
     reconciliation: [],
-    performance: { source: 'UNAVAILABLE', stale: true, observed_at: null, run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0' },
+    performance: { source: 'UNAVAILABLE', stale: true, observed_at: null, run_count: 0, filled_order_count: 0, realized_pnl: '0', unrealized_pnl: '0', runs: [] },
+    runtime: { mode: 'OBSERVE', execution_available: false, running: false, last_tick: null, last_error: null, arm_expires_at: null },
+    today: { date: null, auto_order_count: 0, auto_rejected_count: 0, auto_filled_count: 0, manual_order_count: 0, open_order_count: 0 },
 } satisfies AutotradeOverview;
 
 describe('AutotradeObserverStore', () => {

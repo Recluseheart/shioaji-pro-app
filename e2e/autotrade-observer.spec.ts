@@ -679,6 +679,7 @@ test('Autotrade observer preserves its last durable projection when refresh beco
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('風控與限額', { exact: true }).click();
+    await page.getByText('全部限額', { exact: true }).click();
     await expect(page.getByText('單筆最大數量（股）：10000')).toBeVisible();
     await expect(page.getByRole('status').filter({
         hasText: 'Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。',
@@ -710,10 +711,10 @@ test('Signal Timeline renders a durable signal linked to its risk-rejected inten
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByRole('button', { name: /訊號與決策 策略訊號、風控決策與 intent 時間線/ }).click();
-    await expect(page.getByText(/訊號 · reference-fixture · REFERENCE_SIGNAL · 2330 買 · RISK_REJECTED · correlat/)).toBeVisible();
-    await expect(page.getByText('event event-1 · run run-1 · 2026-09-15T00:00:00+00:00')).toBeVisible();
+    await expect(page.getByText(/訊號 · reference-fixture · REFERENCE_SIGNAL · 2330 買 · RISK_REJECTED · 09\/15 08:00:00/)).toBeVisible();
     await expect(page.getByText('風控：交易閘門尚未啟用')).toBeVisible();
-    await expect(page.getByText('執行事件 · INTENT_EVALUATED · intent intent-1 · 2026-09-15T00:00:01+00:00')).toBeVisible();
+    await page.getByText('系統事件（1）').click();
+    await expect(page.getByText(/INTENT_EVALUATED · 委託 intent-1/)).toBeVisible();
     await page.getByRole('textbox', { name: '篩選商品' }).fill('2317');
     await expect(page.getByText(/訊號 · reference-fixture/)).toHaveCount(0);
     await expect(page.getByText('沒有符合目前篩選條件的 durable 事件。')).toBeVisible();
@@ -735,7 +736,15 @@ test('Run performance renders durable lifecycle facts without a trading request'
                 environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
                 enabled_strategy_count: 0, gateway_status: 'READY',
             },
-            performance: { filled_order_count: 1, realized_pnl: '0', unrealized_pnl: '0' },
+            performance: {
+                filled_order_count: 1, realized_pnl: '0', unrealized_pnl: '0',
+                runs: [{
+                    run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
+                    state: 'FIXTURE_COMPLETED', intent_count: 1, rejected_count: 1, reject_rate: 1,
+                    fill_count: 0, closed_trade_count: 0, win_rate: null, realized_pnl: '0',
+                    max_drawdown: '0', avg_slippage_bps: null, avg_ack_latency_ms: null, avg_fill_latency_ms: null,
+                }],
+            },
             runs: [{
                 run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
                 config_checksum: 'fixture-checksum', state: 'FIXTURE_COMPLETED',
@@ -748,9 +757,11 @@ test('Run performance renders durable lifecycle facts without a trading request'
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('執行績效', { exact: true }).click();
-    await expect(page.getByText('已確認成交委託：1')).toBeVisible();
-    await expect(page.getByText('狀態：FIXTURE_COMPLETED · 最近結果：RISK_REJECTED · 1 intents')).toBeVisible();
-    await expect(page.getByText('Heartbeat：2026-09-15T00:00:01+00:00 · 結束：2026-09-15T00:00:02+00:00')).toBeVisible();
+    await expect(page.getByText(/已確認成交委託：1/)).toBeVisible();
+    const row = page.getByRole('table', { name: '每次執行績效' }).getByRole('row').filter({ hasText: 'fixture-' });
+    await expect(row).toContainText('reference-fixture v1');
+    await expect(row).toContainText('FIXTURE_COMPLETED');
+    await expect(row).toContainText('100%（1/1）');
     expect(mutationRequests).toBe(0);
 });
 
@@ -776,8 +787,9 @@ test('Risk limits show durable usage and do not invent remaining exposure', asyn
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('風控與限額', { exact: true }).click();
-    await expect(page.getByText('Durable usage：3 intents · 已確認成交 5（2 筆） · 待對帳 1')).toBeVisible();
-    await expect(page.getByText('剩餘部位／日損／總曝險：尚無權威帳務快照，不能據此推測。')).toBeVisible();
+    await expect(page.getByText('已確認成交 5（2 筆） · 委託紀錄 3 筆 · 待對帳 1 筆')).toBeVisible();
+    await expect(page.getByText('每日損失與總曝險剩餘額度：尚無最新帳務快照，不能據此推測。')).toBeVisible();
+    await expect(page.getByText(/同商品逐筆送出/)).toBeVisible();
     expect(mutationRequests).toBe(0);
 });
 
@@ -795,7 +807,7 @@ test('Reconciliation queue renders its durable case without retry controls', asy
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('對帳佇列', { exact: true }).click();
-    await expect(page.getByText('對帳：restart_recovery · 開案 2026-09-15T00:00:00+00:00')).toBeVisible();
+    await expect(page.getByText(/對帳原因：restart_recovery · 開案 09\/15 08:00:00/)).toBeVisible();
     await expect(page.getByRole('button', { name: /重送|重新送出|開始/ })).toHaveCount(0);
 });
 
@@ -846,10 +858,10 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('自動委託與持倉', { exact: true }).click();
-    await expect(page.getByText(/STRATEGY · 下單 · SUBMITTED · automati/)).toBeVisible();
-    await expect(page.getByText('商品：2330 · 買 2 · LMT 1000 · 策略 reference · run run-1')).toBeVisible();
-    await expect(page.getByText('已確認成交：2（2 筆）')).toBeVisible();
-    await expect(page.getByText(/MANUAL_UI · 下單/)).toHaveCount(0);
+    await expect(page.getByText(/2330 買 2 @ 1000 · 券商已接受/)).toBeVisible();
+    await expect(page.getByText(/策略 · 策略 reference · 執行 run-1/)).toBeVisible();
+    await expect(page.getByText('已成交 2（2 筆）')).toBeVisible();
+    await expect(page.getByText(/賣 1 @ 999/)).toHaveCount(0);
 
     await page.getByRole('button', { name: '查看可稽核詳情' }).first().click();
     await expect(page.getByText(/intent automati · SUBMITTED · 更新 2026-09-15T00:00:00\+00:00 · broker SIM-ORDER-1/)).toBeVisible();
@@ -859,7 +871,7 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     expect(mutationRequests).toBe(0);
 
     await page.getByLabel('顯示全部委託（含手動）').check();
-    await expect(page.getByText(/MANUAL_UI · 下單 · RISK_REJECTED · manual-c/)).toBeVisible();
+    await expect(page.getByText(/2330 賣 1 @ 999 · 風控拒絕/)).toBeVisible();
 });
 
 test('Auto Observe preset only renders observer panels and no strategy start control', async ({ page }) => {

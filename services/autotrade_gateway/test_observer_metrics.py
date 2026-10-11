@@ -17,6 +17,7 @@ from services.autotrade_gateway.order_core import (
     Source,
     StrategyRun,
     Verdict,
+    quantity_unit,
 )
 from services.autotrade_gateway.server import orders_document
 
@@ -85,6 +86,16 @@ class ObserverMetricsTest(unittest.TestCase):
         self.assertEqual(Decimal(fresh["daily_loss_used"]), Decimal("40000"))
         self.assertEqual(Decimal(fresh["daily_loss_remaining"]), Decimal("60000"))
         self.assertEqual(Decimal(fresh["gross_exposure_remaining"]), Decimal("7500000"))
+
+    def test_quantity_unit_follows_the_broker_request(self):
+        def request(**body):
+            return {"broker_request": {"path": "/api/v1/order/place_order", "body": body}}
+        self.assertEqual(quantity_unit(request(stock_order={"order_lot": "Common"})), "張")
+        self.assertEqual(quantity_unit(request(stock_order={"order_lot": "IntradayOdd"})), "股")
+        self.assertEqual(quantity_unit(request(futures_order={"quantity": 1})), "口")
+        self.assertEqual(quantity_unit({"broker_request": None}), "股")
+        self.order("BUY", 1000)
+        self.assertEqual(orders_document(self.store)[0]["quantity_unit"], "股")
 
 
 if __name__ == "__main__":

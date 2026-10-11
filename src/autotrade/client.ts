@@ -17,7 +17,47 @@ export type AutotradeHealth = {
 
 export type AutotradeConnection = AutotradeHealth['broker_connection'];
 
+export type AutotradeRuntime = {
+    mode: 'PAPER' | 'SIM' | 'OBSERVE' | string;
+    execution_available: boolean;
+    running: boolean;
+    last_tick: string | null;
+    last_error: string | null;
+    arm_expires_at: number | null;
+};
+
+export type AutotradeToday = {
+    date: string | null;
+    auto_order_count: number;
+    auto_rejected_count: number;
+    auto_filled_count: number;
+    manual_order_count: number;
+    open_order_count: number;
+};
+
+export type AutotradeRunPerformance = {
+    run_id: string;
+    strategy_id: string | null;
+    version: string | null;
+    state: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+    intent_count: number;
+    rejected_count: number;
+    reject_rate: number | null;
+    fill_count: number;
+    closed_trade_count: number;
+    win_rate: number | null;
+    realized_pnl: string | null;
+    max_drawdown: string | null;
+    avg_slippage_bps: string | null;
+    avg_ack_latency_ms: number | null;
+    avg_fill_latency_ms: number | null;
+};
+
 export type AutotradeOverview = {
+    runtime: AutotradeRuntime;
+    today: AutotradeToday;
     health: AutotradeHealth;
     strategies: unknown[];
     signals: AutotradeSignal[];
@@ -37,6 +77,13 @@ export type AutotradeOverview = {
             confirmed_filled_quantity: number;
             reconciliation_count: number;
             authoritative_remaining_available: boolean;
+            orders_last_minute?: number;
+            pending_exposure?: string | null;
+            daily_loss_used?: string | null;
+            daily_loss_remaining?: string | null;
+            gross_exposure?: string | null;
+            gross_exposure_remaining?: string | null;
+            orders_per_minute_remaining?: number | null;
         };
     };
     reconciliation: AutotradeReconciliationObservation[];
@@ -48,6 +95,8 @@ export type AutotradeOverview = {
         source: string;
         stale: boolean;
         observed_at: string | null;
+        gross_exposure?: string | null;
+        runs: AutotradeRunPerformance[];
     };
 };
 
@@ -136,10 +185,15 @@ export type AutotradeOrderObservation = {
     allowed?: boolean | null;
     decided_at?: string | null;
     risk_decision_missing?: boolean;
+    avg_fill_price?: string | null;
+    created_at?: string;
+    /** 張 for board lots, 股 for odd lots or plain stock units, 口 for futures contracts. */
+    quantity_unit?: '張' | '股' | '口';
     updated_at: string;
 };
 
 export type AutotradeReconciliationObservation = AutotradeOrderObservation & {
+    operator_note?: { conclusion: string; noted_at: string | null } | null;
     reconciliation_case: {
         state: string;
         reason: string;
@@ -151,6 +205,8 @@ export type AutotradeReconciliationObservation = AutotradeOrderObservation & {
 export type StrategyPreview = {
     mode: 'VALIDATE' | 'DRY_RUN';
     message: string;
+    /** Plain-language facts behind a dry run: market, condition, and each proposed order. */
+    details?: string[];
 };
 
 export type AutotradeKillSwitchReceipt = {
@@ -314,12 +370,24 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             allowed: typeof order.allowed === 'boolean' ? order.allowed : null,
             decided_at: typeof order.decided_at === 'string' ? order.decided_at : null,
             risk_decision_missing: order.risk_decision_missing === true,
+            ...(typeof order.avg_fill_price === 'string' ? { avg_fill_price: order.avg_fill_price } : {}),
+            ...(typeof order.created_at === 'string' && order.created_at ? { created_at: order.created_at } : {}),
+            ...(order.quantity_unit === '張' || order.quantity_unit === '股' || order.quantity_unit === '口'
+                ? { quantity_unit: order.quantity_unit } : {}),
             updated_at: typeof order.updated_at === 'string' ? order.updated_at : '',
         }];
     }) : [];
     const reconciliation = Array.isArray(raw.reconciliation) ? raw.reconciliation.flatMap((item): AutotradeReconciliationObservation[] => {
-        const order = normalizeOrders([item])[0];
-        if (!order || !item || typeof item !== 'object') return [];
+        const normalized = normalizeOrders([item])[0];
+        if (!normalized || !item || typeof item !== 'object') return [];
+        const rawNote = (item as Record<string, unknown>).operator_note;
+        const note = rawNote && typeof rawNote === 'object' && typeof (rawNote as Record<string, unknown>).conclusion === 'string'
+            ? {
+                conclusion: (rawNote as Record<string, unknown>).conclusion as string,
+                noted_at: typeof (rawNote as Record<string, unknown>).noted_at === 'string'
+                    ? (rawNote as Record<string, unknown>).noted_at as string : null,
+            } : null;
+        const order = { ...normalized, operator_note: note };
         const rawCase = (item as Record<string, unknown>).reconciliation_case;
         if (!rawCase || typeof rawCase !== 'object') return [{ ...order, reconciliation_case: null }];
         const caseRecord = rawCase as Record<string, unknown>;
@@ -458,6 +526,14 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
                 confirmed_filled_quantity: nonNegativeInteger(usage.confirmed_filled_quantity),
                 reconciliation_count: nonNegativeInteger(usage.reconciliation_count),
                 authoritative_remaining_available: usage.authoritative_remaining_available === true,
+                orders_last_minute: nonNegativeInteger(usage.orders_last_minute),
+                pending_exposure: textOrNull(usage.pending_exposure),
+                daily_loss_used: textOrNull(usage.daily_loss_used),
+                daily_loss_remaining: textOrNull(usage.daily_loss_remaining),
+                gross_exposure: textOrNull(usage.gross_exposure),
+                gross_exposure_remaining: textOrNull(usage.gross_exposure_remaining),
+                orders_per_minute_remaining: typeof usage.orders_per_minute_remaining === 'number'
+                    ? usage.orders_per_minute_remaining : null,
             },
         },
         reconciliation,
@@ -469,8 +545,80 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             source: typeof performance.source === 'string' ? performance.source : 'UNAVAILABLE',
             stale: performance.stale !== false,
             observed_at: typeof performance.observed_at === 'string' ? performance.observed_at : null,
+            gross_exposure: textOrNull(performance.gross_exposure),
+            runs: Array.isArray(performance.runs) ? performance.runs.flatMap(normalizeRunPerformance) : [],
         },
+        runtime: normalizeRuntime(raw.runtime),
+        today: normalizeToday(raw.today),
     };
+}
+
+function textOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeRuntime(value: unknown): AutotradeRuntime {
+    const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    return {
+        mode: typeof raw.mode === 'string' ? raw.mode : 'OBSERVE',
+        execution_available: raw.execution_available === true,
+        running: raw.running === true,
+        last_tick: textOrNull(raw.last_tick),
+        last_error: textOrNull(raw.last_error),
+        arm_expires_at: numberOrNull(raw.arm_expires_at),
+    };
+}
+
+function normalizeToday(value: unknown): AutotradeToday {
+    const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    const count = (field: string) => typeof raw[field] === 'number' && Number.isInteger(raw[field]) && (raw[field] as number) >= 0
+        ? raw[field] as number : 0;
+    return {
+        date: textOrNull(raw.date),
+        auto_order_count: count('auto_order_count'),
+        auto_rejected_count: count('auto_rejected_count'),
+        auto_filled_count: count('auto_filled_count'),
+        manual_order_count: count('manual_order_count'),
+        open_order_count: count('open_order_count'),
+    };
+}
+
+function normalizeRunPerformance(value: unknown): AutotradeRunPerformance[] {
+    if (!value || typeof value !== 'object') return [];
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.run_id !== 'string') return [];
+    const count = (field: string) => typeof raw[field] === 'number' && Number.isInteger(raw[field]) ? raw[field] as number : 0;
+    return [{
+        run_id: raw.run_id,
+        strategy_id: textOrNull(raw.strategy_id),
+        version: textOrNull(raw.version),
+        state: textOrNull(raw.state),
+        started_at: textOrNull(raw.started_at),
+        ended_at: textOrNull(raw.ended_at),
+        intent_count: count('intent_count'),
+        rejected_count: count('rejected_count'),
+        reject_rate: numberOrNull(raw.reject_rate),
+        fill_count: count('fill_count'),
+        closed_trade_count: count('closed_trade_count'),
+        win_rate: numberOrNull(raw.win_rate),
+        realized_pnl: textOrNull(raw.realized_pnl),
+        max_drawdown: textOrNull(raw.max_drawdown),
+        avg_slippage_bps: textOrNull(raw.avg_slippage_bps),
+        avg_ack_latency_ms: numberOrNull(raw.avg_ack_latency_ms),
+        avg_fill_latency_ms: numberOrNull(raw.avg_fill_latency_ms),
+    }];
+}
+
+/** Records an operator's reconciliation conclusion; it never changes the order or contacts the broker. */
+export async function recordReconciliationNote(intentId: string, conclusion: string): Promise<void> {
+    await apiPost<unknown>(
+        `/api/v1/autotrade/reconciliation/${encodeURIComponent(intentId)}/note`,
+        { conclusion },
+    );
 }
 
 export async function fetchAutotradeOverview(): Promise<AutotradeOverview> {
@@ -537,7 +685,44 @@ export async function previewReferenceStrategy(action: 'validate' | 'dry-run', s
     return {
         mode: 'DRY_RUN',
         message: `Dry Run：不建立 intent／outbox、不送 broker；風控 ${risk.allowed === true ? '允許' : '拒絕'}${reasons.length ? `（${reasons.map(riskReasonLabel).join('、')}）` : ''}`,
+        details: dryRunDetails(document),
     };
+}
+
+const LOT_TEXT: Record<string, (quantity: number) => string> = {
+    Common: (quantity) => `整股 ${quantity} 張`,
+    IntradayOdd: (quantity) => `零股 ${quantity} 股`,
+};
+
+/** Turns a dry-run document into sentences; it never includes strategy source code. */
+export function dryRunDetails(document: Record<string, unknown>): string[] {
+    const details: string[] = [];
+    if (typeof document.market_ready === 'boolean') {
+        details.push(document.market_ready ? '行情：已取得有效成交價' : '行情：尚無有效成交價（非交易時間或行情過期），啟動後不會下單');
+    }
+    if (typeof document.condition_met === 'boolean') {
+        details.push(document.condition_met ? '條件：目前成立，啟動並啟用交易閘門後可能立即下單' : '條件：目前不成立，啟動後持續監測');
+    }
+    const proposals = Array.isArray(document.proposals) ? document.proposals : [];
+    for (const item of proposals) {
+        if (!item || typeof item !== 'object') continue;
+        const raw = item as Record<string, unknown>;
+        const proposal = raw.proposal && typeof raw.proposal === 'object' ? raw.proposal as Record<string, unknown> : {};
+        const verdict = raw.risk && typeof raw.risk === 'object' ? raw.risk as Record<string, unknown> : {};
+        const side = proposal.side === 'BUY' ? '買' : proposal.side === 'SELL' ? '賣' : String(proposal.side ?? '');
+        const parts = (Array.isArray(raw.orders) ? raw.orders : [])
+            .map((part) => part && typeof part === 'object' ? part as Record<string, unknown> : null)
+            .filter((part): part is Record<string, unknown> => part !== null && typeof part.quantity === 'number')
+            .map((part) => (LOT_TEXT[String(part.lot)] ?? ((quantity: number) => `${String(part.lot)} ${quantity}`))(part.quantity as number));
+        const reasons = Array.isArray(verdict.reasons)
+            ? verdict.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
+        details.push(
+            `預計委託：${String(proposal.symbol ?? '')} ${side} ${String(proposal.quantity ?? '')} 股 @ ${String(proposal.price ?? '')}`
+            + (parts.length ? `（${parts.join('＋')}）` : '')
+            + ` · 風控${verdict.allowed === true ? '允許' : `拒絕${reasons.length ? `（${reasons.map(riskReasonLabel).join('、')}）` : ''}`}`,
+        );
+    }
+    return details;
 }
 
 export async function applyAutotradeKillSwitch(

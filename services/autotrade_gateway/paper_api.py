@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from .simulation_connection import (
     ConnectionObservation,
     ConnectionState,
-    MaskedSimulationAccount,
+    SimulationAccountView,
 )
 
 
@@ -13,7 +13,7 @@ class PaperConnectionMonitor:
     def probe(self) -> ConnectionObservation:
         return ConnectionObservation(
             ConnectionState.MARKET_DATA_READY,
-            (MaskedSimulationAccount("S", "PAPER-LOCAL", True),),
+            (SimulationAccountView("S", "PAPER-LOCAL", True),),
             datetime.now(timezone.utc).isoformat(),
         )
 

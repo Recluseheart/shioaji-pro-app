@@ -576,14 +576,14 @@ test('Auto Command Center renders only a masked SIM connection posture without a
     await page.route('**/api/v1/autotrade/connection', async (route) => {
         await route.fulfill({ json: {
             state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
-            accounts: [{ account_type: 'S', account_label: '***78', signed: true, sensitive_metadata: 'must-drop' }],
+            accounts: [{ account_type: 'S', account_label: 'SIM12345678', signed: true, sensitive_metadata: 'must-drop' }],
         } });
     });
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('自動交易總覽', { exact: true }).click();
     await expect(page.getByText('帳戶連線：MARKET_DATA_READY')).toBeVisible();
-    await expect(page.getByText('已發現 simulation 帳戶：S ***78（已簽署）')).toBeVisible();
+    await expect(page.getByText('已發現 simulation 帳戶：S SIM12345678（已簽署）')).toBeVisible();
     await expect(page.getByText('sensitive_metadata')).toHaveCount(0);
     expect(orderMutations).toBe(0);
 });

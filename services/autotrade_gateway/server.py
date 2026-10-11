@@ -36,7 +36,7 @@ from .order_core import (
     Status,
 )
 from .simulation_snapshot import SimulationSnapshotProvider
-from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor, mask_account_id
+from .simulation_connection import ConnectionObservation, SimulationConnectionMonitor
 from .reconciliation import ReconciliationRefresher, SimulationTradeProvider
 from .strategy_runtime import StrategyRuntime
 from .worker import ExecutionWorker
@@ -546,7 +546,7 @@ def performance_document(store: IntentStore | None) -> dict[str, object]:
 
 
 def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
-    """Project durable broker facts without leaking a raw account identifier."""
+    """Project durable broker position facts, including the account number."""
     items: list[dict[str, object]] = []
     latest_paper_view = next((event["details"] for event in store.observation_audit_events()
         if event["event_type"] == "PAPER_POSITION_VIEW"), None)
@@ -560,7 +560,7 @@ def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
             continue
         items.append({
             key: value for key, value in snapshot.items() if key != "account_id"
-        } | {"account_type": account_type, "account_label": mask_account_id(account_id)})
+        } | {"account_type": account_type, "account_label": account_id})
     return items
 
 

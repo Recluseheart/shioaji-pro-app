@@ -30,7 +30,7 @@ class ConnectionState(StrEnum):
 
 
 @dataclass(frozen=True)
-class MaskedSimulationAccount:
+class SimulationAccountView:
     account_type: str
     account_label: str
     signed: bool
@@ -39,7 +39,7 @@ class MaskedSimulationAccount:
 @dataclass(frozen=True)
 class ConnectionObservation:
     state: ConnectionState
-    accounts: tuple[MaskedSimulationAccount, ...]
+    accounts: tuple[SimulationAccountView, ...]
     observed_at: str
 
     def document(self) -> dict[str, object]:
@@ -55,12 +55,6 @@ class ConnectionObservation:
             ],
             "last_updated_at": self.observed_at,
         }
-
-
-def mask_account_id(account_id: str) -> str:
-    """Return a stable UI label without disclosing the broker/account number."""
-    suffix = account_id[-2:] if len(account_id) >= 2 else "**"
-    return f"***{suffix}"
 
 
 class SimulationConnectionMonitor:
@@ -102,7 +96,7 @@ class SimulationConnectionMonitor:
                 return self._record_failure(ConnectionState.DEGRADED)
             accounts = tuple(
                 account for item in accounts_document
-                if (account := self._masked_account(item)) is not None
+                if (account := self._account_view(item)) is not None
             )
             # An empty authenticated account list is still a valid session
             # posture, but it cannot be claimed market-data-ready.
@@ -124,7 +118,7 @@ class SimulationConnectionMonitor:
     def _record(
         self,
         state: ConnectionState,
-        accounts: tuple[MaskedSimulationAccount, ...] = (),
+        accounts: tuple[SimulationAccountView, ...] = (),
     ) -> ConnectionObservation:
         self._latest = ConnectionObservation(state, accounts, self._timestamp())
         return self._latest
@@ -132,7 +126,7 @@ class SimulationConnectionMonitor:
     def _record_failure(
         self,
         state: ConnectionState | None = None,
-        accounts: tuple[MaskedSimulationAccount, ...] | None = None,
+        accounts: tuple[SimulationAccountView, ...] | None = None,
     ) -> ConnectionObservation:
         """Apply bounded exponential backoff without retrying a sidecar mutation."""
         self._failure_count = min(self._failure_count + 1, 5)
@@ -154,7 +148,7 @@ class SimulationConnectionMonitor:
             return None
 
     @staticmethod
-    def _masked_account(value: object) -> MaskedSimulationAccount | None:
+    def _account_view(value: object) -> SimulationAccountView | None:
         if not isinstance(value, dict):
             return None
         account_type = value.get("account_type")
@@ -162,9 +156,11 @@ class SimulationConnectionMonitor:
         signed = value.get("signed")
         if account_type not in {"S", "F"} or not isinstance(account_id, str) or not account_id:
             return None
-        return MaskedSimulationAccount(
+        return SimulationAccountView(
             account_type=account_type,
-            account_label=mask_account_id(account_id),
+            # The operator chose to see full account numbers; person id,
+            # username and broker branch are still never projected.
+            account_label=account_id,
             signed=signed is True,
         )
 

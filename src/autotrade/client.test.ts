@@ -35,13 +35,16 @@ describe('Autotrade Gateway health contract', () => {
         });
     });
 
-    it('accepts only masked account labels from the sidecar posture', () => {
+    it('shows full account numbers but drops other sidecar metadata', () => {
         expect(normalizeAutotradeConnection({
                 state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
-                accounts: [{ account_type: 'S', account_label: '***78', signed: true, sensitive_metadata: 'must-drop' }],
+                accounts: [
+                    { account_type: 'S', account_label: '12345678', signed: true, sensitive_metadata: 'must-drop' },
+                    { account_type: 'S', account_label: 'has spaces <script>', signed: true },
+                ],
         })).toEqual({
             state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
-            accounts: [{ account_type: 'S', account_label: '***78', signed: true }],
+            accounts: [{ account_type: 'S', account_label: '12345678', signed: true }],
         });
     });
 
@@ -110,20 +113,20 @@ describe('normalizeAutotradeOverview', () => {
         });
     });
 
-    it('accepts only masked durable SIM position observations', () => {
+    it('accepts durable SIM position observations with full account numbers', () => {
         const overview = normalizeAutotradeOverview({
             positions: [{
-                snapshot_id: 'snapshot-1', account_type: 'S', account_label: '***34', symbol: '2330', side: 'LONG',
+                snapshot_id: 'snapshot-1', account_type: 'S', account_label: 'SIM-ACCOUNT-1234', symbol: '2330', side: 'LONG',
                 quantity: '2', average_price: '1000', market_price: '1001', unrealized_pnl: '2',
                 observed_at: '2026-09-16T00:00:00+00:00',
             }, {
-                snapshot_id: 'unsafe', account_type: 'S', account_label: 'SIM-ACCOUNT-1234', symbol: '2330', side: 'LONG',
+                snapshot_id: 'malformed', account_type: 'S', account_label: '', symbol: '2330', side: 'LONG',
                 quantity: '2', average_price: '1000', market_price: '1001', unrealized_pnl: '2',
                 observed_at: '2026-09-16T00:00:00+00:00',
             }],
         });
         expect(overview.positions).toEqual([expect.objectContaining({
-            snapshot_id: 'snapshot-1', account_label: '***34', symbol: '2330', quantity: '2',
+            snapshot_id: 'snapshot-1', account_label: 'SIM-ACCOUNT-1234', symbol: '2330', quantity: '2',
         })]);
     });
 

@@ -162,12 +162,11 @@ class GatewayServerTest(unittest.TestCase):
             document = json.load(response)
 
         self.assertEqual(document["items"], [{
-            "snapshot_id": "server-position-1", "account_type": "S", "account_label": "***34",
+            "snapshot_id": "server-position-1", "account_type": "S", "account_label": "SIM-ACCOUNT-1234",
             "symbol": "2330", "side": "LONG", "quantity": "2", "average_price": "1000",
             "market_price": "1001", "unrealized_pnl": "2",
             "observed_at": "2026-09-16T00:00:00+00:00",
         }])
-        self.assertNotIn("SIM-ACCOUNT-1234", json.dumps(document))
         self.assertEqual(ReadServiceHandler.received, [])
 
     def test_operator_position_refresh_reads_only_sim_facts_and_persists_atomically(self) -> None:
@@ -190,8 +189,7 @@ class GatewayServerTest(unittest.TestCase):
             document = json.load(response)
 
         self.assertEqual(receipt, {"item_count": 1, "observed_at": "2026-09-16T00:00:00+00:00"})
-        self.assertEqual(document["items"][0]["account_label"], "***78")
-        self.assertNotIn("SIM-FUTURE-5678", json.dumps(document))
+        self.assertEqual(document["items"][0]["account_label"], "SIM-FUTURE-5678")
         self.assertEqual(getattr(self.server, "order_coordinator").gate, Gate.DISARMED)
         self.assertEqual(ReadServiceHandler.received, [])
 

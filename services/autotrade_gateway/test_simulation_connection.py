@@ -42,8 +42,8 @@ class SimulationConnectionMonitorTest(unittest.TestCase):
 
         self.assertEqual(observation.state, ConnectionState.MARKET_DATA_READY)
         self.assertEqual(observation.document()["accounts"], [
-            {"account_type": "S", "account_label": "***78", "signed": True},
-            {"account_type": "F", "account_label": "***CD", "signed": False},
+            {"account_type": "S", "account_label": "12345678", "signed": True},
+            {"account_type": "F", "account_label": "ABCD", "signed": False},
         ])
         self.assertNotIn("sensitive_metadata", json.dumps(observation.document()))
         self.assertNotIn("broker", json.dumps(observation.document()))

@@ -124,6 +124,7 @@ export type AutotradeOrderObservation = {
     order_price_type: string;
     strategy_id: string | null;
     run_id: string | null;
+    account_id?: string;
     broker_order_id: string | null;
     filled_quantity?: number;
     fill_count?: number;
@@ -184,6 +185,11 @@ export type StrategyControlReceipt = {
     applied: boolean;
 };
 
+/** The operator chose to see full account numbers; any short, plain identifier is shown as-is. */
+export function isAccountLabel(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z0-9*_-]{1,32}$/.test(value);
+}
+
 export function riskReasonLabel(reason: string): string {
     return ({
         trading_gate_not_armed: '交易閘門尚未啟用',
@@ -241,8 +247,8 @@ export function normalizeAutotradeHealth(value: unknown): AutotradeHealth {
         ? rawConnection.accounts.flatMap((account): AutotradeHealth['broker_connection']['accounts'] => {
             if (!account || typeof account !== 'object') return [];
             const item = account as Record<string, unknown>;
-            if ((item.account_type !== 'S' && item.account_type !== 'F') || typeof item.account_label !== 'string'
-                || !/^\*{3}[^\s]{2}$/.test(item.account_label) || typeof item.signed !== 'boolean') return [];
+            if ((item.account_type !== 'S' && item.account_type !== 'F') || !isAccountLabel(item.account_label)
+                || typeof item.signed !== 'boolean') return [];
             return [{ account_type: item.account_type, account_label: item.account_label, signed: item.signed }];
         }) : [];
     return {
@@ -291,6 +297,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             intent_id: order.intent_id, correlation_id: order.correlation_id, source: order.source,
             status: order.status, strategy_id: typeof order.strategy_id === 'string' ? order.strategy_id : null,
             run_id: typeof order.run_id === 'string' ? order.run_id : null,
+            ...(isAccountLabel(order.account_id) ? { account_id: order.account_id } : {}),
             symbol: typeof order.symbol === 'string' ? order.symbol : '',
             side: typeof order.side === 'string' ? order.side : '',
             quantity: typeof order.quantity === 'number' && Number.isFinite(order.quantity) ? order.quantity : 0,
@@ -414,7 +421,7 @@ export function normalizeAutotradeOverview(value: unknown): AutotradeOverview {
             && /^-?\d+(?:\.\d+)?$/.test(position[field]) ? position[field] : null;
         if (typeof position.snapshot_id !== 'string' || !position.snapshot_id
             || (position.account_type !== 'S' && position.account_type !== 'F')
-            || typeof position.account_label !== 'string' || !/^\*{3}[^\s]{2}$/.test(position.account_label)
+            || !isAccountLabel(position.account_label)
             || typeof position.symbol !== 'string' || !position.symbol
             || (position.side !== 'LONG' && position.side !== 'SHORT')
             || typeof position.observed_at !== 'string') return [];

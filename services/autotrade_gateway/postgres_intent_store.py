@@ -431,6 +431,7 @@ class PostgresIntentStore:
             except (TypeError, ValueError, json.JSONDecodeError):
                 parsed_reasons = []
             observation["symbol"] = parsed_payload.get("symbol", "") if isinstance(parsed_payload, dict) else ""
+            observation["account_id"] = parsed_payload.get("account_id", "") if isinstance(parsed_payload, dict) else ""
             observation["side"] = parsed_payload.get("side", "") if isinstance(parsed_payload, dict) else ""
             observation["quantity"] = parsed_payload.get("quantity", 0) if isinstance(parsed_payload, dict) else 0
             observation["limit_price"] = parsed_payload.get("limit_price", "") if isinstance(parsed_payload, dict) else ""

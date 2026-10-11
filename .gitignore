@@ -1,8 +1,12 @@
 # Dependencies
 node_modules/
+__pycache__/
+*.py[cod]
 
 # Build output
 dist/
+test-results/
+playwright-report/
 
 # Environment
 .env
@@ -21,3 +25,10 @@ dist/
 src-tauri/target/
 src-tauri/binaries/
 src-tauri/gen/schemas/
+
+# Isolated development journals and owner locks
+.runtime/
+
+# Private strategy logic must never be committed (see docs/architecture/private-strategies.md)
+private_strategies/
+autotrade-private-strategies/

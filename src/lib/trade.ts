@@ -2,6 +2,7 @@
 
 import { getAccountState } from './account-store';
 import { trackActivity } from './activity';
+import { assertGatewayInitiator, type OrderInitiator } from './autotrade-order-initiator';
 import { requestOrderConfirm } from './order-confirm';
 import { checkOrderAllowed, getRiskSettings } from './risk';
 import {
@@ -107,6 +108,8 @@ export class OrderConfirmCancelled extends Error {
     }
 }
 
+export type { OrderInitiator } from './autotrade-order-initiator';
+
 function orderUnit(contract: ContractBase, orderLot?: StockOrderLot): string {
     if (isFuturesContract(contract)) return '口';
     return orderLot === 'IntradayOdd' || orderLot === 'Odd' ? '股' : '張';
@@ -145,13 +148,18 @@ export async function placeQuickOrder(
         bypassRisk?: boolean;
         orderLot?: StockOrderLot;
         account?: Account;
-        // 'auto' = 系統觸發（停損/停利等），永不彈手動確認
-        source?: 'manual' | 'auto' | 'agent';
+        // auto/agent must fail closed until a Gateway runtime owns them.
+        source?: OrderInitiator;
+        // A composite manual action can make one parent confirmation and
+        // suppress duplicate child confirmations without changing its source.
+        skipConfirmation?: boolean;
         agentCallId?: string;
         agentAuto?: boolean;
     },
 ): Promise<Trade> {
     assertTradingLive();
+    const initiator = opts?.source ?? 'manual';
+    assertGatewayInitiator(initiator);
     if (contract.security_type === 'IND') {
         throw mutationNotStartedError('指數商品僅提供行情，不可下單');
     }
@@ -159,7 +167,7 @@ export async function placeQuickOrder(
         const blocked = checkOrderAllowed(quantity);
         if (blocked) throw mutationNotStartedError(blocked);
     }
-    if ((opts?.source ?? 'manual') === 'manual') {
+    if (!opts?.skipConfirmation) {
         await confirmManualOrder(
             contract,
             action,
@@ -180,7 +188,7 @@ export async function placeQuickOrder(
         quantity,
         market,
         opts?.orderLot,
-        opts?.source === 'agent',
+        false,
         opts?.account,
         opts?.agentCallId
             ? { agentCallId: opts.agentCallId, agentAuto: opts.agentAuto }
@@ -235,7 +243,7 @@ export async function placeStockExitByShares(
     const lots = Math.floor(shares / 1000);
     const odd = shares % 1000;
     // 拆單前先做一次合併的手動確認（整張市價＋零股限價兩腳只問一次，
-    // 內層 placeQuickOrder 一律 source:'auto' 免得連問兩次）
+    // 內層仍是 MANUAL_UI，只略過已完成的父層確認）
     await confirmManualOrder(
         contract,
         action,
@@ -250,7 +258,8 @@ export async function placeStockExitByShares(
     if (lots > 0) {
         out.push(
             await placeQuickOrder(contract, action, null, lots, {
-                source: 'auto',
+                source: 'manual',
+                skipConfirmation: true,
             }),
         );
     }
@@ -263,7 +272,8 @@ export async function placeStockExitByShares(
         out.push(
             await placeQuickOrder(contract, action, limitPrice, odd, {
                 orderLot: 'IntradayOdd',
-                source: 'auto',
+                source: 'manual',
+                skipConfirmation: true,
             }),
         );
     }

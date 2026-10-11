@@ -47,6 +47,7 @@ import type { HistoryTicks } from './types/tick';
 import { todayStr } from './utils/date';
 
 export interface ServerInfo {
+    mode?: 'PAPER' | 'SIM';
     name: string;
     version: string;
     description: string;

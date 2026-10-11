@@ -70,7 +70,14 @@ export type BlockType =
     | 'signals'
     | 'optpnl'
     | 'backtest'
-    | 'assistant';
+    | 'assistant'
+    | 'auto_command'
+    | 'strategy_control'
+    | 'signal_timeline'
+    | 'auto_orders'
+    | 'risk_limits'
+    | 'reconciliation'
+    | 'run_performance';
 
 // 'industries' 區塊已移出市場脈動（產業地圖歸產業全景面板）— 舊存檔的
 // 'industries' 值由面板端讀時過濾、權重按比例併入其餘區塊
@@ -114,7 +121,8 @@ export type PanelCategory =
     | 'trading'
     | 'account'
     | 'derivatives'
-    | 'tools';
+    | 'tools'
+    | 'autotrade';
 
 export const PANEL_CATEGORIES: { key: PanelCategory; label: string }[] = [
     { key: 'market', label: '行情' },
@@ -122,6 +130,7 @@ export const PANEL_CATEGORIES: { key: PanelCategory; label: string }[] = [
     { key: 'account', label: '帳務分析' },
     { key: 'derivatives', label: '選擇權/衍生品' },
     { key: 'tools', label: '工具' },
+    { key: 'autotrade', label: '自動交易' },
 ];
 
 export const BLOCK_META: Record<
@@ -369,6 +378,38 @@ export const BLOCK_META: Record<
         singleton: true,
         defaultSize: { w: 7, h: 14, minW: 5, minH: 9 },
     },
+    auto_command: {
+        label: '自動交易總覽',
+        description: '策略、風控、委託與對帳的安全總覽',
+        category: 'autotrade',
+        pinnable: false,
+        singleton: true,
+        defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
+    },
+    strategy_control: {
+        label: '策略控制', description: '策略驗證、Dry Run 與安全控制', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    signal_timeline: {
+        label: '訊號與決策', description: '策略訊號、風控決策與 intent 時間線', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
+    },
+    auto_orders: {
+        label: '自動委託與持倉', description: '策略歸屬的委託、成交與持倉', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 8, h: 10, minW: 5, minH: 6 },
+    },
+    risk_limits: {
+        label: '風控與限額', description: 'Risk Engine verdict 與生效限額', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    reconciliation: {
+        label: '對帳佇列', description: 'UNKNOWN、RECONCILING 與人工審核案件', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
+    run_performance: {
+        label: '執行績效', description: '策略 run、成交與損益摘要', category: 'autotrade',
+        pinnable: false, singleton: true, defaultSize: { w: 7, h: 10, minW: 5, minH: 6 },
+    },
 };
 
 // 預設/內建版面一律以「傳統 24 欄」撰寫（好讀好改），匯出前統一
@@ -405,6 +446,70 @@ const RAW_LAYOUT_PRESETS: { name: string; desc: string; workspace: Workspace }[]
         name: '標準看盤',
         desc: '自選+排行 / K線+持倉 / 五檔+下單+明細',
         workspace: RAW_DEFAULT_WORKSPACE,
+    },
+    {
+        name: '完整交易終端',
+        desc: '原始手動交易終端加上自動交易安全總覽',
+        workspace: {
+            blocks: [
+                { id: 'chart-at', type: 'chart', pin: null },
+                { id: 'ticket-at', type: 'ticket', pin: null },
+                { id: 'dock-at', type: 'dock', pin: null },
+                { id: 'auto-command-at', type: 'auto_command', pin: null },
+            ],
+            layout: [
+                { i: 'chart-at', x: 0, y: 0, w: 13, h: 15, minW: 6, minH: 7 },
+                { i: 'ticket-at', x: 13, y: 0, w: 5, h: 15, minW: 4, minH: 10 },
+                { i: 'auto-command-at', x: 18, y: 0, w: 6, h: 15, minW: 5, minH: 6 },
+                { i: 'dock-at', x: 0, y: 15, w: 24, h: 9, minW: 6, minH: 5 },
+            ],
+        },
+    },
+    {
+        name: '自動交易控制',
+        desc: '總覽、策略、K 線與五檔、決策時間線、委託、風控與對帳',
+        workspace: {
+            blocks: [
+                { id: 'auto-command-ac', type: 'auto_command', pin: null },
+                { id: 'strategy-control-ac', type: 'strategy_control', pin: null },
+                { id: 'chart-ac', type: 'chart', pin: null },
+                { id: 'depth-ac', type: 'depth', pin: null },
+                { id: 'signal-timeline-ac', type: 'signal_timeline', pin: null },
+                { id: 'auto-orders-ac', type: 'auto_orders', pin: null },
+                { id: 'risk-limits-ac', type: 'risk_limits', pin: null },
+                { id: 'reconciliation-ac', type: 'reconciliation', pin: null },
+            ],
+            layout: [
+                { i: 'auto-command-ac', x: 0, y: 0, w: 6, h: 12, minW: 5, minH: 6 },
+                { i: 'strategy-control-ac', x: 6, y: 0, w: 7, h: 12, minW: 5, minH: 6 },
+                { i: 'chart-ac', x: 13, y: 0, w: 7, h: 12, minW: 5, minH: 7 },
+                { i: 'depth-ac', x: 20, y: 0, w: 4, h: 12, minW: 3, minH: 6 },
+                { i: 'signal-timeline-ac', x: 0, y: 12, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'auto-orders-ac', x: 8, y: 12, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'risk-limits-ac', x: 16, y: 12, w: 8, h: 11, minW: 5, minH: 6 },
+                { i: 'reconciliation-ac', x: 0, y: 23, w: 24, h: 8, minW: 5, minH: 6 },
+            ],
+        },
+    },
+    {
+        name: '自動交易觀察',
+        desc: '只讀取策略訊號、訂單、對帳與績效',
+        workspace: {
+            blocks: [
+                { id: 'auto-command-ao', type: 'auto_command', pin: null },
+                { id: 'signal-timeline-ao', type: 'signal_timeline', pin: null },
+                { id: 'auto-orders-ao', type: 'auto_orders', pin: null },
+                { id: 'reconciliation-ao', type: 'reconciliation', pin: null },
+                { id: 'run-performance-ao', type: 'run_performance', pin: null },
+            ],
+            layout: [
+                { i: 'auto-command-ao', x: 0, y: 0, w: 6, h: 12, minW: 5, minH: 6 },
+                { i: 'signal-timeline-ao', x: 6, y: 0, w: 10, h: 12, minW: 5, minH: 6 },
+                { i: 'auto-orders-ao', x: 16, y: 0, w: 8, h: 12, minW: 5, minH: 6 },
+                { i: 'reconciliation-ao', x: 0, y: 12, w: 12, h: 10, minW: 5, minH: 6 },
+                { i: 'run-performance-ao', x: 12, y: 12, w: 12, h: 10, minW: 5, minH: 6 },
+            ],
+        },
     },
     {
         name: '當沖交易',

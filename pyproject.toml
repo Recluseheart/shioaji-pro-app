@@ -1,0 +1,43 @@
+[project]
+name = "shioaji-pro-autotrade-gateway"
+version = "0.0.0"
+description = "Local-only quality tooling for the Autotrade Gateway"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy==2.3.1",
+    "psycopg[binary]>=3.2,<4",
+    "ruff==0.16.7",
+]
+
+[tool.ruff]
+target-version = "py311"
+exclude = ["scripts"]
+
+[tool.ruff.lint]
+# Keep the first enforced baseline focused on syntax, imports, and undefined
+# names while older capture utilities are migrated independently.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+files = [
+    "services/autotrade_gateway/order_core.py",
+    "services/autotrade_gateway/postgres_intent_store.py",
+    "services/autotrade_gateway/server.py",
+    "services/autotrade_gateway/simulation_execution_window.py",
+    "services/autotrade_gateway/strategy_runtime.py",
+    "services/autotrade_gateway/worker.py",
+    "services/autotrade_gateway/execution_service.py",
+    "services/autotrade_gateway/market_strategy.py",
+    "services/autotrade_gateway/simulation_snapshot.py",
+    "services/autotrade_gateway/runtime_lease.py",
+    "services/autotrade_gateway/paper_api.py",
+    "services/autotrade_gateway/strategy_plugins.py",
+    "services/autotrade_gateway/observer_metrics.py",
+]
+explicit_package_bases = true
+follow_imports = "normal"
+ignore_missing_imports = true
+check_untyped_defs = true

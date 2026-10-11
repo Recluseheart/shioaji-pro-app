@@ -682,4 +682,45 @@ export const PANEL_PREVIEWS: Record<BlockType, ReactNode> = {
             <rect x='8' y='54' width='52' height='14' rx='5' fill={muted} fillOpacity='0.2' />
         </Frame>
     ),
+    auto_command: (
+        <Frame>
+            <rect x='8' y='10' width='34' height='12' rx='3' fill={accent} fillOpacity='0.65' />
+            <rect x='46' y='10' width='28' height='12' rx='3' fill={muted} fillOpacity='0.3' />
+            <rect x='78' y='10' width='30' height='12' rx='3' fill={up} fillOpacity='0.45' />
+            {[32, 45, 58].map((y) => <Ln key={y} x={10} y={y} w={96} />)}
+        </Frame>
+    ),
+    strategy_control: (
+        <Frame>
+            <rect x='8' y='10' width='36' height='12' rx='3' fill={accent} fillOpacity='0.55' />
+            <rect x='48' y='10' width='28' height='12' rx='3' fill={muted} fillOpacity='0.3' />
+            <rect x='80' y='10' width='28' height='12' rx='3' fill={muted} fillOpacity='0.3' />
+            {rowList([muted, muted, muted], 10, 35)}
+        </Frame>
+    ),
+    signal_timeline: (
+        <Frame>
+            {[up, accent, muted, down].map((color, i) => <g key={i}><circle cx='14' cy={15 + i * 15} r='3' fill={color} /><Ln x={24} y={13 + i * 15} w={66} /><Ln x={94} y={13 + i * 15} w={14} color={color} /></g>)}
+        </Frame>
+    ),
+    auto_orders: <Frame>{rowList([muted, muted, muted, muted])}</Frame>,
+    risk_limits: (
+        <Frame>
+            {[35, 54, 42, 66].map((w, i) => <g key={i}><Ln x={10} y={13 + i * 15} w={28} /><rect x='44' y={10 + i * 15} width={w} height='7' rx='2' fill={i === 3 ? down : accent} fillOpacity='0.45' /></g>)}
+        </Frame>
+    ),
+    reconciliation: (
+        <Frame>
+            <rect x='8' y='10' width='104' height='11' rx='2' fill={up} fillOpacity='0.18' />
+            <Ln x={12} y={14} w={42} color={up} o={0.8} />
+            {rowList([muted, muted, muted], 10, 34)}
+        </Frame>
+    ),
+    run_performance: (
+        <Frame>
+            <polyline points='8,58 24,54 40,57 56,44 72,47 88,32 110,30' fill='none' stroke={accent} strokeWidth='2' />
+            <Ln x={10} y={12} w={32} color={up} o={0.8} />
+            <Ln x={74} y={12} w={32} color={muted} />
+        </Frame>
+    ),
 };

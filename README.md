@@ -1,3 +1,5 @@
+> Autotrade 本機試用與五項整合修正：[啟動與驗證說明](docs/architecture/trading-runtime.md)。
+
 # Shioaji Pro — 專業交易終端 Trading Terminal
 
 **[官方網站 / Landing Page](https://sinotrade.github.io/shioaji-pro-app/)** ・
@@ -10,6 +12,14 @@ it talks directly to your local `shioaji server`.
 
 以 Shioaji HTTP API 打造的專業交易終端：即時行情、K 線、五檔、閃電下單、
 圖表點價下單、停損停利觸價單、可拖拉的自訂版面。
+
+> Autotrade refactor branch status: this branch adds a loopback-only,
+> fail-closed Autotrade Gateway and seven observation panels. The Gateway is
+> `SIM` / `DISARMED`, has no broker session or CA, and rejects every mutation.
+> Do not use the upstream manual order controls as a substitute for the new
+> common Gateway path; migrating those controls through durable intent, risk,
+> outbox and the single execution worker remains in progress. See
+> [Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md).
 
 **介面 100% 開源** — UI、行情串流、下單鏈路全部都在這個 repo，
 clone 下來就能 build 出完整的 Web 版終端。桌面版外殼（Tauri）、
@@ -156,22 +166,42 @@ shioaji server check          # 確認狀態
 切正式環境：`shioaji server start --production`（需先完成 CA 憑證設定，
 請務必先在模擬環境完整測試）。
 
-### 4. Run the app 啟動前端
+### 4. Run the app through the Gateway 啟動前端
 
 ```sh
+uv run python -m services.autotrade_gateway.server
 pnpm install
 pnpm dev
 ```
 
-開啟 [http://localhost:5173](http://localhost:5173) —— dev server 會把
-`/api` 代理到 `localhost:8080`。
+開啟 [http://localhost:5173](http://localhost:5173) —— dev server 預設只把
+`/api` 代理到 loopback Gateway `127.0.0.1:18082`。Gateway 才會把明確列舉的
+read contract 轉給 sidecar；未完成的 stream 與所有 order mutation 都會被安全
+拒絕，不能以直連 `localhost:8080` 代替。
+
+### Autotrade Gateway development（安全唯讀）
+
+不要啟動交易伺服器也可驗證自動交易觀察 UI：依
+[Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md) 啟動 Gateway 和
+開發伺服器，然後在面板庫選擇「自動交易」類別或套用三個 Autotrade 預設版面。
+此路徑沒有 API secret、broker session、CA 或任何可用 order mutation。
+
+### SIM 帳戶連線狀態
+
+設定 `.env` 後，請由既有 `shioaji server start`／desktop sidecar 完成 simulation
+login；不要把 key、secret、CA 或 database DSN 貼入前端、log 或 Git。Gateway 只透過
+loopback 的唯讀 `GET /api/v1/autotrade/connection` 觀察已存在的 sidecar session，並在
+Auto Command Center 顯示 `DISCONNECTED`、`AUTHENTICATED`、`MARKET_DATA_READY`、
+`DEGRADED` 或 `LOST`，帳戶只顯示遮罩識別。登入成功不會 ARM Gate、不會啟用策略，也
+不會啟用 CA 或送出委託；詳見 [Autotrade Gateway development](docs/AUTOTRADE_GATEWAY.md)。
 
 ## Deploy as a Shioaji custom app 部署為內建 App
 
 Shioaji server 可直接代管前端，build 完上傳即可：
 
 ```sh
-VITE_BASE=/apps/shioaji-pro-app/ pnpm build
+# The published bundle must address Gateway, never the sidecar which hosts it.
+VITE_BASE=/apps/shioaji-pro-app/ VITE_API_BASE=http://127.0.0.1:18082 pnpm build
 cd dist
 ARGS=(); for f in *; do ARGS+=(-F "files=@$f"); done
 curl -X POST http://localhost:8080/api/v1/apps/shioaji-pro-app "${ARGS[@]}"
@@ -179,6 +209,10 @@ curl -X POST http://localhost:8080/api/v1/apps/shioaji-pro-app "${ARGS[@]}"
 
 然後開啟 `http://localhost:8080/apps/shioaji-pro-app/index.html`。
 （注意：上傳的 app 存在 server 記憶體，server 重啟後需重新上傳。）
+
+若由另一台 Tailscale 裝置開啟此 build，請在建置時將 `VITE_API_BASE` 指向
+該裝置可到達、已設定為 `OBSERVER` 的 Gateway HTTPS origin；不要將 sidecar
+port 或任何 credential 放入 bundle。
 
 ## Safety notes 安全提醒
 

@@ -127,10 +127,10 @@ test coverage 門檻、quality metrics 等。落地時更新本節。
 - 交付 dev App 給人驗收前，確認伺服器面板、Debug、頁首與複製診斷均顯示
   相同 build identity，並分開核對 sidecar 的 `SHIOAJI_VERSION`。不得把舊
   Tauri 占位值（例如 0.1.43）誤認為當前 App build。
-- 自訂 Vite port 時也要驗證原生 WebView SSE 的 Origin；sidecar 預設接受
-  `5173` 的 dev origin。其他 port 使用 Vite 同來源 `/api` proxy，設定
-  `VITE_STREAM_BASE` 為 dev origin，`VITE_API_TARGET` 為本次 sidecar origin；
-  健康檢查與歷史資料正常不能代替 SSE 的 LIVE／heartbeat 驗證。
+- 自訂 Vite port 時也要驗證原生 WebView SSE 的 Origin；其他 port 使用 Vite
+  同來源 `/api` proxy，且 proxy 永遠固定指向 Gateway，不提供 sidecar override。
+  必要時設定 `VITE_STREAM_BASE` 為 dev origin；健康檢查與歷史資料正常不能
+  代替 SSE 的 LIVE／heartbeat 驗證。
 
 ## 每次開發交付：備妥可試用的 dev App
 

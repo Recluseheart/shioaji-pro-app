@@ -108,12 +108,18 @@ export default defineConfig(({ mode, command }) => {
         },
         plugins: [vanillaExtractPlugin(), react()],
         test: {
+            // Node can expose a `localStorage` name backed by an unavailable
+            // file while running in a sandbox.  Tests need the browser
+            // Storage contract, not that host-specific partial object.
+            setupFiles: ['./test/vitest-setup.ts'],
             // The desktop overlay is mirrored here for Tauri dev/CI, but its
             // Rust-adjacent Node tests use node:test rather than Vitest.
             exclude: [
                 ...configDefaults.exclude,
                 'src-tauri/**',
                 'plugins/**/test/*.test.mjs',
+                'e2e/**',
+                'e2e-paper/**',
             ],
         },
         resolve: {
@@ -132,10 +138,24 @@ export default defineConfig(({ mode, command }) => {
                 allow: [searchForWorkspaceRoot(process.cwd()), modulesAllowDir],
             },
             proxy: {
-                // dev 打自帶 sidecar（scripts/dev-api.sh，與 CI 打包同版
-                // binary、port 21322）— 確保 API/UI 版本相符，不依賴使用
-                // 者自裝在 8080 的 CLI。要打別台時用 VITE_API_TARGET 蓋掉
-                '/api': env.VITE_API_TARGET ?? 'http://127.0.0.1:21322',
+                // Public Web must use the local Gateway as its only API
+                // origin.  The Gateway owns compatibility allowlists and
+                // fails closed for every order mutation; it can read from a
+                // sidecar internally without exposing that sidecar to the
+                // browser. This deliberately has no environment override:
+                // a build-time proxy escape hatch would let Web traffic skip
+                // the Gateway's compatibility and mutation boundaries.
+                '/api': 'http://127.0.0.1:18082',
+            },
+        },
+        // `vite preview` does not inherit `server.proxy`. Keep its browser
+        // requests on the same Gateway-only contract as `vite dev`; static
+        // production builds use the validated VITE_API_BASE fallback in
+        // runtime.ts and therefore cannot silently talk to a sidecar.
+        preview: {
+            host: '127.0.0.1',
+            proxy: {
+                '/api': 'http://127.0.0.1:18082',
             },
         },
     };

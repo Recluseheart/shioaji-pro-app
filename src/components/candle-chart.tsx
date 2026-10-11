@@ -35,6 +35,8 @@ import {
     X,
 } from 'lucide-react';
 import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { autotradeOrderOverlays, type AutotradeOrderOverlay } from '../autotrade/order-overlays';
+import { autotradeObserverStore } from '../autotrade/observer-store';
 import { useQuote } from '../hooks/use-stream';
 import {
     colorWithOpacity,
@@ -106,6 +108,13 @@ const TRADE_MODES: { key: TradeMode; label: string }[] = [
 
 // keep paging until this floor — one page per fetch, spans widen with tf
 const MAX_HISTORY_DAYS = 1095; // ~3 years
+
+// Module-level, so useSyncExternalStore keeps one subscription. An inline
+// subscribe function is a new reference each render: React would unsubscribe
+// and resubscribe every render, restarting the observer's Gateway reads and
+// SSE stream in a tight loop.
+const subscribeAutotradeObserver = (listener: () => void) => autotradeObserverStore.subscribe(listener);
+const autotradeObserverSnapshot = () => autotradeObserverStore.snapshot();
 
 export function CandleChart({
     panelId,
@@ -220,6 +229,14 @@ export function CandleChart({
                     ACTIVE_ORDER_STATUSES.has(t.status.status),
             ),
         [trades, contract],
+    );
+    const autotradeObserver = useSyncExternalStore(
+        subscribeAutotradeObserver,
+        autotradeObserverSnapshot,
+    );
+    const automaticOrderOverlays = useMemo(
+        () => autotradeOrderOverlays(autotradeObserver.overview?.orders ?? [], contract.code),
+        [autotradeObserver.overview?.orders, contract.code],
     );
     const workingOrdersRef = useRef(workingOrders);
     workingOrdersRef.current = workingOrders;
@@ -1110,6 +1127,35 @@ export function CandleChart({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [orderKey, themeKey, contract.code]);
 
+    // Automatic strategy observations are visual evidence only.  They use
+    // their own dashed lines, are never draggable, and cannot invoke any
+    // cancellation or mutation path from the chart.
+    const automaticOrderKey = JSON.stringify(automaticOrderOverlays);
+    useEffect(() => {
+        const series = candleSeriesRef.current;
+        if (!series) return;
+        const lines = new Map<string, IPriceLine>();
+        for (const order of automaticOrderOverlays) {
+            lines.set(
+                order.intentId,
+                series.createPriceLine({
+                    price: order.price,
+                    color: order.side === 'BUY' ? colors.up : colors.down,
+                    lineWidth: 1,
+                    lineStyle: LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: `自動${order.side === 'BUY' ? '買' : '賣'}${order.quantity} · ${order.status}`,
+                }),
+            );
+        }
+        return () => {
+            for (const line of lines.values()) series.removePriceLine(line);
+        };
+        // The serialized key prevents object identity churn from rebuilding
+        // chart primitives when unrelated observer state changes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [automaticOrderKey, themeKey, contract.code]);
+
     // drag an order line to modify its price
     useEffect(() => {
         const host = hostRef.current;
@@ -1595,6 +1641,7 @@ export function CandleChart({
                     </div>
                 )}
                 {(workingOrders.length > 0 ||
+                    automaticOrderOverlays.length > 0 ||
                     triggers.length > 0 ||
                     instances.length > 0) && (
                     <div className={styles.triggerList}>
@@ -1653,6 +1700,13 @@ export function CandleChart({
                                 </div>
                             );
                         })}
+                        {automaticOrderOverlays.map((order: AutotradeOrderOverlay) => (
+                            <div key={order.intentId} className={styles.triggerRow}>
+                                <span className={panel.dirText[order.side === 'BUY' ? 'up' : 'down']}>
+                                    自動{order.side === 'BUY' ? '買' : '賣'}{order.quantity} @{fmtPrice(order.price)} · {order.status}
+                                </span>
+                            </div>
+                        ))}
                         {triggers.map((t) => (
                             <div key={t.id} className={styles.triggerRow}>
                                 <span>

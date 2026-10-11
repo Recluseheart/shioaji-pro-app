@@ -2,127 +2,49 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn(),
-    harnessEnabled: true,
+    tauriFetch: vi.fn(),
 }));
 
 vi.mock('./runtime', () => ({
-    getApiBase: () => 'http://127.0.0.1:21322',
+    getApiBase: () => 'http://127.0.0.1:18082',
     isTauri: true,
 }));
-vi.mock('./agent-harness-state', () => ({
-    isAgentHarnessEnabled: () => mocks.harnessEnabled,
-}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/plugin-http', () => ({ fetch: mocks.tauriFetch }));
 
 import { apiPost } from './api';
 
-describe('agent harness native POST proxy', () => {
+describe('desktop Gateway mutation boundary', () => {
     beforeEach(() => {
         mocks.invoke.mockReset();
-        mocks.harnessEnabled = true;
+        mocks.tauriFetch.mockReset();
     });
 
-    it('sends the exact serialized mutation through the native bridge', async () => {
-        const browserFetch = vi.spyOn(globalThis, 'fetch');
-        mocks.invoke.mockResolvedValue({
-            status: 200,
-            body: '{"trade_id":"t-1"}',
-        });
+    it('sends a manual mutation to the local Gateway, never the native sidecar bridge', async () => {
+        mocks.tauriFetch.mockResolvedValue(new Response('{"trade_id":"gateway-receipt"}', {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+        }));
 
-        await expect(
-            apiPost<{ trade_id: string }>('/api/v1/order/place_order', {
-                code: '2330',
-                quantity: 1,
-            }),
-        ).resolves.toEqual({ trade_id: 't-1' });
-        expect(mocks.invoke).toHaveBeenCalledWith('agent_harness_post', {
-            url: 'http://127.0.0.1:21322/api/v1/order/place_order',
-            body: '{"code":"2330","quantity":1}',
-            agentInitiated: false,
-        });
-        expect(browserFetch).not.toHaveBeenCalled();
-        browserFetch.mockRestore();
-    });
+        await expect(apiPost<{ trade_id: string }>('/api/v1/order/place_order', {
+            code: '2330', quantity: 1,
+        })).resolves.toEqual({ trade_id: 'gateway-receipt' });
 
-    it('marks an Agent mutation for native production approval', async () => {
-        mocks.invoke.mockResolvedValue({ status: 200, body: '{}' });
-
-        await apiPost('/api/v1/order/place_order', { code: '2330' }, {
-            agentInitiated: true,
-        });
-
-        expect(mocks.invoke).toHaveBeenCalledWith('agent_harness_post', {
-            url: 'http://127.0.0.1:21322/api/v1/order/place_order',
-            body: '{"code":"2330"}',
-            agentInitiated: true,
-        });
-    });
-
-    it('surfaces a rejected native mutation without direct HTTP fallback', async () => {
-        const browserFetch = vi.spyOn(globalThis, 'fetch');
-        mocks.invoke.mockResolvedValue({
-            status: 403,
-            body: '{"message":"capability denied"}',
-        });
-
-        await expect(
-            apiPost('/api/v1/order/cancel_order', { trade_id: 't-1' }),
-        ).rejects.toThrow('403 capability denied');
-        expect(browserFetch).not.toHaveBeenCalled();
-        browserFetch.mockRestore();
-    });
-
-    it('passes native call identity and Auto request without changing body bytes', async () => {
-        mocks.invoke.mockResolvedValue({ status: 200, body: '{}' });
-        await apiPost('/api/v1/order/cancel_order', { trade_id: 't-1' }, {
-            agentInitiated: true, agentCallId: 'call-1', agentAuto: true,
-        });
-        expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('agent_harness_post', {
-            url: 'http://127.0.0.1:21322/api/v1/order/cancel_order',
-            body: '{"trade_id":"t-1"}',
-            agentInitiated: true, agentCallId: 'call-1', agentAuto: true,
-        });
-    });
-
-    it('preserves ambiguous native failures without retry or not-started classification', async () => {
-        mocks.invoke.mockRejectedValue('UI trading proxy request failed: timeout');
-        const error = await apiPost('/api/v1/order/place_order', { code: '2330' }, {
-            agentInitiated: true, agentCallId: 'call-2', agentAuto: true,
-        }).catch((caught: unknown) => caught);
-        expect(error).toBe('UI trading proxy request failed: timeout');
-        expect(mocks.invoke).toHaveBeenCalledTimes(1);
-    });
-
-    it('marks native approval denial as a mutation that never started', async () => {
-        mocks.invoke.mockRejectedValue(
-            'AGENT_MUTATION_NOT_STARTED: 使用者未核准這筆 Agent 交易',
+        expect(mocks.tauriFetch).toHaveBeenCalledWith(
+            'http://127.0.0.1:18082/api/v1/order/place_order',
+            expect.objectContaining({ body: '{"code":"2330","quantity":1}' }),
         );
-
-        const error = await apiPost(
-            '/api/v1/order/place_order',
-            { code: '2330' },
-            { agentInitiated: true },
-        ).catch((caught: unknown) => caught);
-
-        expect(error).toBeInstanceOf(Error);
-        expect(error).toMatchObject({ mutationNotStarted: true });
-        expect((error as Error).message).toContain('使用者未核准');
+        expect(mocks.invoke).not.toHaveBeenCalled();
     });
 
-    it('never falls back to unsigned HTTP for an Agent mutation', async () => {
-        mocks.harnessEnabled = false;
-        const browserFetch = vi.spyOn(globalThis, 'fetch');
-
-        const error = await apiPost(
-            '/api/v1/order/place_order',
-            { code: '2330' },
-            { agentInitiated: true },
-        ).catch((caught: unknown) => caught);
+    it('rejects Agent-originated mutations before either HTTP or the native bridge', async () => {
+        const error = await apiPost('/api/v1/order/place_order', { code: '2330' }, {
+            agentInitiated: true, agentCallId: 'call-1', agentAuto: true,
+        }).catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(Error);
         expect(error).toMatchObject({ mutationNotStarted: true });
+        expect((error as Error).message).toContain('Gateway 的 durable intent 鏈路');
+        expect(mocks.tauriFetch).not.toHaveBeenCalled();
         expect(mocks.invoke).not.toHaveBeenCalled();
-        expect(browserFetch).not.toHaveBeenCalled();
-        browserFetch.mockRestore();
     });
 });

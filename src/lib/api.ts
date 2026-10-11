@@ -1,7 +1,6 @@
 // src/lib/api.ts
 
 import { getApiBase, isTauri } from './runtime';
-import { isAgentHarnessEnabled } from './agent-harness-state';
 
 // resolved per request — the server port can move at runtime (e.g. the boot
 // flow discovers the default port occupied and starts on a fallback), and a
@@ -21,23 +20,27 @@ const AGENT_HARNESS_MUTATIONS = new Set([
 ]);
 
 export function shouldProxyAgentHarnessMutation(
-    desktop: boolean,
-    enabled: boolean,
-    path: string,
+    _desktop: boolean,
+    _enabled: boolean,
+    _path: string,
 ): boolean {
-    return desktop && enabled && AGENT_HARNESS_MUTATIONS.has(path);
+    // The native harness sends directly to the Shioaji sidecar.  That is not
+    // an admissible route once the Gateway owns all broker mutations.
+    return false;
 }
 
 export function shouldRejectUnsignedAgentMutation(
     desktop: boolean,
-    enabled: boolean,
+    _enabled: boolean,
     path: string,
     agentInitiated: boolean,
 ): boolean {
     return (
         desktop &&
         agentInitiated &&
-        !enabled &&
+        // Agent-originated browser requests cannot carry a durable
+        // strategy/run identity yet.  Reject them regardless of the native
+        // harness toggle rather than silently reviving a sidecar bypass.
         AGENT_HARNESS_MUTATIONS.has(path)
     );
 }
@@ -74,12 +77,20 @@ async function throwApiError(res: Response): Promise<never> {
         const data = (await res.json()) as {
             message?: string;
             details?: unknown;
+            correlation_id?: unknown;
         };
         detail =
             data.message ??
             (typeof data.details === 'string' ? data.details : '');
         if (data.details && typeof data.details !== 'string') {
             detail += ` ${JSON.stringify(data.details)}`;
+        }
+        // Gateway risk receipts carry a durable correlation id.  Surface a
+        // short, non-sensitive code with the human-readable reason so a user
+        // can find the same rejection in the observer timeline without
+        // exposing a full account, credential, or broker identifier.
+        if (typeof data.correlation_id === 'string' && data.correlation_id) {
+            detail += `${detail ? '' : '拒絕的交易請求'}（追蹤 ${data.correlation_id.slice(0, 8)}）`;
         }
     } catch {
         // non-JSON body — fall back to status text
@@ -99,62 +110,34 @@ export async function apiGet<T>(path: string, opts?: { signal?: AbortSignal; hea
 export async function apiPost<T>(
     path: string,
     body: unknown,
-    opts?: { timeoutMs?: number; agentInitiated?: boolean; agentCallId?: string; agentAuto?: boolean },
+    opts?: {
+        timeoutMs?: number;
+        headers?: HeadersInit;
+        agentInitiated?: boolean;
+        agentCallId?: string;
+        agentAuto?: boolean;
+    },
 ): Promise<T> {
-    const harnessEnabled = isAgentHarnessEnabled();
     if (
         shouldRejectUnsignedAgentMutation(
             isTauri,
-            harnessEnabled,
+            false,
             path,
             opts?.agentInitiated === true,
         )
     ) {
         throw Object.assign(
-            new Error('Agent Harness 未啟用，拒絕 unsigned Agent mutation'),
+            new Error('Agent 下單尚未移植至 Gateway 的 durable intent 鏈路'),
             { mutationNotStarted: true },
         );
-    }
-    // Serialize once in the WebView, then let the native bridge sign and send
-    // these exact bytes. The native bridge fails closed when Harness is absent
-    // or disabled; it never falls back to an unsigned protected mutation.
-    if (shouldProxyAgentHarnessMutation(isTauri, harnessEnabled, path)) {
-        const bodyText = JSON.stringify(body);
-        const { invoke } = await import('@tauri-apps/api/core');
-        let proxied: { status: number; body: string };
-        try {
-            proxied = await invoke<{ status: number; body: string }>(
-                'agent_harness_post',
-                {
-                    url: base() + path,
-                    body: bodyText,
-                    agentInitiated: opts?.agentInitiated === true,
-                    ...(opts?.agentCallId ? { agentCallId: opts.agentCallId, agentAuto: opts.agentAuto === true } : {}),
-                },
-            );
-        } catch (error) {
-            const message = String(error);
-            const marker = 'AGENT_MUTATION_NOT_STARTED:';
-            if (message.startsWith(marker)) {
-                throw Object.assign(
-                    new Error(message.slice(marker.length).trim()),
-                    { mutationNotStarted: true },
-                );
-            }
-            throw error;
-        }
-        const res = new Response(proxied.body, {
-            status: proxied.status,
-            headers: { 'Content-Type': 'application/json' },
-        });
-        if (!res.ok) await throwApiError(res);
-        return res.json() as Promise<T>;
     }
     const res = await doFetchWithTimeout(
         base() + path,
         {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json',
+                ...(AGENT_HARNESS_MUTATIONS.has(path) ? { 'Idempotency-Key': crypto.randomUUID() } : {}),
+                ...opts?.headers },
             body: JSON.stringify(body),
         },
         // opt-in only — order paths must never abort an in-flight request
@@ -162,7 +145,33 @@ export async function apiPost<T>(
         opts?.timeoutMs,
     );
     if (!res.ok) await throwApiError(res);
-    return res.json() as Promise<T>;
+    const document = await res.json();
+    if (AGENT_HARNESS_MUTATIONS.has(path) && typeof document?.intent_id === 'string') {
+        return awaitGatewayTrade<T>(document.intent_id);
+    }
+    return document as T;
+}
+
+/** Accepted receipts are not broker Trades. Poll reads only; never retry POST. */
+export async function awaitGatewayTrade<T>(intentId: string): Promise<T> {
+    const deadline = Date.now() + 15000;
+    try {
+        while (Date.now() < deadline) {
+            const response = await doFetchWithTimeout(
+                base() + `/api/v1/autotrade/orders/${encodeURIComponent(intentId)}/broker-trade`,
+                { method: 'GET' }, Math.min(3000, Math.max(1, deadline - Date.now())),
+            );
+            if (!response.ok) break;
+            const receipt = await response.json();
+            if (['UNKNOWN', 'RECONCILING', 'MANUAL_REVIEW', 'BROKER_REJECTED', 'RISK_REJECTED'].includes(receipt.status)) break;
+            if (receipt.trade?.order?.id && receipt.trade?.status) return receipt.trade as T;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    } catch {
+        // The accepted mutation still exists even if readback is unavailable.
+    }
+    throw Object.assign(new Error(`委託已受理，結果尚待確認；請查看委託／對帳佇列，勿重送（${intentId.slice(0, 8)}）`),
+        { mutationNotStarted: false, intentId });
 }
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {

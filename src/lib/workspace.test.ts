@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     DEFAULT_WORKSPACE,
+    BLOCK_META,
     GRID_COLS,
     GRID_LEGACY_COLS,
     GRID_LEGACY_SCALE,
@@ -14,6 +15,18 @@ import {
 } from './workspace';
 
 describe('grid base upscale', () => {
+    it('gives every public panel a complete, renderable parity inventory entry', () => {
+        for (const [type, meta] of Object.entries(BLOCK_META)) {
+            expect(meta.label, type).not.toBe('');
+            expect(meta.description, type).not.toBe('');
+            expect(meta.defaultSize.w, type).toBeGreaterThanOrEqual(meta.defaultSize.minW);
+            expect(meta.defaultSize.h, type).toBeGreaterThanOrEqual(meta.defaultSize.minH);
+            expect(meta.defaultSize.minW, type).toBeGreaterThan(0);
+            expect(meta.defaultSize.minH, type).toBeGreaterThan(0);
+        }
+        expect(Object.keys(BLOCK_META)).toHaveLength(36);
+    });
+
     it('legacy 24-col workspace scales ×12 losslessly (x/w/minW only)', () => {
         const legacy: Workspace = {
             blocks: [{ id: 'a', type: 'watchlist', pin: null }],
@@ -41,6 +54,17 @@ describe('grid base upscale', () => {
             // 至少一個面板寬度超過 24 → 確認不是漏升階的舊基準
             expect(ws.layout.some((l) => l.w > GRID_LEGACY_COLS)).toBe(true);
         }
+    });
+
+    it('ships the three safe Autotrade workspaces with all seven panels', () => {
+        const presets = ['完整交易終端', '自動交易控制', '自動交易觀察'];
+        const types = new Set(
+            presets.flatMap((name) => LAYOUT_PRESETS.find((preset) => preset.name === name)?.workspace.blocks.map((block) => block.type) ?? []),
+        );
+        for (const type of [
+            'auto_command', 'strategy_control', 'signal_timeline', 'auto_orders',
+            'risk_limits', 'reconciliation', 'run_performance',
+        ]) expect(types).toContain(type);
     });
 
     it('render/store round-trip is lossless for every density k|12', () => {

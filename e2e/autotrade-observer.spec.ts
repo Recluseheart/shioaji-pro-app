@@ -1,0 +1,889 @@
+import { expect, test, type Locator, type Page } from '@playwright/test';
+
+async function isolateGatewayReads(page: Page) {
+    // Catalogue interactions are local workspace operations.  Do not let an
+    // unavailable upstream session turn this UI regression into a chain of
+    // five-second Gateway read retries; targeted tests install richer routes
+    // after this fallback when their data state is under test.
+    await page.addInitScript(() => {
+        class FixtureEventSource {
+            static readonly CONNECTING = 0;
+            static readonly OPEN = 1;
+            static readonly CLOSED = 2;
+            onopen: ((event: Event) => void) | null = null;
+            onerror: ((event: Event) => void) | null = null;
+            readyState = FixtureEventSource.CONNECTING;
+
+            constructor(_url: string, _eventSourceInitDict?: EventSourceInit) {
+                queueMicrotask(() => {
+                    this.readyState = FixtureEventSource.OPEN;
+                    this.onopen?.(new Event('open'));
+                });
+            }
+
+            addEventListener(
+                _type: string,
+                _listener: EventListenerOrEventListenerObject,
+            ) {}
+
+            close() {
+                this.readyState = FixtureEventSource.CLOSED;
+            }
+        }
+
+        window.EventSource = FixtureEventSource as unknown as typeof EventSource;
+    });
+    await page.route('**/api/v1/**', async (route) => {
+        await route.fulfill({
+            status: 503,
+            json: { message: 'isolated browser fixture: gateway read unavailable' },
+        });
+    });
+}
+
+async function exerciseSingletonPanels(
+    page: Page,
+    singletonPanels: readonly (readonly [string, boolean])[],
+) {
+    const blocks = page.locator('[data-block-id]');
+    // The workspace hydrates asynchronously from its persisted/default
+    // layout.  Establish the known initial layout before deriving per-panel
+    // counts, otherwise an early read races at zero and mistakes the default
+    // seven blocks for a newly added singleton.
+    await expect(blocks).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of singletonPanels) {
+        if (initiallyPresent) {
+            await page.getByRole('button', { name: /新增面板/ }).click();
+            const library = page.getByRole('dialog', { name: '新增面板' });
+            await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+            const present = library.getByRole('button', {
+                name: new RegExp(`${label}.*已在版面中`),
+            }).first();
+            await expect(present).toBeVisible();
+            await present.click();
+            const existing = blocks.filter({ hasText: label }).first();
+            await existing.getByTitle('移除此面板').click();
+        }
+
+        const beforeIds = await blocks.evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute('data-block-id')),
+        );
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+        const addedId = await blocks.evaluateAll((elements, ids) =>
+            elements
+                .map((element) => element.getAttribute('data-block-id'))
+                .find((id) => id && !ids.includes(id)),
+            beforeIds,
+        );
+        expect(addedId).toBeTruthy();
+        const added = page.locator(`[data-block-id="${addedId}"]`);
+
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const duplicateLibrary = page.getByRole('dialog', { name: '新增面板' });
+        await duplicateLibrary.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        const duplicate = duplicateLibrary.getByRole('button', {
+            name: new RegExp(`${label}.*已在版面中`),
+        }).first();
+        await expect(duplicate).toBeVisible();
+        await duplicate.click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+
+        await added.getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(beforeIds.length);
+    }
+}
+
+async function addPanelFromLibrary(page: Page, label: string) {
+    const blocks = page.locator('[data-block-id]');
+    const beforeIds = await blocks.evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute('data-block-id')),
+    );
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+    await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+    await library.getByText(label, { exact: true }).first().click();
+    await expect(blocks).toHaveCount(beforeIds.length + 1);
+    const addedId = await blocks.evaluateAll((elements, ids) =>
+        elements
+            .map((element) => element.getAttribute('data-block-id'))
+            .find((id) => id && !ids.includes(id)),
+        beforeIds,
+    );
+    expect(addedId).toBeTruthy();
+    return page.locator(`[data-block-id="${addedId}"]`);
+}
+
+async function persistedGridPosition(page: Page, panel: Locator) {
+    const panelId = await panel.getAttribute('data-block-id');
+    expect(panelId).toBeTruthy();
+    return page.evaluate((id) => {
+        const raw = localStorage.getItem('sj-pro-workspace-v3');
+        if (!raw) return null;
+        const workspace = JSON.parse(raw) as { layout?: Array<{ i: string; x: number; y: number }> };
+        const item = workspace.layout?.find(candidate => candidate.i === id);
+        return item ? [item.x, item.y] : null;
+    }, panelId);
+}
+
+async function exercisePanelLayout(
+    page: Page,
+    label: string,
+    initiallyPresent: boolean,
+) {
+    const blocks = page.locator('[data-block-id]');
+    const initialCount = await blocks.count();
+    expect(initialCount).toBeGreaterThan(0);
+    if (initiallyPresent) {
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByRole('button', {
+            name: new RegExp(`${label}.*已在版面中`),
+        }).first().click();
+        await blocks.filter({ hasText: label }).first().getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(initialCount - 1);
+    }
+
+    const panel = await addPanelFromLibrary(page, label);
+    await panel.scrollIntoViewIfNeeded();
+
+    const beforeResize = await panel.boundingBox();
+    expect(beforeResize).not.toBeNull();
+    const resizeHandle = panel.locator('.react-resizable-handle');
+    const resizeBox = await resizeHandle.boundingBox();
+    expect(resizeBox).not.toBeNull();
+    await page.mouse.move(resizeBox!.x + 3, resizeBox!.y + 3);
+    await page.mouse.down();
+    // Every BLOCK_META entry has a default width above its minimum. Shrink
+    // before dragging so this also works in the narrow single-column layout.
+    await page.mouse.move(resizeBox!.x - 24, resizeBox!.y + 18, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => {
+        const box = await panel.boundingBox();
+        return box ? [Math.round(box.width), Math.round(box.height)] : null;
+    }).not.toEqual([
+        Math.round(beforeResize!.width),
+        Math.round(beforeResize!.height),
+    ]);
+
+    const beforeMove = await persistedGridPosition(page, panel);
+    expect(beforeMove).not.toBeNull();
+    const dragHandle = panel.locator('.drag-handle');
+    await expect(dragHandle).toBeVisible();
+    const dragBox = await dragHandle.boundingBox();
+    expect(dragBox).not.toBeNull();
+    await page.mouse.move(dragBox!.x + 20, dragBox!.y + 12);
+    await page.mouse.down();
+    // Cross at least one grid cell after react-grid-layout rounding. A smaller
+    // delta can leave the persisted x/y unchanged for narrow panels.
+    await page.mouse.move(dragBox!.x + 160, dragBox!.y + 96, { steps: 12 });
+    await page.mouse.up();
+    // A mobile one-column grid may scroll the moved panel back into view, so
+    // a viewport bounding box can stay still while the saved layout changed.
+    // Assert the persisted logical grid position instead of scroll-relative
+    // pixels; page reload uses this exact state for workspace restoration. The
+    // persisted movement is the browser-observable drag guarantee; the
+    // library's transient CSS class is not synchronized with mouse-down.
+    await expect.poll(() => persistedGridPosition(page, panel)).not.toEqual(beforeMove);
+
+    await panel.getByTitle('移除此面板').click();
+    await expect(blocks).toHaveCount(initiallyPresent ? initialCount - 1 : initialCount);
+}
+
+test('Panel Library exposes every public and Autotrade catalogue category', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+
+    for (const [category, count] of [
+        ['行情', 11], ['交易', 5], ['帳務分析', 3],
+        ['選擇權/衍生品', 6], ['工具', 4], ['自動交易', 7],
+    ] as const) {
+        await expect(library.getByRole('button', { name: new RegExp(`${category} ${count}`) })).toBeVisible();
+    }
+    for (const label of [
+        '自選清單', '下單面板', '持倉/委託/帳務', '選擇權 T 字', '通知中心',
+        '自動交易總覽', '策略控制', '訊號與決策', '自動委託與持倉', '風控與限額', '對帳佇列', '執行績效',
+    ]) {
+        await expect(library.getByText(label, { exact: true }).first()).toBeVisible();
+    }
+});
+
+test('Panel Library adds and removes every repeatable panel without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.goto('/');
+    const blocks = page.locator('[data-block-id]');
+    await expect(blocks).toHaveCount(7);
+    const initialCount = await blocks.count();
+    for (const label of [
+        'K 線圖', '當日走勢', '當日走勢牆', '五檔', '下單面板', '成交明細',
+        '閃電下單', '籌碼資訊', '分價量表', '行情回放', '委託簿熱圖', '鋪單', '市場脈動',
+    ]) {
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(initialCount + 1);
+        await blocks.last().getByTitle('移除此面板').click();
+        await expect(blocks).toHaveCount(initialCount);
+    }
+
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    const library = page.getByRole('dialog', { name: '新增面板' });
+    await library.getByPlaceholder('搜尋面板（名稱或用途）').fill('自選清單');
+    await expect(library.getByRole('button', { name: /自選清單 已在版面中/ })).toBeVisible();
+    await library.getByRole('button', { name: /自選清單 已在版面中/ }).click();
+    await expect(blocks).toHaveCount(initialCount);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every market BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['自選清單', true], ['排行榜', true], ['K 線圖', false], ['當日走勢', false],
+        ['當日走勢牆', false], ['五檔', false], ['成交明細', false], ['行情回放', false],
+        ['產業全景', false], ['市場脈動', false], ['即時訊號', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every trading and account BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['下單面板', false], ['閃電下單', false], ['分價量表', false], ['委託簿熱圖', false],
+        ['鋪單', false], ['持倉/委託/帳務', true], ['損益分析', false], ['籌碼資訊', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every derivative, tool, and Autotrade BlockType can be added, resized, moved, and removed without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await expect(page.locator('[data-block-id]')).toHaveCount(7, { timeout: 30_000 });
+    for (const [label, initiallyPresent] of [
+        ['選擇權 T 字', false], ['個股期選擇器', false], ['權證篩選器', false], ['組合單', false],
+        ['組合商品', false], ['選擇權損益圖', false], ['通知中心', false], ['診斷 Debug', false],
+        ['策略回測', false], ['AI Agent', false], ['自動交易總覽', false], ['策略控制', false],
+        ['訊號與決策', false], ['自動委託與持倉', false], ['風控與限額', false], ['對帳佇列', false],
+        ['執行績效', false],
+    ] as const) {
+        await exercisePanelLayout(page, label, initiallyPresent);
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes account and derivative singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['自選清單', true], ['排行榜', true], ['持倉/委託/帳務', true],
+        ['損益分析', false], ['選擇權 T 字', false], ['個股期選擇器', false],
+        ['權證篩選器', false], ['組合單', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes market singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['組合商品', false],
+        ['通知中心', false], ['診斷 Debug', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes tool singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['產業全景', false], ['即時訊號', false], ['選擇權損益圖', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Panel Library adds, locates, and removes feature-gated and Autotrade singletons without a broker mutation', async ({ page }) => {
+    test.setTimeout(180_000);
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await isolateGatewayReads(page);
+    await page.goto('/');
+    await exerciseSingletonPanels(page, [
+        ['策略回測', false], ['AI Agent', false], ['自動交易總覽', false], ['策略控制', false],
+        ['訊號與決策', false], ['自動委託與持倉', false], ['風控與限額', false],
+        ['對帳佇列', false], ['執行績效', false],
+    ] as const);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Every pinnable panel can enter and leave pinned mode without a broker mutation', async ({ page }) => {
+    const fixtureContract = {
+        region: 'TW', exchange: 'TSE', code: 'PARITY', security_type: 'STK',
+        target_code: null, name: 'Parity fixture', currency: 'TWD',
+        reference: 0, limit_up: 0, limit_down: 0, day_trade: '',
+        update_date: '', category: '', margin_trading_balance: 0,
+        short_selling_balance: 0,
+    };
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/watchlist', async (route) => {
+        await route.fulfill({ json: [{
+            id: 'parity-fixture-list', name: 'Parity fixture',
+            contracts: [{
+                code: fixtureContract.code,
+                security_type: fixtureContract.security_type,
+                exchange: fixtureContract.exchange,
+            }],
+        }] });
+    });
+    await page.route(/\/api\/v1\/data\/contracts\/PARITY(?:\/info)?(?:\?.*)?$/, async (route) => {
+        await route.fulfill({ json: fixtureContract });
+    });
+    await page.route('**/api/v1/data/snapshots', async (route) => {
+        await route.fulfill({ json: [] });
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const linked = chart.getByTitle('跟隨自選清單選擇；點擊鎖定目前商品');
+    await expect(linked).toBeVisible();
+    await linked.click();
+    const pinned = chart.getByTitle('已鎖定；點擊恢復連動');
+    await expect(pinned).toBeVisible();
+    await pinned.click();
+    await expect(linked).toBeVisible();
+
+    const blocks = page.locator('[data-block-id]');
+    for (const label of [
+        'K 線圖', '當日走勢', '五檔', '下單面板', '成交明細', '閃電下單',
+        '籌碼資訊', '分價量表', '個股期選擇器', '行情回放', '委託簿熱圖',
+        '組合商品', '鋪單',
+    ]) {
+        const beforeIds = await blocks.evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute('data-block-id')),
+        );
+        await page.getByRole('button', { name: /新增面板/ }).click();
+        const library = page.getByRole('dialog', { name: '新增面板' });
+        await library.getByPlaceholder('搜尋面板（名稱或用途）').fill(label);
+        await library.getByText(label, { exact: true }).first().click();
+        await expect(blocks).toHaveCount(beforeIds.length + 1);
+        const addedId = (await blocks.evaluateAll((elements, ids) =>
+            elements
+                .map((element) => element.getAttribute('data-block-id'))
+                .find((id) => id && !ids.includes(id)),
+            beforeIds,
+        ));
+        expect(addedId).toBeTruthy();
+        const added = page.locator(`[data-block-id="${addedId}"]`);
+        const addedLinked = added.getByTitle('跟隨自選清單選擇；點擊鎖定目前商品');
+        await expect(addedLinked).toBeVisible();
+        await addedLinked.click();
+        const addedPinned = added.getByTitle('已鎖定；點擊恢復連動');
+        await expect(addedPinned).toBeVisible();
+        await addedPinned.click();
+        await expect(addedLinked).toBeVisible();
+        await added.getByTitle('移除此面板').click();
+    }
+    expect(mutationRequests).toBe(0);
+});
+
+test('A workspace panel can be repositioned without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const before = await chart.boundingBox();
+    expect(before).not.toBeNull();
+    // The chart body can embed quote widgets with their own drag affordance;
+    // only the PanelChrome title bar owns this workspace item's layout drag.
+    const handle = chart.locator('[class*="panelTitle"].drag-handle');
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(handleBox!.x + 20, handleBox!.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(handleBox!.x + 80, handleBox!.y + 90, { steps: 8 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await chart.boundingBox())?.y).not.toBe(before!.y);
+    expect(mutationRequests).toBe(0);
+});
+
+test('A workspace panel can be resized without a broker mutation', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+
+    await page.goto('/');
+    const chart = page.locator('[data-block-id="chart-0"]');
+    const before = await chart.boundingBox();
+    expect(before).not.toBeNull();
+    const resizeHandle = chart.locator('.react-resizable-handle');
+    const handleBox = await resizeHandle.boundingBox();
+    expect(handleBox).not.toBeNull();
+    await page.mouse.move(handleBox!.x + 3, handleBox!.y + 3);
+    await page.mouse.down();
+    await page.mouse.move(handleBox!.x - 70, handleBox!.y + 30, { steps: 8 });
+    await page.mouse.up();
+
+    await expect.poll(async () => (await chart.boundingBox())?.width).not.toBe(before!.width);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Option Chain surfaces a contract-read failure without a broker mutation', async ({ page }) => {
+    let optionReads = 0;
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/data/contracts/options?*', async (route) => {
+        optionReads += 1;
+        if (optionReads === 1) {
+            await route.fulfill({ status: 502, json: { message: 'fixture upstream unavailable' } });
+            return;
+        }
+        const base = {
+            region: 'TW', exchange: 'TAIFEX', security_type: 'OPT', target_code: null,
+            currency: 'TWD', reference: 0, limit_up: 0, limit_down: 0, day_trade: '',
+            update_date: '', category: '', margin_trading_balance: 0,
+            short_selling_balance: 0, delivery_month: '202610', delivery_date: '2026-10-21',
+            strike_price: 22000,
+        };
+        await route.fulfill({ json: [
+            { ...base, code: 'TXO-C-FIXTURE', name: 'fixture call', option_right: 'C' },
+            { ...base, code: 'TXO-P-FIXTURE', name: 'fixture put', option_right: 'P' },
+        ] });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('選擇權 T 字', { exact: true }).click();
+    await expect(page.getByRole('status').filter({
+        hasText: 'TXO 合約載入失敗，請稍後重試',
+    })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重試 TXO 合約' })).toBeVisible();
+    await page.getByRole('button', { name: '重試 TXO 合約' }).click();
+    await expect(page.getByText('履約價', { exact: true })).toBeVisible();
+    await expect(page.getByRole('status').filter({
+        hasText: 'TXO 合約載入失敗，請稍後重試',
+    })).toHaveCount(0);
+    expect(optionReads).toBe(2);
+    expect(mutationRequests).toBe(0);
+});
+
+test('Autotrade panel reads the loopback Gateway and exposes no mutation controls', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await expect(page.getByRole('button', { name: /自動交易 7/ })).toBeVisible();
+    await page.getByText('自動交易總覽', { exact: true }).click();
+    await expect(page.getByText('環境：SIM')).toBeVisible();
+    await expect(page.getByText('交易閘門：DISARMED')).toBeVisible();
+    await expect(page.getByText('Gateway READY')).toBeVisible();
+    await expect(page.getByText('不會啟動策略、送出委託或重送 UNKNOWN')).toBeVisible();
+});
+
+test('Auto Command Center renders only a masked SIM connection posture without an order mutation', async ({ page }) => {
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                api_version: 2, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            },
+        } });
+    });
+    await page.route('**/api/v1/autotrade/connection', async (route) => {
+        await route.fulfill({ json: {
+            state: 'MARKET_DATA_READY', last_updated_at: '2026-09-16T00:00:00+00:00',
+            accounts: [{ account_type: 'S', account_label: 'SIM12345678', signed: true, sensitive_metadata: 'must-drop' }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動交易總覽', { exact: true }).click();
+    await expect(page.getByText('帳戶連線：MARKET_DATA_READY')).toBeVisible();
+    await expect(page.getByText('已發現 simulation 帳戶：S SIM12345678（已簽署）')).toBeVisible();
+    await expect(page.getByText('sensitive_metadata')).toHaveCount(0);
+    expect(orderMutations).toBe(0);
+});
+
+test('Auto Command Center does not poll connection from a pre-v2 Gateway', async ({ page }) => {
+    let connectionReads = 0;
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                api_version: 1, environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0,
+                enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR',
+            },
+        } });
+    });
+    await page.route('**/api/v1/autotrade/connection', async (route) => {
+        connectionReads += 1;
+        await route.fulfill({ status: 404, json: { message: 'read route not permitted' } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動交易總覽', { exact: true }).click();
+    await expect(page.getByText('此 Gateway 未提供目前的帳戶連線觀測 API；請由操作人員安全更新或重啟 Gateway 後，再判定 sidecar 狀態。')).toBeVisible();
+    await page.waitForTimeout(250);
+    expect(connectionReads).toBe(0);
+});
+
+test('Autotrade control panel is visible but cannot start a strategy while disarmed', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('策略控制', { exact: true }).click();
+    await expect(page.getByRole('button', { name: '開始' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '啟用 Kill Switch' })).toBeVisible();
+    await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。')).toBeVisible();
+});
+
+test('Strategy control runs validate and dry-run through Gateway without an order mutation', async ({ page }) => {
+    const gatewayRequests: string[] = [];
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' },
+            strategies: [{ strategy_id: 'reference-fixture', version: 'v1', state: 'DISABLED', enabled: false, lifecycle_enabled: false }],
+        } });
+    });
+    await page.route('**/api/v1/autotrade/strategies/reference-fixture/*', async (route) => {
+        gatewayRequests.push(new URL(route.request().url()).pathname);
+        expect(route.request().method()).toBe('POST');
+        if (route.request().url().endsWith('/validate')) {
+            await route.fulfill({ json: { mode: 'VALIDATE', warnings: ['fixture warning'] } });
+        } else {
+            await route.fulfill({ json: { mode: 'DRY_RUN', risk: { allowed: false, reasons: ['trading_gate_not_armed'] } } });
+        }
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('策略控制', { exact: true }).click();
+    await page.getByRole('button', { name: '驗證策略' }).click();
+    await expect(page.getByText('驗證完成：fixture warning')).toBeVisible();
+    await page.getByRole('button', { name: 'Dry Run' }).click();
+    await expect(page.getByText('Dry Run：不建立 intent／outbox、不送 broker；風控 拒絕（交易閘門尚未啟用）')).toBeVisible();
+    expect(gatewayRequests).toEqual([
+        '/api/v1/autotrade/strategies/reference-fixture/validate',
+        '/api/v1/autotrade/strategies/reference-fixture/dry-run',
+    ]);
+    expect(orderMutations).toBe(0);
+});
+
+test('Autotrade observer preserves its last durable projection when refresh becomes stale', async ({ page }) => {
+    test.setTimeout(20_000);
+    let overviewReads = 0;
+    let orderMutations = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            orderMutations += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        overviewReads += 1;
+        if (overviewReads === 1) {
+            await route.fulfill({ json: {
+                health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY', capability_mode: 'OPERATOR' },
+                risk: { limits: { max_order_quantity: 10000 }, limits_source: 'fixture' },
+            } });
+            return;
+        }
+        await route.fulfill({ status: 503, json: { message: 'fixture transient read failure' } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('風控與限額', { exact: true }).click();
+    await page.getByText('全部限額', { exact: true }).click();
+    await expect(page.getByText('單筆最大數量（股）：10000')).toBeVisible();
+    await expect(page.getByRole('status').filter({
+        hasText: 'Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。',
+    })).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByText('單筆最大數量（股）：10000')).toBeVisible();
+    expect(overviewReads).toBeGreaterThanOrEqual(2);
+    expect(orderMutations).toBe(0);
+});
+
+test('Signal Timeline renders a durable signal linked to its risk-rejected intent', async ({ page }) => {
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            signals: [{
+                signal_id: 'signal-1', strategy_id: 'reference-fixture', run_id: 'run-1',
+                event_id: 'event-1', signal_type: 'REFERENCE_SIGNAL', symbol: '2330', side: 'BUY',
+                intent_id: 'intent-1', correlation_id: 'correlation-1', status: 'RISK_REJECTED',
+                risk_reasons: ['trading_gate_not_armed'], observed_at: '2026-09-15T00:00:00+00:00',
+            }],
+            audit_events: [{
+                event_id: 'audit-1', intent_id: 'intent-1', event_type: 'INTENT_EVALUATED',
+                details: { status: 'RISK_REJECTED' }, occurred_at: '2026-09-15T00:00:01+00:00',
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByRole('button', { name: /訊號與決策 策略訊號、風控決策與 intent 時間線/ }).click();
+    await expect(page.getByText(/訊號 · reference-fixture · REFERENCE_SIGNAL · 2330 買 · RISK_REJECTED · 09\/15 08:00:00/)).toBeVisible();
+    await expect(page.getByText('風控：交易閘門尚未啟用')).toBeVisible();
+    await page.getByText('系統事件（1）').click();
+    await expect(page.getByText(/INTENT_EVALUATED · 委託 intent-1/)).toBeVisible();
+    await page.getByRole('textbox', { name: '篩選商品' }).fill('2317');
+    await expect(page.getByText(/訊號 · reference-fixture/)).toHaveCount(0);
+    await expect(page.getByText('沒有符合目前篩選條件的 durable 事件。')).toBeVisible();
+    await page.getByRole('button', { name: '清除篩選' }).click();
+    await expect(page.getByText(/訊號 · reference-fixture/)).toBeVisible();
+    await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
+});
+
+test('Run performance renders durable lifecycle facts without a trading request', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            performance: {
+                filled_order_count: 1, realized_pnl: '0', unrealized_pnl: '0',
+                runs: [{
+                    run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
+                    state: 'FIXTURE_COMPLETED', intent_count: 1, rejected_count: 1, reject_rate: 1,
+                    fill_count: 0, closed_trade_count: 0, win_rate: null, realized_pnl: '0',
+                    max_drawdown: '0', avg_slippage_bps: null, avg_ack_latency_ms: null, avg_fill_latency_ms: null,
+                }],
+            },
+            runs: [{
+                run_id: 'fixture-run-1', strategy_id: 'reference-fixture', version: 'v1',
+                config_checksum: 'fixture-checksum', state: 'FIXTURE_COMPLETED',
+                last_status: 'RISK_REJECTED', intent_count: 1,
+                heartbeat_at: '2026-09-15T00:00:01+00:00',
+                ended_at: '2026-09-15T00:00:02+00:00', updated_at: '2026-09-15T00:00:02+00:00',
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('執行績效', { exact: true }).click();
+    await expect(page.getByText(/已確認成交委託：1/)).toBeVisible();
+    const row = page.getByRole('table', { name: '每次執行績效' }).getByRole('row').filter({ hasText: 'fixture-' });
+    await expect(row).toContainText('reference-fixture v1');
+    await expect(row).toContainText('FIXTURE_COMPLETED');
+    await expect(row).toContainText('100%（1/1）');
+    expect(mutationRequests).toBe(0);
+});
+
+test('Risk limits show durable usage and do not invent remaining exposure', async ({ page }) => {
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY' },
+            risk: {
+                limits: { max_order_quantity: 10000 }, limits_source: 'fixture',
+                usage: {
+                    intent_count: 3, confirmed_fill_count: 2, confirmed_filled_quantity: 5,
+                    reconciliation_count: 1, authoritative_remaining_available: false,
+                },
+            },
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('風控與限額', { exact: true }).click();
+    await expect(page.getByText('已確認成交 5（2 筆） · 委託紀錄 3 筆 · 待對帳 1 筆')).toBeVisible();
+    await expect(page.getByText('每日損失與總曝險剩餘額度：尚無最新帳務快照，不能據此推測。')).toBeVisible();
+    await expect(page.getByText(/同商品逐筆送出/)).toBeVisible();
+    expect(mutationRequests).toBe(0);
+});
+
+test('Reconciliation queue renders its durable case without retry controls', async ({ page }) => {
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: { environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 0, enabled_strategy_count: 0, gateway_status: 'READY' },
+            reconciliation: [{
+                intent_id: 'unknown-1', correlation_id: 'correlation-1', source: 'MANUAL_UI', status: 'UNKNOWN',
+                symbol: '2330', side: 'BUY', quantity: 1, limit_price: '1000', order_price_type: 'LMT', operation: 'PLACE', risk_reasons: [],
+                reconciliation_case: { state: 'OPEN', reason: 'restart_recovery', opened_at: '2026-09-15T00:00:00+00:00', updated_at: '2026-09-15T00:00:00+00:00' },
+            }],
+        } });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('對帳佇列', { exact: true }).click();
+    await expect(page.getByText(/對帳原因：restart_recovery · 開案 09\/15 08:00:00/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /重送|重新送出|開始/ })).toHaveCount(0);
+});
+
+test('Auto Orders defaults to durable strategy observations and exposes manual orders only on request', async ({ page }) => {
+    let detailReads = 0;
+    let mutationRequests = 0;
+    page.on('request', (request) => {
+        if (/\/api\/v1\/order\/(?:place_order|cancel_order|update_price|update_qty|place_comboorder|cancel_comboorder)(?:$|[?#])/.test(request.url())) {
+            mutationRequests += 1;
+        }
+    });
+    await page.route('**/api/v1/autotrade/overview', async (route) => {
+        await route.fulfill({ json: {
+            health: {
+                environment: 'SIM', trading_gate: 'DISARMED', strategy_count: 1,
+                enabled_strategy_count: 0, gateway_status: 'READY',
+            },
+            orders: [
+                {
+                    intent_id: 'automatic-intent', correlation_id: 'automatic-correlation',
+                    source: 'STRATEGY', status: 'SUBMITTED', symbol: '2330', side: 'BUY',
+                    quantity: 2, limit_price: '1000', order_price_type: 'LMT',
+                    strategy_id: 'reference', run_id: 'run-1', operation: 'PLACE', risk_reasons: [],
+                    filled_quantity: 2, fill_count: 2,
+                },
+                {
+                    intent_id: 'manual-intent', correlation_id: 'manual-correlation',
+                    source: 'MANUAL_UI', status: 'RISK_REJECTED', symbol: '2330', side: 'SELL',
+                    quantity: 1, limit_price: '999', order_price_type: 'LMT',
+                    operation: 'PLACE', risk_reasons: ['trading_gate_not_armed'],
+                },
+            ],
+        } });
+    });
+    await page.route('**/api/v1/autotrade/orders/automatic-intent', async (route) => {
+        detailReads += 1;
+        expect(route.request().method()).toBe('GET');
+        await route.fulfill({ json: {
+            intent_id: 'automatic-intent', correlation_id: 'automatic-correlation',
+            source: 'STRATEGY', status: 'SUBMITTED', symbol: '2330', side: 'BUY',
+            quantity: 2, limit_price: '1000', order_price_type: 'LMT',
+            strategy_id: 'reference', run_id: 'run-1', operation: 'PLACE',
+            broker_order_id: 'SIM-ORDER-1', risk_reasons: [],
+            updated_at: '2026-09-15T00:00:00+00:00',
+        } });
+    });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /新增面板/ }).click();
+    await page.getByText('自動委託與持倉', { exact: true }).click();
+    await expect(page.getByText(/2330 買 2 @ 1000 · 券商已接受/)).toBeVisible();
+    await expect(page.getByText(/策略 · 策略 reference · 執行 run-1/)).toBeVisible();
+    await expect(page.getByText('已成交 2（2 筆）')).toBeVisible();
+    await expect(page.getByText(/賣 1 @ 999/)).toHaveCount(0);
+
+    await page.getByRole('button', { name: '查看可稽核詳情' }).first().click();
+    await expect(page.getByText(/intent automati · SUBMITTED · 更新 2026-09-15T00:00:00\+00:00 · broker SIM-ORDER-1/)).toBeVisible();
+    await expect(page.getByText('Correlation ID：automatic-correlation')).toBeVisible();
+    await expect(page.getByRole('button', { name: '複製' }).first()).toHaveAttribute('title', /完整 Intent ID/);
+    expect(detailReads).toBe(1);
+    expect(mutationRequests).toBe(0);
+
+    await page.getByLabel('顯示全部委託（含手動）').check();
+    await expect(page.getByText(/2330 賣 1 @ 999 · 風控拒絕/)).toBeVisible();
+});
+
+test('Auto Observe preset only renders observer panels and no strategy start control', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: '版面' }).click();
+    await page.getByTitle('套用預設版面「自動交易觀察」').click();
+
+    await expect(page.getByText('自動交易總覽', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('訊號與決策時間線', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('自動委託與持倉', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('對帳佇列', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('執行績效', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
+    await expect(page.getByText('唯讀觀察模式；不會送單、取消、平倉或重送 UNKNOWN。').first()).toBeVisible();
+});

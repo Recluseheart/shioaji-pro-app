@@ -1,0 +1,967 @@
+"""PostgreSQL implementation of the Gateway intent/outbox safety contract."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from threading import Lock
+from uuid import uuid4
+
+from .order_core import (
+    _UNCERTAIN,
+    DuplicateIntentError,
+    Intent,
+    Gate,
+    Fill,
+    PositionSnapshot,
+    StrategyRun,
+    StrategyDefinition,
+    StrategySignal,
+    Status,
+    Verdict,
+    intent_from_persisted_payload,
+    now,
+    persisted_request_matches,
+    position_snapshot_values,
+    quantity_unit,
+)
+from .postgres_migrations import apply_postgres_migrations
+
+
+def _iso_timestamp(value: object) -> str:
+    """Serialize both typed migrations and legacy text rows for the API."""
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _decimal_text(value: object) -> str:
+    """Avoid leaking PostgreSQL scale padding into the stable UI contract."""
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    return str(value)
+
+
+class PostgresIntentStore:
+    """Schema-scoped store; import psycopg only when PostgreSQL is configured."""
+
+    def __init__(self, dsn: str, schema: str) -> None:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema):
+            raise ValueError("PostgreSQL schema name is invalid")
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as error:
+            raise RuntimeError("install psycopg[binary] to use AUTOTRADE_GATEWAY_DATABASE_URL") from error
+        self._lock = Lock()
+        self.connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
+        apply_postgres_migrations(self.connection, schema)
+
+    def close(self) -> None:
+        with self._lock:
+            self.connection.close()
+
+    def persist(self, intent: Intent, verdict: Verdict) -> Status:
+        status = Status.APPROVED if verdict.allowed else Status.RISK_REJECTED
+        payload = asdict(intent)
+        payload["source"] = intent.source.value
+        payload["created_at"] = intent.created_at.isoformat()
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """INSERT INTO order_intents(
+                    intent_id, correlation_id, source, strategy_id, run_id, payload_json,
+                    status, risk_reasons_json, created_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(intent_id) DO NOTHING""",
+                (intent.intent_id, intent.correlation_id, intent.source.value, intent.strategy_id,
+                 intent.run_id, json.dumps(payload, separators=(",", ":")), status.value,
+                 json.dumps(verdict.reasons), intent.created_at.isoformat(), timestamp),
+            )
+            if cursor.rowcount != 1:
+                raise DuplicateIntentError(intent.intent_id)
+            cursor = self.connection.execute(
+                "INSERT INTO risk_decisions(intent_id, allowed, reasons_json, decided_at) VALUES (%s,%s,%s,%s)",
+                (intent.intent_id, verdict.allowed, json.dumps(verdict.reasons), timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'INTENT_EVALUATED', %s, %s)""",
+                (
+                    str(uuid4()), intent.intent_id,
+                    json.dumps({
+                        "allowed": verdict.allowed, "risk_reasons": list(verdict.reasons),
+                        "status": status.value,
+                    }, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+            if verdict.allowed:
+                self.connection.execute(
+                    "INSERT INTO execution_outbox(intent_id,state,created_at,updated_at) VALUES (%s,'PENDING',%s,%s)",
+                    (intent.intent_id, timestamp, timestamp),
+                )
+        return status
+
+    def status(self, intent_id: str) -> Status:
+        with self._lock:
+            row = self.connection.execute("SELECT status FROM order_intents WHERE intent_id=%s", (intent_id,)).fetchone()
+        if row is None:
+            raise KeyError(intent_id)
+        return Status(row["status"])
+
+    def has_intent(self, intent_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT 1 FROM order_intents WHERE intent_id=%s", (intent_id,),
+            ).fetchone()
+        return row is not None
+
+    def request_matches(self, intent: Intent) -> bool:
+        """Return true only when an existing durable retry has identical input."""
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=%s", (intent.intent_id,),
+            ).fetchone()
+        return row is not None and persisted_request_matches(intent, str(row["payload_json"]))
+
+    def load_intent(self, intent_id: str) -> Intent:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_id=%s", (intent_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(intent_id)
+        return intent_from_persisted_payload(str(row["payload_json"]))
+
+    def verified_target_intent(self, broker_order_id: str) -> Intent | None:
+        """Resolve only a nonterminal, broker-bound order from this store."""
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT intent.payload_json FROM broker_orders AS broker
+                JOIN order_intents AS intent ON intent.intent_id=broker.intent_id
+                WHERE broker.broker_order_id=%s
+                  AND intent.status IN ('PENDING_SUBMIT','SUBMITTED','PART_FILLED')""",
+                (broker_order_id,),
+            ).fetchone()
+        return intent_from_persisted_payload(str(row["payload_json"])) if row else None
+
+    def outbox_state(self, intent_id: str) -> str | None:
+        with self._lock:
+            row = self.connection.execute("SELECT state FROM execution_outbox WHERE intent_id=%s", (intent_id,)).fetchone()
+        return str(row["state"]) if row else None
+
+    def transition(self, intent_id: str, target: Status) -> None:
+        current = self.status(intent_id)
+        if current is Status.UNKNOWN and target is not Status.RECONCILING:
+            raise ValueError("UNKNOWN orders require reconciliation; they cannot be resent")
+        if current is Status.RECONCILING and target is Status.APPROVED:
+            raise ValueError("reconciliation cannot enqueue a fresh order")
+        with self._lock, self.connection.transaction():
+            timestamp = now().isoformat()
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (target.value, timestamp, intent_id))
+            if target is Status.RECONCILING:
+                self.connection.execute(
+                    "UPDATE reconciliation_cases SET state='RECONCILING', updated_at=%s WHERE intent_id=%s AND state='OPEN'",
+                    (timestamp, intent_id),
+                )
+
+    def recover(self) -> int:
+        uncertain = tuple(status.value for status in _UNCERTAIN)
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """INSERT INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                SELECT intent_id,'OPEN','restart_recovery',%s,%s FROM order_intents WHERE status = ANY(%s)
+                ON CONFLICT DO NOTHING""", (timestamp, timestamp, list(uncertain)),
+            )
+            cursor = self.connection.execute(
+                "UPDATE order_intents SET status=%s, updated_at=%s WHERE status = ANY(%s)",
+                (Status.UNKNOWN.value, timestamp, list(uncertain)),
+            )
+            self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE state IN ('PENDING','LEASED')", (timestamp,))
+        return cursor.rowcount
+
+    def pending_outbox_ids(self) -> list[str]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at, intent_id",
+            ).fetchall()
+        return [str(row["intent_id"]) for row in rows]
+
+    def claim_outbox(self, intent_id: str | None = None) -> str | None:
+        with self._lock, self.connection.transaction():
+            if intent_id is not None:
+                row = self.connection.execute(
+                    "UPDATE execution_outbox SET state='LEASED', updated_at=%s "
+                    "WHERE intent_id=%s AND state='PENDING' RETURNING intent_id",
+                    (now().isoformat(), intent_id),
+                ).fetchone()
+                return str(row["intent_id"]) if row else None
+            row = self.connection.execute(
+                """WITH candidate AS (
+                    SELECT intent_id FROM execution_outbox WHERE state='PENDING'
+                    ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+                ) UPDATE execution_outbox AS outbox SET state='LEASED', updated_at=%s
+                FROM candidate WHERE outbox.intent_id=candidate.intent_id
+                RETURNING outbox.intent_id""",
+                (now().isoformat(),),
+            ).fetchone()
+        return str(row["intent_id"]) if row else None
+
+    def mark_delivery_unknown(self, intent_id: str, reason: str) -> None:
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO reconciliation_cases(intent_id,state,reason,opened_at,updated_at)
+                VALUES (%s,'OPEN',%s,%s,%s) ON CONFLICT DO NOTHING""",
+                (intent_id, reason, timestamp, timestamp),
+            )
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s "
+                "WHERE intent_id=%s AND state IN ('PENDING','LEASED')",
+                (timestamp, intent_id),
+            )
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (Status.UNKNOWN.value, timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'DELIVERY_UNKNOWN', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
+
+    def mark_dispatch_refused(self, intent_id: str, reasons: tuple[str, ...]) -> None:
+        """Reject a leased order whose final preflight failed before any broker I/O."""
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            changed = self.connection.execute(
+                "UPDATE execution_outbox SET state='REFUSED', updated_at=%s WHERE intent_id=%s AND state IN ('PENDING','LEASED') "
+                "AND EXISTS (SELECT 1 FROM order_intents WHERE intent_id=%s AND status='APPROVED')",
+                (timestamp, intent_id, intent_id),
+            ).rowcount
+            if changed == 1:
+                self.connection.execute(
+                    "UPDATE order_intents SET status=%s, risk_reasons_json=%s, updated_at=%s WHERE intent_id=%s",
+                    (Status.RISK_REJECTED.value, json.dumps(list(reasons)), timestamp, intent_id),
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (%s, %s, 'DISPATCH_REFUSED', %s, %s)""",
+                    (str(uuid4()), intent_id, json.dumps({"risk_reasons": list(reasons)}, separators=(",", ":")), timestamp),
+                )
+        if changed != 1:
+            self.mark_delivery_unknown(intent_id, "dispatch_refusal_state_mismatch")
+
+    def mark_operation_pending(self, intent_id: str, broker_order_id: str) -> None:
+        intent = self.load_intent(intent_id)
+        if intent.operation == "PLACE" or intent.target_order_id != broker_order_id:
+            raise ValueError("operation receipt identity mismatch")
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                "UPDATE order_intents SET status='PENDING_SUBMIT', broker_order_id=%s, updated_at=%s WHERE intent_id=%s",
+                (broker_order_id, now().isoformat(), intent_id),
+            )
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s",
+                (now().isoformat(), intent_id),
+            )
+
+    def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None:
+        if not broker_order_id:
+            self.mark_delivery_unknown(intent_id, "missing_broker_identity")
+            return
+        timestamp = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO broker_orders(intent_id, broker_order_id, created_at, updated_at)
+                VALUES (%s,%s,%s,%s)""", (intent_id, broker_order_id, timestamp, timestamp),
+            )
+            self.connection.execute("UPDATE execution_outbox SET state='DISPATCHED', updated_at=%s WHERE intent_id=%s AND state='LEASED'", (timestamp, intent_id))
+            self.connection.execute("UPDATE order_intents SET status=%s, broker_order_id=%s, updated_at=%s WHERE intent_id=%s", (Status.PENDING_SUBMIT.value, broker_order_id, timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'BROKER_ORDER_BOUND', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps({"broker_order_id": broker_order_id}, separators=(",", ":")), timestamp),
+            )
+
+    def record_terminal_callback(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
+            raise ValueError("callback status must be terminal")
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT status, broker_order_id FROM order_intents WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(intent_id)
+            if row["broker_order_id"] != broker_order_id:
+                raise ValueError("callback broker identity does not match intent")
+            current = Status(row["status"])
+            if current is terminal:
+                return
+            if current not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED}:
+                raise ValueError("callback is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                "UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (terminal.value, timestamp, intent_id))
+            self.connection.execute(
+                "UPDATE execution_outbox SET state='TERMINAL', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'BROKER_TERMINAL_CALLBACK', %s, %s)""",
+                (
+                    str(uuid4()), intent_id,
+                    json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+
+    def record_reconciled_terminal(self, intent_id: str, broker_order_id: str, terminal: Status) -> None:
+        if terminal not in {Status.FILLED, Status.CANCELLED, Status.BROKER_REJECTED, Status.COMPLETED}:
+            raise ValueError("reconciled status must be terminal")
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute("SELECT status, broker_order_id FROM order_intents WHERE intent_id=%s", (intent_id,)).fetchone()
+            if row is None or row["broker_order_id"] != broker_order_id:
+                raise ValueError("reconciliation identity does not match intent")
+            if Status(row["status"]) not in {Status.UNKNOWN, Status.RECONCILING}:
+                raise ValueError("reconciliation is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s", (terminal.value, timestamp, intent_id))
+            self.connection.execute("UPDATE execution_outbox SET state='TERMINAL', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
+            self.connection.execute("UPDATE reconciliation_cases SET state='RESOLVED', updated_at=%s WHERE intent_id=%s", (timestamp, intent_id))
+            self.connection.execute("""INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'BROKER_RECONCILED_TERMINAL', %s, %s)""", (str(uuid4()), intent_id, json.dumps({"broker_order_id": broker_order_id, "status": terminal.value}, separators=(",", ":")), timestamp))
+
+    def reconciliation_refresh_receipt(self, idempotency_key: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT intent_id, reason, state, receipt_json FROM reconciliation_refresh_requests WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        receipt: dict[str, object] | None = None
+        if row["receipt_json"] is not None:
+            try:
+                parsed = json.loads(str(row["receipt_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise ValueError("stored reconciliation refresh receipt is invalid") from None
+            if not isinstance(parsed, dict):
+                raise ValueError("stored reconciliation refresh receipt is invalid")
+            receipt = parsed
+        return {"intent_id": str(row["intent_id"]), "reason": str(row["reason"]),
+                "state": str(row["state"]), "receipt": receipt}
+
+    def begin_reconciliation_refresh(self, idempotency_key: str, intent_id: str, reason: str) -> bool:
+        with self._lock, self.connection.transaction():
+            existing = self.connection.execute(
+                "SELECT intent_id, reason FROM reconciliation_refresh_requests WHERE idempotency_key=%s", (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["intent_id"] != intent_id or existing["reason"] != reason:
+                    raise ValueError("idempotency key is already used by a different reconciliation refresh")
+                return False
+            pending = self.connection.execute(
+                "SELECT 1 FROM reconciliation_refresh_requests WHERE intent_id=%s AND state='PENDING'", (intent_id,),
+            ).fetchone()
+            if pending is not None:
+                raise ValueError("reconciliation refresh is already in progress")
+            order = self.connection.execute(
+                "SELECT status FROM order_intents WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            case = self.connection.execute(
+                "SELECT state FROM reconciliation_cases WHERE intent_id=%s FOR UPDATE", (intent_id,),
+            ).fetchone()
+            if order is None or case is None or Status(str(order["status"])) not in {Status.UNKNOWN, Status.RECONCILING}:
+                raise ValueError("reconciliation refresh is not valid for current intent status")
+            if str(case["state"]) == "RESOLVED":
+                raise ValueError("reconciliation refresh is not valid for resolved intent")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT INTO reconciliation_refresh_requests(
+                    idempotency_key,intent_id,reason,state,receipt_json,applied_at,completed_at
+                ) VALUES (%s, %s, %s, 'PENDING', NULL, %s, NULL)""",
+                (idempotency_key, intent_id, reason, timestamp),
+            )
+            self.connection.execute("UPDATE order_intents SET status=%s, updated_at=%s WHERE intent_id=%s",
+                                    (Status.RECONCILING.value, timestamp, intent_id))
+            self.connection.execute("UPDATE reconciliation_cases SET state='RECONCILING', updated_at=%s WHERE intent_id=%s",
+                                    (timestamp, intent_id))
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'RECONCILIATION_REFRESH_STARTED', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
+        return True
+
+    def complete_reconciliation_refresh(
+        self, idempotency_key: str, intent_id: str, reason: str, receipt: dict[str, object],
+    ) -> None:
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT intent_id, reason, state FROM reconciliation_refresh_requests WHERE idempotency_key=%s FOR UPDATE",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None or row["intent_id"] != intent_id or row["reason"] != reason or row["state"] != "PENDING":
+                raise ValueError("reconciliation refresh reservation is invalid")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """UPDATE reconciliation_refresh_requests SET state='COMPLETE', receipt_json=%s, completed_at=%s
+                WHERE idempotency_key=%s""",
+                (json.dumps(receipt, separators=(",", ":")), timestamp, idempotency_key),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'RECONCILIATION_REFRESH_COMPLETED', %s, %s)""",
+                (str(uuid4()), intent_id, json.dumps(receipt, separators=(",", ":")), timestamp),
+            )
+
+    def observation_orders(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute("SELECT intent_id, correlation_id, source, status, strategy_id, run_id, broker_order_id, payload_json, risk_reasons_json, updated_at FROM order_intents ORDER BY updated_at DESC, intent_id DESC").fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_payload = observation.pop("payload_json", "{}")
+            raw_reasons = observation.pop("risk_reasons_json", "[]")
+            try:
+                parsed_payload = json.loads(str(raw_payload))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_payload = {}
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["symbol"] = parsed_payload.get("symbol", "") if isinstance(parsed_payload, dict) else ""
+            observation["account_id"] = parsed_payload.get("account_id", "") if isinstance(parsed_payload, dict) else ""
+            observation["created_at"] = parsed_payload.get("created_at", "") if isinstance(parsed_payload, dict) else ""
+            observation["quantity_unit"] = quantity_unit(parsed_payload)
+            observation["side"] = parsed_payload.get("side", "") if isinstance(parsed_payload, dict) else ""
+            observation["quantity"] = parsed_payload.get("quantity", 0) if isinstance(parsed_payload, dict) else 0
+            observation["limit_price"] = parsed_payload.get("limit_price", "") if isinstance(parsed_payload, dict) else ""
+            observation["order_price_type"] = parsed_payload.get("order_price_type", "LMT") if isinstance(parsed_payload, dict) else "LMT"
+            observation["instrument"] = parsed_payload.get("instrument") if isinstance(parsed_payload, dict) else None
+            observation["operation"] = parsed_payload.get("operation", "PLACE") if isinstance(parsed_payload, dict) else "PLACE"
+            observation["target_order_id"] = parsed_payload.get("target_order_id") if isinstance(parsed_payload, dict) else None
+            observation["operation_payload"] = parsed_payload.get("operation_payload") if isinstance(parsed_payload, dict) else None
+            observation["risk_reasons"] = [reason for reason in parsed_reasons if isinstance(reason, str)] if isinstance(parsed_reasons, list) else []
+            observation["updated_at"] = _iso_timestamp(observation["updated_at"])
+            observations.append(observation)
+        return observations
+
+    def observation_risk_decisions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id, allowed, reasons_json, decided_at FROM risk_decisions "
+                "ORDER BY decided_at DESC, intent_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["allowed"] = bool(observation["allowed"])
+            observation["risk_reasons"] = [
+                reason for reason in parsed_reasons if isinstance(reason, str)
+            ] if isinstance(parsed_reasons, list) else []
+            observation["decided_at"] = _iso_timestamp(observation["decided_at"])
+            observations.append(observation)
+        return observations
+
+    def observation_audit_events(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT event_id, intent_id, event_type, details_json, occurred_at FROM audit_events "
+                "ORDER BY occurred_at DESC, event_id DESC",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_details = observation.pop("details_json", "{}")
+            try:
+                details = json.loads(str(raw_details))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {}
+            observation["details"] = details if isinstance(details, dict) else {}
+            observation["occurred_at"] = _iso_timestamp(observation["occurred_at"])
+            observations.append(observation)
+        return observations
+
+    def record_audit_event(
+        self, intent_id: str | None, event_type: str, details: dict[str, object],
+    ) -> None:
+        """Append a non-broker lifecycle fact without changing delivery state."""
+        if not event_type:
+            raise ValueError("audit event type is required")
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, %s, %s, %s)""",
+                (
+                    str(uuid4()), intent_id, event_type,
+                    json.dumps(details, separators=(",", ":")), now().isoformat(),
+                ),
+            )
+
+    def trading_gate(self) -> Gate:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT state FROM gateway_controls WHERE control_name='trading_gate'",
+            ).fetchone()
+        if row is None:
+            return Gate.DISARMED
+        try:
+            return Gate(str(row["state"]))
+        except ValueError:
+            return Gate.KILLED
+
+    def apply_kill_switch(self, reason: str, idempotency_key: str) -> tuple[Gate, str, bool]:
+        """Persist the one-way local kill control; no unkill path exists here."""
+        with self._lock, self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT state, reason FROM gateway_controls WHERE control_name='trading_gate' FOR UPDATE",
+            ).fetchone()
+            if row is not None:
+                return Gate.KILLED, str(row["reason"]), False
+            timestamp = now().isoformat()
+            self.connection.execute(
+                """INSERT INTO gateway_controls(control_name, state, reason, idempotency_key, applied_at)
+                VALUES ('trading_gate', 'KILLED', %s, %s, %s)""",
+                (reason, idempotency_key, timestamp),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, NULL, 'KILL_SWITCH_APPLIED', %s, %s)""",
+                (str(uuid4()), json.dumps({"reason": reason}, separators=(",", ":")), timestamp),
+            )
+            return Gate.KILLED, reason, True
+
+    def record_fill(self, fill: Fill) -> None:
+        """Record a broker-confirmed fill only for its already-bound identity."""
+        if not fill.fill_id or type(fill.quantity) is not int or fill.quantity <= 0 or fill.filled_at.tzinfo is None:
+            raise ValueError("fill identity and quantity are required")
+        try:
+            if not Decimal(fill.price).is_finite() or Decimal(fill.price) <= 0:
+                raise ValueError("fill price must be positive")
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError("fill price must be positive") from error
+        with self._lock, self.connection.transaction():
+            order = self.connection.execute(
+                "SELECT status, broker_order_id FROM order_intents WHERE intent_id=%s FOR UPDATE", (fill.intent_id,),
+            ).fetchone()
+            if order is None or order["broker_order_id"] != fill.broker_order_id:
+                raise ValueError("fill broker identity does not match intent")
+            existing = self.connection.execute(
+                "SELECT intent_id, broker_order_id, quantity, price, filled_at FROM fills WHERE fill_id=%s", (fill.fill_id,),
+            ).fetchone()
+            if existing is not None:
+                if dict(existing) == {
+                    "intent_id": fill.intent_id, "broker_order_id": fill.broker_order_id,
+                    "quantity": fill.quantity, "price": fill.price, "filled_at": fill.filled_at.isoformat(),
+                }:
+                    return
+                if (
+                    str(existing["intent_id"]) == fill.intent_id
+                    and str(existing["broker_order_id"]) == fill.broker_order_id
+                    and existing["quantity"] == fill.quantity
+                    and _decimal_text(existing["price"]) == _decimal_text(fill.price)
+                    and _iso_timestamp(existing["filled_at"]) == fill.filled_at.isoformat()
+                ):
+                    return
+                raise ValueError("fill identity conflicts with an existing fill")
+            if Status(order["status"]) not in {Status.PENDING_SUBMIT, Status.SUBMITTED, Status.PART_FILLED, Status.FILLED, Status.CANCELLED, Status.UNKNOWN, Status.RECONCILING}:
+                raise ValueError("fill is not valid for current intent status")
+            timestamp = now().isoformat()
+            self.connection.execute(
+                "INSERT INTO fills(fill_id,intent_id,broker_order_id,quantity,price,filled_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                (fill.fill_id, fill.intent_id, fill.broker_order_id, fill.quantity, fill.price, fill.filled_at.isoformat()),
+            )
+            self.connection.execute(
+                """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                VALUES (%s, %s, 'FILL_RECORDED', %s, %s)""",
+                (
+                    str(uuid4()), fill.intent_id,
+                    json.dumps({"fill_id": fill.fill_id, "broker_order_id": fill.broker_order_id}, separators=(",", ":")),
+                    timestamp,
+                ),
+            )
+
+    def observation_fills(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT fill_id,intent_id,broker_order_id,quantity,price,filled_at FROM fills "
+                "ORDER BY filled_at DESC, fill_id DESC",
+            ).fetchall()
+        return [{
+            **dict(row),
+            "price": _decimal_text(row["price"]),
+            "filled_at": _iso_timestamp(row["filled_at"]),
+        } for row in rows]
+
+    def record_position_snapshot(self, snapshot: PositionSnapshot) -> None:
+        self.record_position_snapshots((snapshot,))
+
+    def record_position_snapshots(self, snapshots: tuple[PositionSnapshot, ...]) -> None:
+        """Atomically retain a complete broker-read position observation."""
+        prepared = tuple((snapshot, position_snapshot_values(snapshot)) for snapshot in snapshots)
+        if len({values[0] for _, values in prepared}) != len(prepared):
+            raise ValueError("position snapshot batch has duplicate identities")
+        with self._lock, self.connection.transaction():
+            new: list[tuple[PositionSnapshot, tuple[str, ...]]] = []
+            for snapshot, values in prepared:
+                existing = self.connection.execute(
+                    """SELECT account_type, account_id, symbol, side, quantity, average_price,
+                        market_price, unrealized_pnl, observed_at
+                        FROM broker_position_snapshots WHERE snapshot_id=%s""",
+                    (snapshot.snapshot_id,),
+                ).fetchone()
+                expected = {
+                    "account_type": values[1], "account_id": values[2], "symbol": values[3],
+                    "side": values[4], "quantity": values[5], "average_price": values[6],
+                    "market_price": values[7], "unrealized_pnl": values[8], "observed_at": values[9],
+                }
+                if existing is not None:
+                    actual = {
+                        "account_type": str(existing["account_type"]),
+                        "account_id": str(existing["account_id"]),
+                        "symbol": str(existing["symbol"]),
+                        "side": str(existing["side"]),
+                        "quantity": _decimal_text(existing["quantity"]),
+                        "average_price": _decimal_text(existing["average_price"]),
+                        "market_price": _decimal_text(existing["market_price"]),
+                        "unrealized_pnl": _decimal_text(existing["unrealized_pnl"]),
+                        "observed_at": _iso_timestamp(existing["observed_at"]),
+                    }
+                    if actual != expected:
+                        raise ValueError("position snapshot identity conflicts with an existing snapshot")
+                else:
+                    new.append((snapshot, values))
+            for snapshot, values in new:
+                self.connection.execute(
+                    """INSERT INTO broker_position_snapshots(
+                        snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                        market_price,unrealized_pnl,observed_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    values,
+                )
+                self.connection.execute(
+                    """INSERT INTO audit_events(event_id, intent_id, event_type, details_json, occurred_at)
+                    VALUES (%s, NULL, 'POSITION_SNAPSHOT_RECORDED', %s, %s)""",
+                    (
+                        str(uuid4()), json.dumps({
+                            "snapshot_id": snapshot.snapshot_id,
+                            "account_type": snapshot.account_type,
+                            "symbol": snapshot.symbol,
+                        }, separators=(",", ":")), now().isoformat(),
+                    ),
+                )
+
+    def observation_position_snapshots(self) -> list[dict[str, object]]:
+        """Return internal durable facts; observer routes must mask account_id."""
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT snapshot_id,account_type,account_id,symbol,side,quantity,average_price,
+                    market_price,unrealized_pnl,observed_at FROM broker_position_snapshots
+                    ORDER BY observed_at DESC, snapshot_id DESC""",
+            ).fetchall()
+        return [{
+            **dict(row),
+            "quantity": _decimal_text(row["quantity"]),
+            "average_price": _decimal_text(row["average_price"]),
+            "market_price": _decimal_text(row["market_price"]),
+            "unrealized_pnl": _decimal_text(row["unrealized_pnl"]),
+            "observed_at": _iso_timestamp(row["observed_at"]),
+        } for row in rows]
+
+    def record_signal(self, signal: StrategySignal) -> None:
+        """Persist a signal once; it never changes a broker delivery state."""
+        recorded_at = now().isoformat()
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_signals(
+                    signal_id, strategy_id, run_id, event_id, signal_type, symbol, side,
+                    intent_id, correlation_id, status, risk_reasons_json, observed_at, created_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING""",
+                (
+                    signal.signal_id, signal.strategy_id, signal.run_id, signal.event_id,
+                    signal.signal_type, signal.symbol, signal.side, signal.intent_id,
+                    signal.correlation_id, signal.status.value, json.dumps(signal.risk_reasons),
+                    signal.observed_at.isoformat(), recorded_at,
+                ),
+            )
+
+    def observation_signals(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT signal_id, strategy_id, run_id, event_id, signal_type, symbol, side,
+                    intent_id, correlation_id, status, risk_reasons_json, observed_at
+                    FROM strategy_signals ORDER BY observed_at DESC, signal_id DESC""",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_reasons = observation.pop("risk_reasons_json", "[]")
+            try:
+                parsed_reasons = json.loads(str(raw_reasons))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_reasons = []
+            observation["risk_reasons"] = [
+                reason for reason in parsed_reasons if isinstance(reason, str)
+            ] if isinstance(parsed_reasons, list) else []
+            observation["observed_at"] = _iso_timestamp(observation["observed_at"])
+            observations.append(observation)
+        return observations
+
+    def record_strategy_definition(self, definition: StrategyDefinition) -> None:
+        """Persist a descriptor without starting, pausing, or dispatching it."""
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_definitions(strategy_id, state, enabled, allowed_symbols_json)
+                VALUES (%s, %s, %s, %s) ON CONFLICT(strategy_id) DO NOTHING""",
+                (definition.strategy_id, definition.state, definition.enabled,
+                 json.dumps(definition.allowed_symbols)),
+            )
+            self.connection.execute(
+                """INSERT INTO strategy_versions(strategy_id, version, config_checksum)
+                VALUES (%s, %s, %s) ON CONFLICT(strategy_id, version) DO NOTHING""",
+                (definition.strategy_id, definition.version, definition.config_checksum),
+            )
+
+    def set_strategy_definition_state(self, strategy_id: str, state: str, enabled: bool) -> None:
+        """Persist an operator lifecycle state without touching any intent."""
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=%s, enabled=%s WHERE strategy_id=%s",
+                (state, enabled, strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
+
+    def strategy_control_receipt(self, idempotency_key: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT strategy_id, action, reason, receipt_json FROM strategy_control_requests WHERE idempotency_key=%s",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            receipt = json.loads(str(row["receipt_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError("stored strategy control receipt is invalid") from None
+        if not isinstance(receipt, dict):
+            raise ValueError("stored strategy control receipt is invalid")
+        return {"strategy_id": str(row["strategy_id"]), "action": str(row["action"]),
+                "reason": str(row["reason"]), "receipt": receipt}
+
+    def record_strategy_control(
+        self, idempotency_key: str, strategy_id: str, action: str, reason: str, receipt: dict[str, object],
+    ) -> bool:
+        existing = self.strategy_control_receipt(idempotency_key)
+        expected = {"strategy_id": strategy_id, "action": action, "reason": reason, "receipt": receipt}
+        if existing is not None:
+            if existing != expected:
+                raise ValueError("idempotency key is already used by a different strategy control")
+            return False
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """INSERT INTO strategy_control_requests(
+                    idempotency_key,strategy_id,action,reason,receipt_json,applied_at
+                ) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+                (idempotency_key, strategy_id, action, reason,
+                 json.dumps(receipt, separators=(",", ":")), now().isoformat()),
+            )
+        created = cursor.rowcount == 1
+        existing = self.strategy_control_receipt(idempotency_key)
+        if existing != expected:
+            raise ValueError("idempotency key is already used by a different strategy control")
+        return created
+
+    def observation_strategy_definitions(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT definition.strategy_id, version.version, version.config_checksum,
+                    definition.state, definition.enabled, definition.allowed_symbols_json
+                    FROM strategy_definitions AS definition
+                    JOIN strategy_versions AS version ON version.strategy_id = definition.strategy_id
+                    ORDER BY definition.strategy_id, version.version""",
+            ).fetchall()
+        observations: list[dict[str, object]] = []
+        for row in rows:
+            observation = dict(row)
+            raw_symbols = observation.pop("allowed_symbols_json", "[]")
+            try:
+                symbols = json.loads(str(raw_symbols))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                symbols = []
+            observation["enabled"] = bool(observation["enabled"])
+            observation["allowed_symbols"] = [
+                symbol for symbol in symbols if isinstance(symbol, str)
+            ] if isinstance(symbols, list) else []
+            observations.append(observation)
+        return observations
+
+    def record_strategy_run(self, run: StrategyRun) -> None:
+        """Persist one fixture lifecycle without changing any delivery state."""
+        with self._lock, self.connection.transaction():
+            self.connection.execute(
+                """INSERT INTO strategy_runs(
+                    run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(run_id) DO NOTHING""",
+                (
+                    run.run_id, run.strategy_id, run.version, run.config_checksum, run.state,
+                    run.last_intent_id, run.last_status.value if run.last_status else None,
+                    run.intent_count, run.started_at.isoformat(),
+                    run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+                    run.ended_at.isoformat() if run.ended_at else None, run.updated_at.isoformat(),
+                ),
+            )
+            if run.heartbeat_at is not None:
+                self.connection.execute(
+                    """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                    ON CONFLICT DO NOTHING""", (run.run_id, run.heartbeat_at.isoformat()),
+                )
+
+    def start_strategy_lifecycle(self, run: StrategyRun) -> None:
+        """Atomically create an active run and expose its definition state."""
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state='RUNNING', enabled=true WHERE strategy_id=%s",
+                (run.strategy_id,),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run.strategy_id)
+            self.connection.execute(
+                """INSERT INTO strategy_runs(
+                    run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (run.run_id, run.strategy_id, run.version, run.config_checksum, run.state,
+                 run.last_intent_id, run.last_status.value if run.last_status else None,
+                 run.intent_count, run.started_at.isoformat(),
+                 run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+                 run.ended_at.isoformat() if run.ended_at else None, run.updated_at.isoformat()),
+            )
+            if run.heartbeat_at is not None:
+                self.connection.execute(
+                    "INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)",
+                    (run.run_id, run.heartbeat_at.isoformat()),
+                )
+
+    def record_strategy_heartbeat(self, run_id: str, observed_at: datetime) -> None:
+        """Record a monotonic liveness fact for an existing durable run."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET heartbeat_at=CASE
+                    WHEN heartbeat_at IS NULL OR heartbeat_at < %s THEN %s ELSE heartbeat_at END,
+                    updated_at=CASE WHEN updated_at < %s THEN %s ELSE updated_at END
+                    WHERE run_id=%s""",
+                (timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def record_strategy_intent_result(
+        self, run_id: str, intent_id: str, status: Status, observed_at: datetime,
+    ) -> None:
+        """Attach one accepted strategy intent to its active durable run.
+
+        The comparison is NULL-safe so a replay of the same intent never
+        increments ``intent_count`` while still recording a fresh heartbeat.
+        """
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET last_intent_id=%s, last_status=%s,
+                    intent_count=CASE WHEN last_intent_id IS NOT DISTINCT FROM %s
+                        THEN intent_count ELSE intent_count + 1 END,
+                    heartbeat_at=CASE WHEN heartbeat_at IS NULL OR heartbeat_at < %s
+                        THEN %s ELSE heartbeat_at END,
+                    updated_at=CASE WHEN updated_at < %s THEN %s ELSE updated_at END
+                    WHERE run_id=%s""",
+                (intent_id, status.value, intent_id, timestamp, timestamp, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_run(self, run_id: str, state: str, observed_at: datetime) -> None:
+        """Move a durable run without creating, changing, or dispatching orders."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=%s, heartbeat_at=%s,
+                    ended_at=CASE WHEN %s='STOPPED' THEN %s ELSE ended_at END,
+                    updated_at=%s WHERE run_id=%s""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def transition_strategy_lifecycle(
+        self, run_id: str, strategy_id: str, state: str, enabled: bool, observed_at: datetime,
+    ) -> None:
+        """Atomically move the run and the user-visible definition state."""
+        timestamp = observed_at.isoformat()
+        with self._lock, self.connection.transaction():
+            cursor = self.connection.execute(
+                """UPDATE strategy_runs SET state=%s, heartbeat_at=%s,
+                    ended_at=CASE WHEN %s='STOPPED' THEN %s ELSE ended_at END,
+                    updated_at=%s WHERE run_id=%s""",
+                (state, timestamp, state, timestamp, timestamp, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(run_id)
+            cursor = self.connection.execute(
+                "UPDATE strategy_definitions SET state=%s, enabled=%s WHERE strategy_id=%s",
+                (state, enabled, strategy_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(strategy_id)
+            self.connection.execute(
+                """INSERT INTO strategy_heartbeats(run_id, observed_at) VALUES (%s, %s)
+                ON CONFLICT DO NOTHING""", (run_id, timestamp),
+            )
+
+    def observation_strategy_runs(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                """SELECT run_id, strategy_id, version, config_checksum, state, last_intent_id,
+                    last_status, intent_count, started_at, heartbeat_at, ended_at, updated_at
+                    FROM strategy_runs ORDER BY updated_at DESC, run_id DESC""",
+            ).fetchall()
+        return [{
+            **dict(row),
+            "started_at": _iso_timestamp(row["started_at"]),
+            "heartbeat_at": _iso_timestamp(row["heartbeat_at"]) if row["heartbeat_at"] is not None else None,
+            "ended_at": _iso_timestamp(row["ended_at"]) if row["ended_at"] is not None else None,
+            "updated_at": _iso_timestamp(row["updated_at"]),
+        } for row in rows]
+
+    def observation_reconciliation_cases(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id,state,reason,opened_at,updated_at FROM reconciliation_cases ORDER BY opened_at DESC, intent_id DESC",
+            ).fetchall()
+        return [{
+            **dict(row),
+            "opened_at": _iso_timestamp(row["opened_at"]),
+            "updated_at": _iso_timestamp(row["updated_at"]),
+        } for row in rows]

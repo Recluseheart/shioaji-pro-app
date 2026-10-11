@@ -1,5 +1,4 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { getApiBase, isTauri } from '../lib/runtime';
 import { useMonitorResource } from '../hooks/use-monitor-resource';
 import { completionWindows, monitorWarnings, parseMetrics, parseSubscriptions, parseUsage, quotaState, type MetricsReport } from '../lib/server-monitor';
 import * as styles from './server-monitor.css';
@@ -19,9 +18,6 @@ function RateCard({ report, label, seconds }: { report: MetricsReport | null; la
 export function ServerMonitor() {
     const [paused, setPaused] = useState(false);
     const [visible, setVisible] = useState(document.visibilityState === 'visible');
-    const [dashboard, setDashboard] = useState(false);
-    const [ownedOrigin, setOwnedOrigin] = useState<string | null>(null);
-    const base = getApiBase();
     const enabled = visible && !paused;
     useEffect(() => {
         const changed = () => setVisible(document.visibilityState === 'visible');
@@ -34,26 +30,6 @@ export function ServerMonitor() {
     const portfolio = useMonitorResource(metricPath('portfolio'), enabled, 10_000, parseMetrics);
     const orders = useMonitorResource(metricPath('order'), enabled, 10_000, parseMetrics);
     const subscriptions = useMonitorResource('/api/v1/monitor/subscriptions?limit=1', enabled, 30_000, parseSubscriptions);
-    useEffect(() => {
-        setOwnedOrigin(null);
-        if (!isTauri || !enabled) return;
-        let url: URL;
-        try { url = new URL(base); } catch { return; }
-        if (!['http:', 'https:'].includes(url.protocol) || url.hostname !== '127.0.0.1') return;
-        let active = true;
-        let timer: ReturnType<typeof setTimeout>;
-        const check = async () => {
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                const owned = await invoke<boolean>('agent_harness_sidecar_owned', { port: Number(url.port) });
-                if (active) setOwnedOrigin(owned ? url.origin : null);
-            } catch { if (active) setOwnedOrigin(null); }
-            finally { if (active) timer = setTimeout(check, 15_000); }
-        };
-        void check();
-        return () => { active = false; clearTimeout(timer); };
-    }, [base, enabled, dashboard]);
-
     const quota = quotaState(usage.data);
     const report = metrics.data;
     const warnings = [...new Set([report, data.data, portfolio.data, orders.data].flatMap(r => r ? monitorWarnings(r) : []))];
@@ -103,8 +79,6 @@ export function ServerMonitor() {
             <p className={styles.caption}>{sub && !sub.unavailable ? Object.entries(sub.by_type).map(([type, count]) => `${type} ${count}`).join(' · ') : '訂閱資料未知'}{sub?.partial ? ' · 分布不完整' : ''}</p>
             <p className={styles.caption}>請求摘要：{report ? report.settings.capture.requests ? '已啟用' : '未開啟，無明細不代表沒有請求' : '未知'}<br />串流統計：{report ? report.settings.capture.streams === 'auto' ? '按需；展開官方 Dashboard 的連線詳情才收集' : '已停用' : '未知'}<br />歷史最後儲存：{report?.last_saved_ms ? new Date(report.last_saved_ms).toLocaleTimeString('zh-TW', { hour12: false }) : '尚無紀錄'}</p>
         </details>
-        {ownedOrigin && <button className={styles.button} aria-expanded={dashboard} onClick={() => setDashboard(v => !v)}>{dashboard ? '收合' : '開啟'}官方 Server Dashboard</button>}
-        {dashboard && enabled && ownedOrigin && <iframe className={styles.frame} title="Shioaji 1.7.5 Server Dashboard" src={`${ownedOrigin}/?monitor.source=backend&monitor.origin=all&monitor.window=5m`} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" />}
-        {dashboard && <p className={styles.caption}>收合、暫停或隱藏本頁會卸載 Dashboard，釋放自己的收集 session；不影響行情訂閱。完整 Dashboard 建議放大面板查看。</p>}
+        <p className={styles.caption}>官方 Server Dashboard 不嵌入 WebView，避免瀏覽器直連 broker-session sidecar；本面板只顯示 Gateway 代理的唯讀監控資料。</p>
     </section>;
 }

@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GridLayout, {
+    noCompactor,
     useContainerWidth,
     type Layout,
     type LayoutItem,
@@ -51,6 +52,9 @@ import { TrayPanel } from './components/tray-panel';
 import { VolProfile } from './components/vol-profile';
 import { WarrantPanel } from './components/warrant-panel';
 import { Watchlist } from './components/watchlist';
+import { AutoCommandCenter } from './components/auto-command-center';
+import { AutotradeObserverPanels } from './components/autotrade-observer-panels';
+import { registerPresetLoader } from './autotrade/workspace-commands';
 import * as grid from './grid.css';
 import { useHotkeys } from './hooks/use-hotkeys';
 import { useWatchlist } from './hooks/use-watchlist';
@@ -364,6 +368,15 @@ function BlockBody({
             ) : (
                 <BlockPlaceholder />
             );
+        case 'auto_command':
+            return <AutoCommandCenter />;
+        case 'strategy_control':
+        case 'signal_timeline':
+        case 'auto_orders':
+        case 'risk_limits':
+        case 'reconciliation':
+        case 'run_performance':
+            return <AutotradeObserverPanels kind={block.type} onSelectCode={onSelectCode} />;
     }
 }
 
@@ -873,7 +886,14 @@ function MainApp() {
             const item: LayoutItem = {
                 i: id,
                 x: 0,
-                y: Infinity, // RGL drops it at the bottom
+                // Use a concrete bottom row rather than RGL's Infinity
+                // sentinel. Desktop vertical compaction keeps the same
+                // visible placement, while the mobile no-compaction layout
+                // can safely persist a user-reordered panel.
+                y: workspace.layout.reduce(
+                    (bottom, layout) => Math.max(bottom, layout.y + layout.h),
+                    0,
+                ),
                 // defaultSize 以 24 欄語意撰寫 → 存檔是 288 基準
                 w: meta.defaultSize.w * GRID_LEGACY_SCALE,
                 h: meta.defaultSize.h,
@@ -983,6 +1003,9 @@ function MainApp() {
         },
         [updateWorkspace],
     );
+
+    // Lets the Autotrade command center switch layouts with one click.
+    useEffect(() => registerPresetLoader(loadPreset), [loadPreset]);
 
     // ---- profiles ----
 
@@ -1182,6 +1205,13 @@ function MainApp() {
                     <GridLayout
                         layout={renderLayout}
                         width={width}
+                        // A narrow one-column terminal has no horizontal
+                        // escape hatch. Vertical compaction would therefore
+                        // snap every downward mobile drag back to its old row
+                        // and make manual panel ordering impossible. Keep
+                        // desktop packing unchanged while preserving an
+                        // explicit mobile placement.
+                        compactor={width < 640 ? noCompactor : undefined}
                         gridConfig={{
                             cols: renderCols,
                             rowHeight: 30,

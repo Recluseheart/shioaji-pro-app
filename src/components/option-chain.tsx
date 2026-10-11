@@ -28,8 +28,7 @@ let optLoading: Promise<OptContract[]> | null = null;
 async function loadTxo(): Promise<OptContract[]> {
     if (optCache) return optCache;
     if (optLoading) return optLoading;
-    optLoading = (async () => {
-        const rows = await fetchOptions('TXO');
+    optLoading = fetchOptions('TXO').then((rows) => {
         optCache = rows.filter(
             (c): c is OptContract =>
                 c.security_type === 'OPT' &&
@@ -39,7 +38,12 @@ async function loadTxo(): Promise<OptContract[]> {
                 typeof c.option_right === 'string',
         );
         return optCache;
-    })();
+    }).catch((error: unknown) => {
+        // A failed request must not poison the shared single-flight cache:
+        // a panel retry needs a new Gateway read, not the same rejected promise.
+        optLoading = null;
+        throw error;
+    });
     return optLoading;
 }
 
@@ -61,11 +65,17 @@ export function OptionChain({
         () => localStorage.getItem(MONTH_KEY) ?? '',
     );
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [loadAttempt, setLoadAttempt] = useState(0);
     const txf = useQuote('TXFR1');
 
     useEffect(() => {
+        let active = true;
+        setLoading(true);
+        setLoadError(null);
         loadTxo()
             .then((cs) => {
+                if (!active) return;
                 setContracts(cs);
                 const months = [...new Set(cs.map((c) => c.delivery_month))]
                     .filter(Boolean)
@@ -75,8 +85,18 @@ export function OptionChain({
                     m && months.includes(m) ? m : (months[0] ?? ''),
                 );
             })
-            .finally(() => setLoading(false));
-    }, []);
+            .catch(() => {
+                if (!active) return;
+                setContracts([]);
+                setLoadError('TXO 合約載入失敗，請稍後重試');
+            })
+            .finally(() => {
+                if (active) setLoading(false);
+            });
+        return () => {
+            active = false;
+        };
+    }, [loadAttempt]);
 
     const months = useMemo(
         () =>
@@ -143,6 +163,15 @@ export function OptionChain({
                 <Orb size={12} style={{ marginRight: 6, verticalAlign: '-2px' }} />
                 載入 TXO 合約…
             </div>;
+    }
+    if (loadError) {
+        return <div className={dock.emptyState}>
+            <span role='status'>{loadError}</span>
+            <RefreshButton
+                label='重試 TXO 合約'
+                onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+            />
+        </div>;
     }
     if (rows.length === 0) {
         return <div className={dock.emptyState}>無可用合約</div>;

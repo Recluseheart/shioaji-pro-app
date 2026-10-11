@@ -9,7 +9,6 @@ import shutil
 import signal
 import socket
 import subprocess
-import sys
 import time
 from urllib.request import urlopen
 
@@ -54,6 +53,9 @@ def main():
         return
     for port in (18082, args.web_port):
         with socket.socket() as probe:
+            # Like the servers themselves, ignore TIME_WAIT left by a stack
+            # that just stopped; a live listener still refuses the bind.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", port))
             except OSError:

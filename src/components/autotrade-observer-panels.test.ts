@@ -13,6 +13,7 @@ import {
     DurableOrderDetail,
     AutotradeObserverPanels,
     decisionChain,
+    filledText,
     filterTimeline,
     heartbeatText,
     orderObservationText,
@@ -280,13 +281,13 @@ describe('Spec panel helpers', () => {
     it('chains a filled order from trigger to fill with the broker id and average price', () => {
         const overview = normalizeAutotradeOverview({
             decisions: [order({ status: 'FILLED', allowed: true, decided_at: '2026-10-01T01:00:01+00:00' })],
-            orders: [order({ status: 'FILLED', broker_order_id: 'B1', filled_quantity: 1, avg_fill_price: '999', quantity_unit: '張' })],
+            orders: [order({ status: 'FILLED', broker_order_id: 'B1', filled_quantity: 1000, avg_fill_price: '999', quantity_unit: '張' })],
             audit_events: [{ event_id: 'e1', intent_id: 'intent-1', event_type: 'BROKER_ORDER_BOUND', details: {}, occurred_at: '2026-10-01T01:00:02+00:00' }],
         });
         const chain = decisionChain(overview, overview.decisions[0]!);
         expect(chain.steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'done', 'done']);
         expect(chain.steps[2]!.text).toContain('B1');
-        expect(chain.steps[4]!.text).toBe('全部成交 1張 · 均價 999');
+        expect(chain.steps[4]!.text).toBe('全部成交 1000股（1張） · 均價 999');
         expect(chain.title).toContain('2330 買 1張 @ 1000');
     });
 
@@ -309,6 +310,13 @@ describe('Spec panel helpers', () => {
         const send = decisionChain(unknown, unknown.decisions[0]!).steps[2]!;
         expect(send.state).toBe('failed');
         expect(send.text).toContain('不會自動重送');
+    });
+
+    it('shows fills in shares, with board lots alongside, because fills are recorded in risk units', () => {
+        expect(filledText({ filled_quantity: 2000, quantity_unit: '張' })).toBe('2000股（2張）');
+        expect(filledText({ filled_quantity: 500, quantity_unit: '股' })).toBe('500股');
+        expect(filledText({ filled_quantity: 1, quantity_unit: '口' })).toBe('1口');
+        expect(filledText({ filled_quantity: 2 })).toBe('2');
     });
 
     it('puts uncertain orders first, then the newest', () => {
@@ -381,7 +389,7 @@ describe('Spec panel interactions', () => {
     it('flags uncertain auto orders first and links a row to the K-line', async () => {
         const onSelectCode = vi.fn();
         const renderer = await render('auto_orders', {
-            health,
+            health: { ...health, environment: 'SIM' },
             orders: [order({ intent_id: 'ok', symbol: '2317' }), order({ intent_id: 'lost', status: 'UNKNOWN', account_id: 'SIM-001' })],
         }, onSelectCode);
         const output = JSON.stringify(renderer.toJSON());
@@ -389,6 +397,13 @@ describe('Spec panel interactions', () => {
         expect(output).toContain('帳號 SIM-001');
         await act(async () => button(renderer, '在 K 線顯示').props.onClick());
         expect(onSelectCode).toHaveBeenCalledWith('2330');
+        await act(async () => renderer.unmount());
+    });
+
+    it('offers no K-line link in PAPER, which has no broker market data', async () => {
+        const renderer = await render('auto_orders', { health, orders: [order({})] }, vi.fn());
+        expect(renderer.root.findAllByType('button').some((node) => textOf(node as never) === '在 K 線顯示')).toBe(false);
+        expect(textOf(renderer.toJSON() as never)).toContain('策略 demo · 執行 run-1');
         await act(async () => renderer.unmount());
     });
 

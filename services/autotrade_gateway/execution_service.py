@@ -221,6 +221,7 @@ def risk_limits_from_environment(environment: Mapping[str, str]) -> RiskLimits:
         base,
         allowed_symbols=tuple(dict.fromkeys((*base.allowed_symbols, *extra, *cb))),
         slow_quote_symbols=cb,
+        board_lot_only_symbols=cb,
         slow_quote_max_age_seconds=integer("AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS", 60, 5, 3600),
         max_position_per_symbol=integer(
             "AUTOTRADE_MAX_POSITION_PER_SYMBOL", base.max_position_per_symbol, 1, 1_000_000

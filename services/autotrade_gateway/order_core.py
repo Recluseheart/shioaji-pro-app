@@ -415,6 +415,8 @@ class RiskLimits:
     # seconds; their last-trade time is checked against a longer, explicit age.
     slow_quote_symbols: tuple[str, ...] = ()
     slow_quote_max_age_seconds: int = 60
+    # Convertible bonds have no odd-lot market; odd-lot orders are refused.
+    board_lot_only_symbols: tuple[str, ...] = ()
     # Futures are limited by contract count and contract value, never by the
     # share-based stock limits above. Only explicitly allowed roots may trade.
     allowed_futures_roots: tuple[str, ...] = ("TXF",)
@@ -438,6 +440,7 @@ class RiskLimits:
             "cooldown_seconds": self.cooldown_seconds,
             "slow_quote_symbols": list(self.slow_quote_symbols),
             "slow_quote_max_age_seconds": self.slow_quote_max_age_seconds,
+            "board_lot_only_symbols": list(self.board_lot_only_symbols),
             "allowed_futures_roots": list(self.allowed_futures_roots),
             "futures_multipliers": {root: str(value) for root, value in self.futures_multipliers},
             "max_futures_order_contracts": self.max_futures_order_contracts,
@@ -466,6 +469,7 @@ class InstrumentProfile:
     units: int
     multiplier: Decimal = Decimal("1")
     root: str | None = None
+    odd_lot: bool = False
 
     @property
     def is_futures(self) -> bool:
@@ -499,7 +503,7 @@ def instrument_profile(intent: Intent, limits: RiskLimits | None = None) -> Inst
         if lot in {"Common", "Fixing"}:
             return InstrumentProfile("STOCK", intent.quantity * 1000)
         if lot in {"Odd", "IntradayOdd"}:
-            return InstrumentProfile("STOCK", intent.quantity)
+            return InstrumentProfile("STOCK", intent.quantity, odd_lot=True)
         raise ValueError("unsupported stock lot")
     if isinstance(futures, dict) and stock is None:
         if futures.get("quantity") != intent.quantity:
@@ -571,6 +575,12 @@ class RiskEngine:
                 reasons.append("invalid_quantity")
             elif quantity > quantity_limit:
                 reasons.append("quantity_limit_exceeded")
+            if profile is not None and profile.odd_lot:
+                # Odd lots are 1-999 shares per order; CBs have no odd-lot market.
+                if quantity > 999:
+                    reasons.append("odd_lot_quantity_exceeded")
+                if intent.symbol in self.limits.board_lot_only_symbols:
+                    reasons.append("odd_lot_not_supported")
             if intent.order_price_type not in {"LMT", "MKT", "MKP"}:
                 reasons.append("invalid_order_price_type")
             elif intent.order_price_type == "LMT":

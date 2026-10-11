@@ -16,6 +16,7 @@ from services.autotrade_gateway.strategy_plugins import (
     REPOSITORY_ROOT,
     PluginStrategyRuntime,
     load_private_strategy,
+    stock_order_parts,
 )
 
 # A scripted fixture, not a trading strategy: it proposes exactly what its
@@ -31,7 +32,8 @@ class Scripted:
     config_fields = ({"name": "symbol", "label": "symbol", "type": "text"},)
 
     def default_config(self):
-        return {"symbol": "11011", "side": "BUY", "quantity": 1, "max_signals": 1, "fail": False}
+        return {"symbol": "11011", "side": "BUY", "quantity": 1, "lot": "Common",
+                "max_signals": 1, "fail": False}
 
     def parse_config(self, raw):
         if not isinstance(raw, dict) or set(raw) != set(self.default_config()):
@@ -44,13 +46,14 @@ class Scripted:
     def max_signals(self, config):
         return config["max_signals"]
 
-    def decide(self, config, markets, positions):
+    def decide(self, config, markets, positions, activity):
         if config["fail"]:
             raise RuntimeError("scripted failure")
         market = markets.get(config["symbol"])
         if market is None:
             return []
-        return [OrderProposal(config["symbol"], config["side"], config["quantity"], market.last_price)]
+        return [OrderProposal(config["symbol"], config["side"], config["quantity"], market.last_price,
+                              lot=config["lot"])]
 
 
 STRATEGY = Scripted()
@@ -94,7 +97,9 @@ class PluginExecutionTest(unittest.TestCase):
         self.broker = PaperTransport(self.store)
         self.service = ExecutionService(
             self.store, self.broker, lambda _: None, allow_execution=True,
-            limits=RiskLimits(cooldown_seconds=0, slow_quote_symbols=("11011",)),
+            limits=RiskLimits(
+                cooldown_seconds=0, slow_quote_symbols=("11011",), board_lot_only_symbols=("11011",),
+            ),
             strategy_plugin=self.plugin,
         )
         self.strategy = self.service.strategy
@@ -162,6 +167,74 @@ class PluginExecutionTest(unittest.TestCase):
         self.service.coordinator.risk.limits = tight
         with self.assertRaises(ValueError):
             self.configure(symbol="11011")
+
+    def run_ticks(self, count):
+        for _ in range(count):
+            self.service.tick()
+
+    def strategy_orders(self):
+        rows = [row for row in self.store.observation_orders() if row.get("strategy_id") == "scripted-test"]
+        orders = [(self.store.load_intent(str(row["intent_id"])), row["status"]) for row in rows]
+        return sorted(orders, key=lambda item: item[0].created_at)
+
+    def lot_of(self, intent):
+        return intent.broker_request["body"]["stock_order"]["order_lot"]
+
+    def test_auto_lot_rule_board_lots_from_1000_shares(self):
+        for shares, expected in ((1, [("IntradayOdd", 1)]), (999, [("IntradayOdd", 999)]),
+                                 (1000, [("Common", 1)]), (1500, [("Common", 1), ("IntradayOdd", 500)]),
+                                 (2000, [("Common", 2)])):
+            self.assertEqual([(p.lot, p.quantity) for p in stock_order_parts(shares)], expected)
+        with self.assertRaises(ValueError):
+            stock_order_parts(0)
+        self.configure(symbol="2330", lot="AUTO", quantity=999)
+        orders = self.strategy.dry_run_document()["proposals"][0]["orders"]
+        self.assertEqual(orders, [{"lot": "IntradayOdd", "quantity": 999}])
+
+    def test_auto_split_sends_odd_remainder_only_after_board_lot_fills(self):
+        self.configure(symbol="2330", lot="AUTO", quantity=1500)
+        self.service.control("arm", "plugin test", "arm-1")
+        self.strategy.control("start")
+        self.service.tick()
+        orders = self.strategy_orders()
+        self.assertEqual([(self.lot_of(i), i.quantity) for i, _ in orders], [("Common", 1)])
+        self.run_ticks(3)
+        orders = self.strategy_orders()
+        self.assertEqual(
+            [(self.lot_of(i), i.quantity, status) for i, status in orders],
+            [("Common", 1, "FILLED"), ("IntradayOdd", 500, "FILLED")],
+        )
+        self.assertEqual(sorted(int(str(f["quantity"])) for f in self.store.observation_fills()), [500, 1000])
+        self.assertEqual(self.strategy._activity()["2330"].buy_units, 1500)
+
+    def test_odd_remainder_is_dropped_when_board_lot_does_not_fill(self):
+        self.configure(symbol="2330", lot="AUTO", quantity=1500)
+        self.service.control("arm", "plugin test", "arm-1")
+        self.strategy.control("start")
+        self.service.tick()
+        row = next(iter(self.broker.rows.values()))
+        row["status"].update(status="Cancelled", order_quantity=0, cancel_quantity=1)
+        self.run_ticks(3)
+        orders = self.strategy_orders()
+        self.assertEqual([(self.lot_of(i), status) for i, status in orders], [("Common", "CANCELLED")])
+        dropped = [e for e in self.store.observation_audit_events()
+                   if e["event_type"] == "STRATEGY_ODD_REMAINDER_DROPPED"]
+        self.assertEqual([(e["details"]["board_lot_status"], e["details"]["odd_lot_shares"]) for e in dropped],
+                         [("CANCELLED", 500)])
+        self.assertEqual(self.strategy._activity()["2330"].buy_units, 0)
+
+    def test_convertible_bonds_never_trade_odd_lots(self):
+        self.configure(lot="AUTO", quantity=1500)
+        self.service.control("arm", "plugin test", "arm-1")
+        self.strategy.control("start")
+        self.service.tick()
+        self.assertEqual(self.strategy_orders(), [])
+        self.assertIn("1,000 的倍數", str(self.strategy.observations()[0]["last_error"]))
+        self.strategy.control("stop")
+        self.configure(lot="AUTO", quantity=2000)
+        self.strategy.control("start")
+        self.service.tick()
+        self.assertEqual([(self.lot_of(i), i.quantity) for i, _ in self.strategy_orders()], [("Common", 2)])
 
     def test_rolling_futures_alias_is_placed_on_its_month_contract(self):
         class Resolver:

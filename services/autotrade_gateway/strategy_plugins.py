@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Mapping, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from .order_core import (
     Gate,
@@ -30,11 +31,13 @@ from .order_core import (
     Source,
     StrategyDefinition,
     futures_root,
+    instrument_profile,
 )
 from .simulation_snapshot import ContractRef
 from .strategy_runtime import StrategyRuntime
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 @dataclass(frozen=True)
@@ -57,15 +60,63 @@ class PositionView:
 
 
 @dataclass(frozen=True)
+class DailyActivity:
+    """This strategy's orders today (Asia/Taipei) for one symbol, in units.
+
+    Rejected orders do not count; cancelled or broker-rejected orders count
+    only what was filled. Read from the durable journal, so it survives restarts.
+    """
+
+    symbol: str
+    buy_units: int = 0
+    sell_units: int = 0
+
+
+@dataclass(frozen=True)
 class OrderProposal:
-    """A strategy's request; quantity is in broker units (張 / 股 / 口)."""
+    """A strategy's request.
+
+    ``lot`` decides the quantity unit for stocks:
+
+    - ``AUTO`` (default): quantity in shares. 999 or fewer trade as intraday
+      odd lots; 1,000 or more trade as board lots, and a non-multiple is split
+      into a board-lot order plus an odd-lot order (1,500 = 1 張 + 500 股).
+      Symbols without an odd-lot market (CBs) must be whole multiples of 1,000.
+    - ``Common``: quantity in board lots (張).
+    - ``IntradayOdd``: quantity in shares, 1-999.
+
+    Futures quantities are always contracts (口) and ignore ``lot``.
+    """
 
     symbol: str
     side: str
     quantity: int
     price: Decimal
-    lot: str = "Common"
+    lot: str = "AUTO"
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class OrderPart:
+    lot: str
+    quantity: int
+
+
+BOARD_LOT_SHARES = 1000
+
+
+def stock_order_parts(shares: int) -> tuple[OrderPart, ...]:
+    """Board lots first, then the odd remainder (1,500 -> 1 張 + 500 股)."""
+    if type(shares) is not int or shares <= 0:
+        raise ValueError("股數必須為正整數")
+    lots, rest = divmod(shares, BOARD_LOT_SHARES)
+    return tuple(
+        part for part in (OrderPart("Common", lots), OrderPart("IntradayOdd", rest)) if part.quantity
+    )
+
+
+TERMINAL_UNFILLED = {"CANCELLED", "BROKER_REJECTED"}
+WAITING = {"APPROVED", "SENDING", "PENDING_SUBMIT", "SUBMITTED", "PART_FILLED"}
 
 
 class StrategyPlugin(Protocol):
@@ -87,6 +138,7 @@ class StrategyPlugin(Protocol):
         config: Mapping[str, object],
         markets: Mapping[str, MarketView],
         positions: Mapping[str, PositionView],
+        activity: Mapping[str, DailyActivity],
     ) -> list[OrderProposal]: ...
 
 
@@ -157,6 +209,8 @@ class PluginStrategyRuntime(StrategyRuntime):
         self.allowed_symbols = plugin.symbols(self.config)
         self.last_market_at: str | None = None
         self.last_error: str | None = None
+        # (proposal, contract, odd-lot part, event id, board-lot intent id)
+        self._queued_part: tuple[OrderProposal, ContractRef, OrderPart, str, str] | None = None
         self._coordinator = coordinator
         saved = next(
             (
@@ -256,8 +310,8 @@ class PluginStrategyRuntime(StrategyRuntime):
         contract = self.resolver.resolve_contract(symbol)
         if contract is None:
             return None
-        proposal = OrderProposal(symbol, "BUY", 1, Decimal("1"))
-        return self._intent(proposal, contract, "preview", datetime.now(timezone.utc))
+        proposal = OrderProposal(symbol, "BUY", 1, Decimal("1"), lot="Common")
+        return self._intent(proposal, contract, "preview", datetime.now(timezone.utc), OrderPart("Common", 1))
 
     def _contexts(self) -> dict[str, RiskContext]:
         provider = self._coordinator.risk_context_provider
@@ -326,29 +380,100 @@ class PluginStrategyRuntime(StrategyRuntime):
                 missing = [s for s in self.allowed_symbols if s not in contexts or not self._fresh(contexts[s])]
                 if missing:
                     raise ValueError(f"行情或帳務資料尚未就緒：{'、'.join(missing)}")
+            if action == "stop":
+                self._queued_part = None
             return super().control(action)
+
+    def _activity(self) -> dict[str, DailyActivity]:
+        """Today's (Asia/Taipei) units per configured symbol from the journal."""
+        store = self._coordinator.store
+        today = datetime.now(TAIPEI).date()
+        aliases: dict[str, str] = {}
+        for symbol in self.allowed_symbols:
+            aliases[symbol] = symbol
+            contract = self.resolver.resolve_contract(symbol)
+            if contract is not None and contract.target_code:
+                aliases[contract.target_code] = symbol
+        filled: dict[str, int] = {}
+        for fill in store.observation_fills():
+            key = str(fill["intent_id"])
+            filled[key] = filled.get(key, 0) + int(str(fill["quantity"]))
+        totals = {symbol: [0, 0] for symbol in self.allowed_symbols}
+        for row in store.observation_orders():
+            status = str(row.get("status"))
+            if row.get("strategy_id") != self.strategy_id or status == "RISK_REJECTED":
+                continue
+            intent = store.load_intent(str(row["intent_id"]))
+            configured = aliases.get(intent.symbol)
+            if (
+                configured is None
+                or intent.operation != "PLACE"
+                or intent.created_at.astimezone(TAIPEI).date() != today
+            ):
+                continue
+            try:
+                units = instrument_profile(intent, self._coordinator.risk.limits).units
+            except ValueError:
+                continue
+            if status in TERMINAL_UNFILLED:
+                units = filled.get(intent.intent_id, 0)
+            totals[configured][0 if intent.side == "BUY" else 1] += units
+        return {symbol: DailyActivity(symbol, buy, sell) for symbol, (buy, sell) in totals.items()}
+
+    def _parts(self, proposal: OrderProposal, contract: ContractRef) -> tuple[OrderPart, ...]:
+        """Apply the board-lot / odd-lot rule; raise with an operator-readable reason."""
+        if type(proposal.quantity) is not int or proposal.quantity <= 0:
+            raise ValueError("策略提出無效數量，已略過")
+        if contract.security_type == "FUT":
+            return (OrderPart("", proposal.quantity),)
+        board_lot_only = proposal.symbol in self._coordinator.risk.limits.board_lot_only_symbols
+        if proposal.lot == "Common":
+            return (OrderPart("Common", proposal.quantity),)
+        if proposal.lot == "IntradayOdd":
+            if proposal.quantity > BOARD_LOT_SHARES - 1 or board_lot_only:
+                raise ValueError("零股單筆須為 1-999 股，且 CB 不能下零股")
+            return (OrderPart("IntradayOdd", proposal.quantity),)
+        if proposal.lot == "AUTO":
+            if board_lot_only:
+                if proposal.quantity % BOARD_LOT_SHARES:
+                    raise ValueError("CB 沒有零股，數量須為 1,000 的倍數")
+                return (OrderPart("Common", proposal.quantity // BOARD_LOT_SHARES),)
+            return stock_order_parts(proposal.quantity)
+        raise ValueError("策略提出未知的整股／零股類型，已略過")
 
     # ----- signals -------------------------------------------------------
 
     def dry_run_document(self) -> dict[str, object]:
         markets, positions, contexts = self._views()
         try:
-            proposals = self.plugin.decide(self.config, markets, positions)
+            proposals = self.plugin.decide(self.config, markets, positions, self._activity())
         except Exception as error:  # noqa: BLE001 - private code must not crash the Gateway
             return {"mode": "DRY_RUN", "would_persist": False, "would_create_outbox": False,
                     "would_dispatch_broker": False, "risk": {"allowed": False, "reasons": ["strategy_error"]},
                     "error": type(error).__name__}
-        results = []
+        results: list[dict[str, object]] = []
         for proposal in proposals:
             contract = self.resolver.resolve_contract(proposal.symbol)
             if contract is None or proposal.symbol not in self.allowed_symbols:
                 results.append({"proposal": self._proposal_document(proposal),
                                 "risk": {"allowed": False, "reasons": ["symbol_not_configured"]}})
                 continue
-            intent = self._intent(proposal, contract, "preview", datetime.now(timezone.utc))
-            verdict = self._coordinator.risk.evaluate(intent, self._coordinator.gate, contexts.get(proposal.symbol))
+            try:
+                parts = self._parts(proposal, contract)
+            except ValueError:
+                results.append({"proposal": self._proposal_document(proposal),
+                                "risk": {"allowed": False, "reasons": ["invalid_quantity"]}})
+                continue
+            # Each part is evaluated alone; a later part is only sent after the
+            # earlier one completes, so it will be re-evaluated with new facts.
+            reasons: list[str] = []
+            for part in parts:
+                intent = self._intent(proposal, contract, "preview", datetime.now(timezone.utc), part)
+                verdict = self._coordinator.risk.evaluate(intent, self._coordinator.gate, contexts.get(proposal.symbol))
+                reasons.extend(reason for reason in verdict.reasons if reason not in reasons)
             results.append({"proposal": self._proposal_document(proposal),
-                            "risk": {"allowed": verdict.allowed, "reasons": list(verdict.reasons)}})
+                            "orders": [{"lot": part.lot, "quantity": part.quantity} for part in parts],
+                            "risk": {"allowed": not reasons, "reasons": reasons}})
         first = results[0]["risk"] if results else {"allowed": False, "reasons": ["no_signal_condition"]}
         return {
             "mode": "DRY_RUN",
@@ -385,14 +510,20 @@ class PluginStrategyRuntime(StrategyRuntime):
                 self.last_market_at = latest.isoformat()
                 self.last_error = None
             self._coordinator.store.record_strategy_heartbeat(self._active_run_id, datetime.now(timezone.utc))
-            if self._coordinator.gate is not Gate.ARMED or not markets:
+            if self._coordinator.gate is not Gate.ARMED:
+                return account_context
+            if self._queued_part is not None:
+                # A split order is in progress; the strategy waits for it.
+                self._advance_queued_part()
+                return account_context
+            if not markets:
                 return account_context
             signals = [s for s in self._coordinator.store.observation_signals()
                        if s.get("run_id") == self._active_run_id]
             if len(signals) >= self.plugin.max_signals(self.config):
                 return account_context
             try:
-                proposals = self.plugin.decide(self.config, markets, positions)
+                proposals = self.plugin.decide(self.config, markets, positions, self._activity())
             except Exception as error:  # noqa: BLE001 - isolate private code failures
                 self.last_error = f"策略程式錯誤：{type(error).__name__}；已暫停"
                 self.control("pause")
@@ -400,6 +531,30 @@ class PluginStrategyRuntime(StrategyRuntime):
             for proposal in proposals[:1]:
                 self._submit(proposal, markets)
             return account_context
+
+    def _advance_queued_part(self) -> None:
+        """Send the odd-lot remainder only after the board-lot part fully filled.
+
+        If the first part was rejected, cancelled or not fully filled, the
+        remainder is dropped so a half-built order is never completed alone.
+        The queue lives in memory: after a restart the remainder is not sent.
+        """
+        assert self._queued_part is not None
+        proposal, contract, part, event_id, first_intent_id = self._queued_part
+        status = self._coordinator.store.status(first_intent_id).value
+        if status in WAITING:
+            return
+        if status != "FILLED":
+            self._queued_part = None
+            self.last_error = f"整股部分未完全成交（{status}），零股餘數 {part.quantity} 股不送出"
+            # Durable, so the operator still sees why after the message changes.
+            self._coordinator.store.record_audit_event(first_intent_id, "STRATEGY_ODD_REMAINDER_DROPPED", {
+                "strategy_id": self.strategy_id, "board_lot_status": status,
+                "odd_lot_shares": part.quantity, "symbol": proposal.symbol,
+            })
+            return
+        self._queued_part = None
+        self._accept_part(proposal, contract, part, event_id)
 
     def _submit(self, proposal: OrderProposal, markets: Mapping[str, MarketView]) -> None:
         market = markets.get(proposal.symbol)
@@ -409,10 +564,13 @@ class PluginStrategyRuntime(StrategyRuntime):
             or contract is None
             or proposal.symbol not in self.allowed_symbols
             or proposal.side not in {"BUY", "SELL"}
-            or type(proposal.quantity) is not int
-            or proposal.quantity <= 0
         ):
             self.last_error = "策略提出無效委託，已略過"
+            return
+        try:
+            parts = self._parts(proposal, contract)
+        except ValueError as error:
+            self.last_error = str(error)
             return
         try:
             price = Decimal(str(proposal.price))
@@ -422,18 +580,39 @@ class PluginStrategyRuntime(StrategyRuntime):
         if not price.is_finite() or price <= 0:
             self.last_error = "策略提出無效價格，已略過"
             return
-        # One signal per trade print and side; the intent time is the real
-        # creation time so rate limits and cooldowns see it correctly.
+        # One signal per trade print and side. A split order uses one event per
+        # part; only one order may be outstanding per account, so the odd-lot
+        # remainder waits until the board-lot part has completed.
         event_id = f"{self._active_run_id}:{proposal.symbol}:{proposal.side}:{market.last_trade_at.isoformat()}"
-        intent = self._intent(proposal, contract, event_id, datetime.now(timezone.utc))
-        if self._coordinator.store.has_intent(intent.intent_id):
+        if len(parts) == 1:
+            self._accept_part(proposal, contract, parts[0], event_id)
             return
+        first = self._accept_part(proposal, contract, parts[0], f"{event_id}:board")
+        if first is not None and first[1] == "APPROVED":
+            self._queued_part = (proposal, contract, parts[1], f"{event_id}:odd", first[0])
+
+    def _accept_part(
+        self, proposal: OrderProposal, contract: ContractRef, part: OrderPart, event_id: str,
+    ) -> tuple[str, str] | None:
+        # The intent time is the real creation time so rate limits and
+        # cooldowns see it correctly.
+        intent = self._intent(proposal, contract, event_id, datetime.now(timezone.utc), part)
+        if self._coordinator.store.has_intent(intent.intent_id):
+            return None
         status, verdict = self._coordinator.accept(intent)
         self._record_fixture_signal(event_id, intent, status, verdict.reasons)
         self._record_fixture_run(intent, status)
         self._last_event_id, self._last_intent_id, self._last_status = event_id, intent.intent_id, status
+        return intent.intent_id, status.value
 
-    def _intent(self, proposal: OrderProposal, contract: ContractRef, event_id: str, created_at: datetime) -> Intent:
+    def _intent(
+        self,
+        proposal: OrderProposal,
+        contract: ContractRef,
+        event_id: str,
+        created_at: datetime,
+        part: OrderPart,
+    ) -> Intent:
         futures = contract.security_type == "FUT"
         # Rolling futures aliases are placed on the month contract they resolve to.
         code = contract.target_code if futures and contract.target_code else contract.code
@@ -448,7 +627,7 @@ class PluginStrategyRuntime(StrategyRuntime):
         order: dict[str, object] = {
             "action": proposal.side.title(),
             "price": price,
-            "quantity": proposal.quantity,
+            "quantity": part.quantity,
             "price_type": "LMT",
             "order_type": "ROD",
             "account": account,
@@ -456,13 +635,13 @@ class PluginStrategyRuntime(StrategyRuntime):
         if futures:
             order["octype"] = "Auto"
         else:
-            order.update(order_lot=proposal.lot, order_cond="Cash")
+            order.update(order_lot=part.lot, order_cond="Cash")
         return Intent(
             Source.STRATEGY,
             account_id,
             code,
             proposal.side,
-            proposal.quantity,
+            part.quantity,
             str(proposal.price),
             self.strategy_id,
             self._active_run_id or "preview",

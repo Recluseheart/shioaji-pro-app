@@ -27,7 +27,26 @@
 | `default_config()`、`parse_config(raw)` | 預設值與伺服器端驗證；錯誤時丟 `ValueError`（訊息會顯示在 UI） |
 | `symbols(config)` | 要監看的商品；每個都必須能在 sidecar 合約表找到且在風控允許清單內 |
 | `max_signals(config)` | 每次執行（start 到 stop）最多訊號數 |
-| `decide(config, markets, positions)` | 回傳 `OrderProposal` 清單；數量單位為張（`lot="Common"`）、股（`IntradayOdd`）或口 |
+| `decide(config, markets, positions, activity)` | 回傳 `OrderProposal` 清單；`activity` 是本策略今日（台北時間）各商品的買進／賣出單位，取自 durable journal，重啟後仍正確（被風控拒絕的不算；取消／券商拒絕只算已成交部分） |
+
+## 整股／零股規則（策略自動下單）
+
+`OrderProposal.lot` 預設為 `AUTO`，此時股票數量一律以「股」表示，由 Gateway 決定下單方式：
+
+| 提案股數 | 實際委託 |
+|---|---|
+| 1–999 股 | 盤中零股（`IntradayOdd`） |
+| 1,000 股的整數倍（如 2,000） | 整股（`Common`），2 張 |
+| 超過 1,000 且非整數倍（如 1,500） | 先送整股 1 張；**整股完全成交後**才送零股 500 股 |
+
+- 只要整股部分被拒絕、取消或沒有完全成交，零股餘數就不送出，並寫入 `STRATEGY_ODD_REMAINDER_DROPPED`
+  稽核事件；不會只完成一半的拆單。等待整股成交期間，策略不會產生其他新委託。
+- 拆單的零股餘數只存在執行中的程序：Gateway 重啟後不補送（避免重複下單）。
+- CB 沒有零股市場：`AUTOTRADE_CB_SYMBOLS` 內的商品，`AUTO` 數量必須是 1,000 的倍數，風控也拒絕任何 CB 零股委託。
+- 風控拒絕單筆超過 999 股的零股委託。
+- 策略也可明確指定 `lot="Common"`（數量為張）或 `lot="IntradayOdd"`（1–999 股）。期貨數量一律為口。
+- 此規則只適用策略自動下單；手動下單面板仍依面板上選擇的整股／零股。
+- 注意：舊 Autotrade 實測時，Shioaji 模擬盤不支援盤中零股委託；SIM 實測零股時需以券商回應為準。
 
 ## 啟動
 

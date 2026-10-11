@@ -106,14 +106,14 @@ class RiskRegressionTest(unittest.TestCase):
             self.assertIn(
                 "notional_limit_exceeded",
                 engine.evaluate(
-                    manual(2000, 0, price_type=price_type),
+                    manual(2, 0, lot="Common", price_type=price_type),
                     Gate.ARMED,
                     self.context("3000"),
                 ).reasons,
             )
             self.assertTrue(
                 engine.evaluate(
-                    manual(2000, 0, price_type=price_type),
+                    manual(2, 0, lot="Common", price_type=price_type),
                     Gate.ARMED,
                     self.context("2500"),
                 ).allowed
@@ -284,6 +284,18 @@ class RiskRegressionTest(unittest.TestCase):
         self.assertIn(
             "position_limit_exceeded",
             slow.evaluate(manual(2, 101.5, lot="Common", code="11011"), Gate.ARMED, holding).reasons,
+        )
+
+    def test_odd_lots_are_1_to_999_shares_and_not_for_cbs(self):
+        engine = RiskEngine(RiskLimits(board_lot_only_symbols=("11011",)))
+        self.assertTrue(engine.evaluate(manual(999), Gate.ARMED, self.context()).allowed)
+        self.assertIn(
+            "odd_lot_quantity_exceeded",
+            engine.evaluate(manual(1000), Gate.ARMED, self.context()).reasons,
+        )
+        self.assertIn(
+            "odd_lot_not_supported",
+            engine.evaluate(manual(5, 101.5, code="11011"), Gate.ARMED, self.context("101.5")).reasons,
         )
 
     def test_nonfinite_and_unavailable_pnl_fail_closed(self):

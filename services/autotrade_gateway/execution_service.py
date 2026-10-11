@@ -231,6 +231,12 @@ def risk_limits_from_environment(environment: Mapping[str, str]) -> RiskLimits:
     )
 
 
+MAX_DISPATCHES_PER_TICK = 20
+
+# Broker trade statuses meaning the broker has received the order. PendingSubmit
+# (sent, not yet confirmed) and Inactive are deliberately not acknowledgements.
+BROKER_ACKNOWLEDGED = frozenset({"Submitted", "PreSubmitted", "PartFilled"})
+
 PAPER_CONTRACTS: dict[str, ContractRef] = {
     "2330": ContractRef("STK", "TSE", "2330"),
     "2317": ContractRef("STK", "TSE", "2317"),
@@ -533,8 +539,9 @@ class ExecutionService:
     def dispatch(self, intent: Intent) -> str:
         # Revalidate the actual pending order, after all potentially slow reads.
         evaluated = self.coordinator.evaluated_intent(intent)
-        context = (
-            self.transport.context(evaluated) if intent.operation != "CANCEL" else None
+        context = self.coordinator.with_reservations(
+            evaluated,
+            self.transport.context(evaluated) if intent.operation != "CANCEL" else None,
         )
         try:
             self._require_authority()
@@ -672,13 +679,16 @@ class ExecutionService:
                 raise
             context = self.strategy.on_tick()
             if self.coordinator.gate is Gate.ARMED:
-                self.worker.dispatch_once()
+                # At most one in-flight order per product; different products
+                # may be sent in the same tick.
+                for _ in range(MAX_DISPATCHES_PER_TICK):
+                    if not self.worker.dispatch_once(self.coordinator.dispatch_ready):
+                        break
             else:
-                for row in self.store.observation_orders():
-                    if self.store.outbox_state(str(row["intent_id"])) == "PENDING":
-                        self.store.mark_delivery_unknown(
-                            str(row["intent_id"]), "dispatch_gate_closed"
-                        )
+                # Still queued, never handed to the broker: definitely not
+                # sent, so they are rejected rather than marked UNKNOWN.
+                for intent_id in self.store.pending_outbox_ids():
+                    self.store.mark_dispatch_refused(intent_id, ("dispatch_gate_closed",))
             if now().timestamp() - self._last_account_snapshot >= 10:
                 if isinstance(self.transport, PaperTransport):
                     snapshots = self.transport.position_snapshots
@@ -812,12 +822,17 @@ class ExecutionService:
                     "SUBMITTED",
                     "PART_FILLED",
                 }:
-                    target = (
+                    # Only the broker's own acknowledgement makes an order
+                    # SUBMITTED; PendingSubmit keeps the next same-product
+                    # order queued.
+                    target: Status | None = (
                         Status.PART_FILLED
                         if deals or row["status"] == "PART_FILLED"
                         else Status.SUBMITTED
+                        if status.get("status") in BROKER_ACKNOWLEDGED or row["status"] == "SUBMITTED"
+                        else None
                     )
-                    if row["status"] != target.value:
+                    if target is not None and row["status"] != target.value:
                         self.store.transition(intent_id, target)
             if terminal and row["status"] in {"UNKNOWN", "RECONCILING"}:
                 self.store.record_reconciled_terminal(

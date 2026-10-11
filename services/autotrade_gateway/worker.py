@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .order_core import Intent, IntentStore
 
@@ -24,8 +24,19 @@ class ExecutionWorker:
         self.store = store
         self.dispatcher = dispatcher
 
-    def dispatch_once(self) -> bool:
-        intent_id = self.store.claim_outbox()
+    def dispatch_once(self, ready: Callable[[Intent], bool] | None = None) -> bool:
+        """Send the oldest queued delivery that ``ready`` allows; False if none.
+
+        ``ready`` holds back an order (it stays queued, untouched) while an
+        earlier order of the same product awaits broker acknowledgement.
+        """
+        intent_id: str | None = None
+        for candidate in self.store.pending_outbox_ids():
+            if ready is not None and not ready(self.store.load_intent(candidate)):
+                continue
+            intent_id = self.store.claim_outbox(candidate)
+            if intent_id is not None:
+                break
         if intent_id is None:
             return False
         try:

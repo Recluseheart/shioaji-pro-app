@@ -778,6 +778,103 @@ class InstrumentExecutionTest(unittest.TestCase):
                 SidecarTransport("http://127.0.0.1:21322", futures_account_id="future-1")
 
 
+class AckControlledPaper(PaperTransport):
+    """PAPER broker whose new orders stay PendingSubmit until a test acknowledges them."""
+
+    def dispatch(self, intent):
+        identity = super().dispatch(intent)
+        if intent.operation == "PLACE":
+            self.rows[identity]["status"]["status"] = "PendingSubmit"
+        return identity
+
+    def acknowledge(self, intent_id):
+        for row in self.rows.values():
+            if row["_intent"].intent_id == intent_id:
+                row["status"]["status"] = "Submitted"
+
+
+class ProductQueueTest(unittest.TestCase):
+    """Several orders per product: each is sent after the broker acknowledged the previous one."""
+
+    def setUp(self):
+        self.store = SQLiteIntentStore(":memory:")
+        self.broker = AckControlledPaper(self.store)
+        self.service = ExecutionService(
+            self.store, self.broker, lambda _: None, allow_execution=True,
+            limits=RiskLimits(cooldown_seconds=5),
+        )
+        self.service.control("arm", "queue test", "arm-queue")
+
+    def tearDown(self):
+        self.service.stop()
+        self.store.close()
+
+    def order(self, code="2330", price=900, quantity=100, lot="IntradayOdd"):
+        intent = manual(quantity, price, lot=lot, code=code, account=self.broker.account_id)
+        status, verdict = self.service.coordinator.accept(intent)
+        self.assertEqual(status, Status.APPROVED, verdict.reasons)
+        return intent
+
+    def status(self, intent):
+        return self.store.status(intent.intent_id)
+
+    def test_same_product_waits_for_broker_ack_and_other_products_do_not(self):
+        first, second, third = self.order(), self.order(), self.order()
+        other = self.order(code="2317", price=190)
+        self.service.tick()
+        self.assertEqual(
+            [self.status(i) for i in (first, second, third, other)],
+            [Status.PENDING_SUBMIT, Status.APPROVED, Status.APPROVED, Status.PENDING_SUBMIT],
+        )
+        self.service.tick()  # still PendingSubmit at the broker: nothing more for 2330
+        self.assertEqual(self.status(second), Status.APPROVED)
+        self.broker.acknowledge(first.intent_id)
+        self.service.tick()
+        self.assertEqual(
+            [self.status(i) for i in (first, second, third)],
+            [Status.SUBMITTED, Status.PENDING_SUBMIT, Status.APPROVED],
+        )
+        self.broker.acknowledge(second.intent_id)
+        self.service.tick()
+        self.assertEqual(self.status(third), Status.PENDING_SUBMIT)
+
+    def test_manual_orders_are_not_time_cooled_but_strategy_orders_are(self):
+        self.order()
+        self.order()  # within the 5 s cooldown; manual multi-order flows are allowed
+        strategy = replace(
+            manual(100, 900, account=self.broker.account_id),
+            source=Source.STRATEGY, strategy_id="s", run_id="r",
+        )
+        self.assertIn("order_cooldown", self.service.coordinator.accept(strategy)[1].reasons)
+
+    def test_open_orders_reserve_position_capacity(self):
+        self.order(lot="Common", price=900, quantity=1)
+        self.order(lot="Common", price=900, quantity=1)
+        third = manual(1, 900, lot="Common", account=self.broker.account_id)
+        verdict = self.service.coordinator.accept(third)[1]
+        self.assertIn("position_limit_exceeded", verdict.reasons)
+
+    def test_uncertain_delivery_blocks_only_its_own_product(self):
+        first = self.order()
+        self.service.tick()
+        self.store.mark_delivery_unknown(first.intent_id, "test")
+        same = manual(100, 900, account=self.broker.account_id)
+        self.assertIn(
+            "outstanding_order_requires_reconciliation",
+            self.service.coordinator.accept(same)[1].reasons,
+        )
+        self.order(code="2317", price=190)
+
+    def test_queued_orders_are_rejected_not_unknown_when_the_gate_closes(self):
+        first, queued = self.order(), self.order()
+        self.service.tick()
+        self.service.control("disarm", "queue test", "disarm-queue")
+        self.service.tick()
+        self.assertEqual(self.status(first), Status.PENDING_SUBMIT)
+        self.assertEqual(self.status(queued), Status.RISK_REJECTED)
+        self.assertEqual(self.store.outbox_state(queued.intent_id), "REFUSED")
+
+
 class GatewayRuntimeIsolationTest(unittest.TestCase):
     def test_owner_lock_precedes_recovery_and_is_released(self):
         import os

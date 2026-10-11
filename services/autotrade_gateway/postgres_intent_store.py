@@ -182,8 +182,22 @@ class PostgresIntentStore:
             self.connection.execute("UPDATE execution_outbox SET state='UNKNOWN', updated_at=%s WHERE state IN ('PENDING','LEASED')", (timestamp,))
         return cursor.rowcount
 
-    def claim_outbox(self) -> str | None:
+    def pending_outbox_ids(self) -> list[str]:
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at, intent_id",
+            ).fetchall()
+        return [str(row["intent_id"]) for row in rows]
+
+    def claim_outbox(self, intent_id: str | None = None) -> str | None:
         with self._lock, self.connection.transaction():
+            if intent_id is not None:
+                row = self.connection.execute(
+                    "UPDATE execution_outbox SET state='LEASED', updated_at=%s "
+                    "WHERE intent_id=%s AND state='PENDING' RETURNING intent_id",
+                    (now().isoformat(), intent_id),
+                ).fetchone()
+                return str(row["intent_id"]) if row else None
             row = self.connection.execute(
                 """WITH candidate AS (
                     SELECT intent_id FROM execution_outbox WHERE state='PENDING'
@@ -220,7 +234,7 @@ class PostgresIntentStore:
         timestamp = now().isoformat()
         with self._lock, self.connection.transaction():
             changed = self.connection.execute(
-                "UPDATE execution_outbox SET state='REFUSED', updated_at=%s WHERE intent_id=%s AND state='LEASED' "
+                "UPDATE execution_outbox SET state='REFUSED', updated_at=%s WHERE intent_id=%s AND state IN ('PENDING','LEASED') "
                 "AND EXISTS (SELECT 1 FROM order_intents WHERE intent_id=%s AND status='APPROVED')",
                 (timestamp, intent_id, intent_id),
             ).rowcount

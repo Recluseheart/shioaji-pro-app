@@ -67,6 +67,18 @@ _UNCERTAIN = {
     Status.PART_FILLED,
 }
 
+# Orders whose unfilled remainder still reserves risk capacity.
+_OPEN_ORDER_STATUSES = frozenset({
+    *(status.value for status in _UNCERTAIN), Status.UNKNOWN.value, Status.RECONCILING.value,
+})
+
+# Sent (or possibly sent) but not yet acknowledged by the broker; the next
+# order for the same product waits. MANUAL_REVIEW also blocks the product.
+_AWAITING_BROKER_ACK = frozenset({
+    Status.SENDING.value, Status.PENDING_SUBMIT.value, Status.UNKNOWN.value,
+    Status.RECONCILING.value, Status.MANUAL_REVIEW.value,
+})
+
 
 @dataclass(frozen=True)
 class Intent:
@@ -345,7 +357,8 @@ class IntentStore(Protocol):
     def outbox_state(self, intent_id: str) -> str | None: ...
     def transition(self, intent_id: str, target: Status) -> None: ...
     def recover(self) -> int: ...
-    def claim_outbox(self) -> str | None: ...
+    def pending_outbox_ids(self) -> list[str]: ...
+    def claim_outbox(self, intent_id: str | None = None) -> str | None: ...
     def mark_delivery_unknown(self, intent_id: str, reason: str) -> None: ...
     def mark_dispatch_refused(self, intent_id: str, reasons: tuple[str, ...]) -> None: ...
     def mark_pending_submit(self, intent_id: str, broker_order_id: str) -> None: ...
@@ -682,7 +695,14 @@ class RiskEngine:
                 reasons.append("notional_limit_exceeded")
             key = profile.position_key(intent.symbol)
             current_quantity = context.positions.get(key, RiskPosition()).quantity
-            projected_quantity = current_quantity + (quantity if intent.side == "BUY" else -quantity)
+            # Orders that are accepted but not yet filled reserve capacity: the
+            # worst case assumes every same-side pending order fills.
+            reserved = context.reservations.get(key, Reservation())
+            base_quantity = (
+                current_quantity + reserved.buy_units if intent.side == "BUY"
+                else current_quantity - reserved.sell_units
+            )
+            projected_quantity = base_quantity + (quantity if intent.side == "BUY" else -quantity)
             position_limit = (
                 self.limits.max_futures_position if profile.is_futures else self.limits.max_position_per_symbol
             )
@@ -692,14 +712,19 @@ class RiskEngine:
                 abs(position.quantity) * position.market_price * multiplier
                 for position in context.positions.values()
             )
+            reserved_exposure = sum(
+                (item.added_exposure(context.positions.get(name, RiskPosition()).quantity)
+                 for name, item in context.reservations.items()),
+                Decimal("0"),
+            )
             exposure_limit = (
                 self.limits.max_futures_notional if profile.is_futures else self.limits.max_gross_exposure
             )
             # Only the part of the order that grows the absolute position adds
             # exposure; a closing order must never be blocked by this limit.
-            added_units = max(0, abs(projected_quantity) - abs(current_quantity))
+            added_units = max(0, abs(projected_quantity) - abs(base_quantity))
             added_exposure = proposed_notional * Decimal(added_units) / Decimal(quantity)
-            if added_units and gross_exposure + added_exposure > exposure_limit:
+            if added_units and gross_exposure + reserved_exposure + added_exposure > exposure_limit:
                 reasons.append("gross_exposure_limit_exceeded")
         if context.realized_pnl is None or context.unrealized_pnl is None:
             reasons.append("pnl_unavailable")
@@ -719,6 +744,28 @@ class RiskPosition:
 
 
 @dataclass(frozen=True)
+class Reservation:
+    """Unfilled units and value of accepted, still-open orders for one product."""
+
+    buy_units: int = 0
+    sell_units: int = 0
+    buy_notional: Decimal = Decimal("0")
+    sell_notional: Decimal = Decimal("0")
+
+    def added_exposure(self, current_units: int) -> Decimal:
+        """Value by which these orders could grow the absolute position."""
+        if current_units >= 0:
+            closing = min(self.sell_units, current_units)
+            flip = self.sell_notional * Decimal(self.sell_units - closing) / Decimal(self.sell_units) \
+                if self.sell_units else Decimal("0")
+            return self.buy_notional + flip
+        closing = min(self.buy_units, -current_units)
+        flip = self.buy_notional * Decimal(self.buy_units - closing) / Decimal(self.buy_units) \
+            if self.buy_units else Decimal("0")
+        return self.sell_notional + flip
+
+
+@dataclass(frozen=True)
 class RiskContext:
     """Fresh, authoritative facts needed for dynamic order risk checks."""
 
@@ -731,6 +778,8 @@ class RiskContext:
     # Best bid/ask from the same snapshot; informational for strategies only.
     quote_bid: Decimal | None = None
     quote_ask: Decimal | None = None
+    # Accepted but unfilled orders of the same account, keyed like positions.
+    reservations: dict[str, Reservation] = field(default_factory=dict)
 
 
 class SQLiteIntentStore:
@@ -1000,13 +1049,22 @@ class SQLiteIntentStore:
             )
         return cursor.rowcount
 
-    def claim_outbox(self) -> str | None:
-        """Claim once; a leased record is never available for blind retry."""
+    def pending_outbox_ids(self) -> list[str]:
+        """Queued deliveries, oldest first."""
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at, intent_id",
+            ).fetchall()
+        return [str(row["intent_id"]) for row in rows]
+
+    def claim_outbox(self, intent_id: str | None = None) -> str | None:
+        """Claim once (the oldest, or a given queued one); never available for blind retry."""
         with self._lock, self.connection:
-            row = self.connection.execute("SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at LIMIT 1").fetchone()
-            if row is None:
-                return None
-            intent_id = str(row["intent_id"])
+            if intent_id is None:
+                row = self.connection.execute("SELECT intent_id FROM execution_outbox WHERE state='PENDING' ORDER BY created_at LIMIT 1").fetchone()
+                if row is None:
+                    return None
+                intent_id = str(row["intent_id"])
             changed = self.connection.execute("UPDATE execution_outbox SET state='LEASED', updated_at=? WHERE intent_id=? AND state='PENDING'", (now().isoformat(), intent_id))
             return intent_id if changed.rowcount == 1 else None
 
@@ -1038,7 +1096,7 @@ class SQLiteIntentStore:
         timestamp = now().isoformat()
         with self._lock, self.connection:
             changed = self.connection.execute(
-                "UPDATE execution_outbox SET state='REFUSED', updated_at=? WHERE intent_id=? AND state='LEASED' "
+                "UPDATE execution_outbox SET state='REFUSED', updated_at=? WHERE intent_id=? AND state IN ('PENDING','LEASED') "
                 "AND EXISTS (SELECT 1 FROM order_intents WHERE intent_id=? AND status='APPROVED')",
                 (timestamp, intent_id, intent_id),
             ).rowcount
@@ -1802,6 +1860,7 @@ class OrderCoordinator:
                 self.gate = Gate.KILLED
             evaluated = self.evaluated_intent(intent)
             context = self.risk_context_provider(evaluated) if self.risk_context_provider and intent.operation != "CANCEL" else None
+            context = self.with_reservations(evaluated, context)
             verdict = self.risk.evaluate(intent, self.gate, context)
             reasons = list(verdict.reasons)
             if intent.operation in {"UPDATE_PRICE", "UPDATE_QUANTITY"}:
@@ -1841,16 +1900,93 @@ class OrderCoordinator:
                         age = (now() - old.created_at).total_seconds()
                         if age < 60:
                             recent.append(old)
-                        if age < self.risk.limits.cooldown_seconds:
+                        # A time cooldown paces strategies only. Manual multi-order
+                        # flows (laddering, brackets) are paced by broker
+                        # acknowledgement at dispatch instead; see dispatch_ready.
+                        if intent.source is not Source.MANUAL_UI and age < self.risk.limits.cooldown_seconds:
                             reasons.append("order_cooldown")
                 if len(recent) >= self.risk.limits.max_orders_per_minute:
                     reasons.append("order_rate_exceeded")
-                # Without a complete reservation model, serialize outstanding
-                # orders per account. Unknown deliveries reserve capacity too.
-                if any(row.get("status") in {s.value for s in _UNCERTAIN} | {
-                    Status.UNKNOWN.value, Status.RECONCILING.value, Status.MANUAL_REVIEW.value,
-                } and self.store.load_intent(str(row["intent_id"])).account_id == intent.account_id
-                       for row in accepted) and intent.operation == "PLACE":
+                # Several open orders of one product are allowed (they reserve
+                # capacity above), but never on top of an uncertain delivery of
+                # the same product: that one must be reconciled first.
+                key = self.product_key(intent) if intent.operation == "PLACE" else None
+                if key is not None and any(
+                    row.get("status") in {Status.UNKNOWN.value, Status.RECONCILING.value, Status.MANUAL_REVIEW.value}
+                    and self.product_key(self.store.load_intent(str(row["intent_id"]))) == key
+                    for row in accepted
+                ):
                     reasons.append("outstanding_order_requires_reconciliation")
             verdict = Verdict(not reasons, tuple(dict.fromkeys(reasons)))
             return self.store.persist(intent, verdict), verdict
+
+    def product_key(self, intent: Intent) -> str | None:
+        """Account + product: a stock/CB symbol, or a futures root for every month."""
+        try:
+            profile = instrument_profile(intent, self.risk.limits)
+        except ValueError:
+            return None
+        return f"{intent.account_id}:{profile.position_key(intent.symbol)}"
+
+    def reservations_for(self, intent: Intent) -> dict[str, Reservation]:
+        """Unfilled remainder of every other open order of the same account."""
+        open_rows = [
+            row for row in self.store.observation_orders()
+            if row.get("status") in _OPEN_ORDER_STATUSES and row.get("intent_id") != intent.intent_id
+        ]
+        if not open_rows:
+            return {}
+        filled: dict[str, int] = {}
+        for fill in self.store.observation_fills():
+            key = str(fill["intent_id"])
+            filled[key] = filled.get(key, 0) + int(str(fill["quantity"]))
+        reservations: dict[str, Reservation] = {}
+        for row in open_rows:
+            other = self.store.load_intent(str(row["intent_id"]))
+            if other.operation != "PLACE" or other.account_id != intent.account_id:
+                continue
+            try:
+                profile = instrument_profile(other, self.risk.limits)
+                price = Decimal(other.limit_price)
+            except (ValueError, InvalidOperation):
+                continue
+            remaining = max(0, profile.units - filled.get(other.intent_id, 0))
+            if not remaining:
+                continue
+            notional = Decimal(remaining) * (price if price.is_finite() and price > 0 else Decimal("0")) * profile.multiplier
+            position_key = profile.position_key(other.symbol)
+            current = reservations.get(position_key, Reservation())
+            reservations[position_key] = (
+                replace(current, buy_units=current.buy_units + remaining, buy_notional=current.buy_notional + notional)
+                if other.side == "BUY"
+                else replace(current, sell_units=current.sell_units + remaining, sell_notional=current.sell_notional + notional)
+            )
+        return reservations
+
+    def with_reservations(self, intent: Intent, context: RiskContext | None) -> RiskContext | None:
+        if context is None:
+            return None
+        return replace(context, reservations=self.reservations_for(intent))
+
+    def dispatch_ready(self, intent: Intent) -> bool:
+        """Send a new order only after the broker acknowledged earlier ones of its product.
+
+        "Acknowledged" means the broker reported the order as submitted (or it
+        reached a fill or terminal state). Until then the next order for the
+        same product stays queued; other products are not held back.
+        """
+        if intent.operation != "PLACE":
+            return True
+        key = self.product_key(intent)
+        if key is None:
+            return True  # the dispatch preflight rejects it with a reason
+        for row in self.store.observation_orders():
+            status = row.get("status")
+            if row.get("intent_id") == intent.intent_id:
+                continue
+            in_flight = status in _AWAITING_BROKER_ACK or (
+                status == Status.APPROVED.value and self.store.outbox_state(str(row["intent_id"])) == "LEASED"
+            )
+            if in_flight and self.product_key(self.store.load_intent(str(row["intent_id"]))) == key:
+                return False
+        return True

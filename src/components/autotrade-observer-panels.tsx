@@ -236,8 +236,8 @@ export function decisionChain(overview: AutotradeOverview, decision: AutotradeOr
     const filled = order.filled_quantity ?? 0;
     const unit = order.quantity_unit ?? '';
     const average = order.avg_fill_price ? ` · 均價 ${order.avg_fill_price}` : '';
-    if (status === 'FILLED') push('成交', 'done', `全部成交 ${filled || order.quantity}${unit}${average}`);
-    else if (filled > 0) push('成交', 'waiting', `部分成交 ${filled}/${order.quantity}${unit}${average}`);
+    if (status === 'FILLED') push('成交', 'done', `全部成交 ${filled ? filledText(order) : `${order.quantity}${unit}`}${average}`);
+    else if (filled > 0) push('成交', 'waiting', `部分成交 ${filledText(order)}（委託 ${order.quantity}${unit}）${average}`);
     else if (status === 'CANCELLED') push('成交', 'skipped', '已取消，未成交');
     else push('成交', 'waiting', '尚未成交');
 
@@ -248,6 +248,20 @@ export function decisionChain(overview: AutotradeOverview, decision: AutotradeOr
         status,
         steps,
     };
+}
+
+const BOARD_LOT_SHARES = 1000;
+
+/**
+ * Fill quantities are recorded in risk units: shares for stocks and CBs,
+ * contracts for futures. A board-lot order (張) therefore fills in shares.
+ */
+export function filledText(order: Pick<AutotradeOrderObservation, 'filled_quantity' | 'quantity_unit'>, filled = order.filled_quantity ?? 0): string {
+    if (order.quantity_unit === '張') {
+        const lots = filled / BOARD_LOT_SHARES;
+        return `${filled}股${Number.isInteger(lots) ? `（${lots}張）` : ''}`;
+    }
+    return `${filled}${order.quantity_unit ?? ''}`;
 }
 
 /** Orders an operator must look at first: uncertain outcomes, then newest. */
@@ -421,6 +435,8 @@ export function AutotradeObserverPanels({
         return () => clearInterval(timer);
     }, [kind]);
     const { overview, error } = observer;
+    // PAPER has no broker market data, so a chart could not resolve the code.
+    const selectCode = overview?.health.environment === 'PAPER' ? undefined : onSelectCode;
     const copy = PANEL_COPY[kind];
     const timeline = overview ? filterTimeline(overview, timelineFilters) : null;
     const decisionIds = new Set(overview?.decisions.map((decision) => decision.intent_id) ?? []);
@@ -674,12 +690,12 @@ export function AutotradeObserverPanels({
                     )}
                     {autoOrders.length > 0 && (
                         <div style={{ display: 'grid', gap: 6 }}>
-                            {autoOrders.map((order) => <AutoOrderRow key={order.intent_id} order={order} onSelectCode={onSelectCode} />)}
+                            {autoOrders.map((order) => <AutoOrderRow key={order.intent_id} order={order} onSelectCode={selectCode} />)}
                         </div>
                     )}
                     {overview.positions.length > 0 && (
                         <div style={{ display: 'grid', gap: 5 }} aria-label={`durable ${overview.health.environment} 持倉`}>
-                            {overview.positions.map((position) => <PositionObservation key={position.snapshot_id} position={position} onSelectCode={onSelectCode} />)}
+                            {overview.positions.map((position) => <PositionObservation key={position.snapshot_id} position={position} onSelectCode={selectCode} />)}
                         </div>
                     )}
                 </>
@@ -691,7 +707,7 @@ export function AutotradeObserverPanels({
                 <div style={{ display: 'grid', gap: 6 }}>
                     {sortOrdersForReview(overview.reconciliation).map((order) => (
                         <ReconciliationRow key={order.intent_id} order={order} observerOnly={observerOnly}
-                            onRefresh={runReconciliationRefresh} onSelectCode={onSelectCode} />
+                            onRefresh={runReconciliationRefresh} onSelectCode={selectCode} />
                     ))}
                 </div>
             )}
@@ -754,12 +770,12 @@ function AutoOrderRow({ order, onSelectCode }: { order: AutotradeOrderObservatio
             {order.operation !== 'PLACE' ? ` · ${operationLabel(order.operation)}` : ''}
         </div>
         <div style={{ color: '#aeb7c6' }}>
-            {timeText(order.created_at ?? order.updated_at)} · {SOURCE_LABELS[order.source] ?? order.source}
-            {order.strategy_id ? ` · 策略 ${order.strategy_id}` : ''}{order.run_id ? ` · 執行 ${order.run_id.slice(0, 8)}` : ''}
+            {timeText(order.created_at ?? order.updated_at)} · {order.strategy_id ? `策略 ${order.strategy_id}` : SOURCE_LABELS[order.source] ?? order.source}
+            {order.run_id ? ` · 執行 ${order.run_id.slice(0, 8)}` : ''}
             {order.account_id ? ` · 帳號 ${order.account_id}` : ''}
         </div>
         {(order.filled_quantity ?? 0) > 0 && <div style={{ color: '#73c991' }}>
-            已成交 {order.filled_quantity}{unit}{order.avg_fill_price ? ` · 均價 ${order.avg_fill_price}` : ''}
+            已成交 {filledText(order)}{order.avg_fill_price ? ` · 均價 ${order.avg_fill_price}` : ''}
             {(order.fill_count ?? 0) > 1 ? `（${order.fill_count} 筆）` : ''}
         </div>}
         {order.broker_order_id && <div style={{ color: '#aeb7c6' }}>券商單號 {order.broker_order_id}</div>}

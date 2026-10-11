@@ -58,6 +58,8 @@
 ```
 
 PAPER 模式下，「策略控制」面板會出現「測試用合成價格」，可手動調整價格測試策略觸發。
+程式碼不內建任何真實 CB 代號：`--cb-symbols` 指定的 CB 在 PAPER 中以 OTC 合約、合成價格 100 開始，
+未指定的 CB 既不在允許清單，也無法在 PAPER 成交。
 SIM 實際送單另需 `AUTOTRADE_ALLOW_SIMULATION_ORDERS=1` 的專用 Gateway 服務設定（見
 [trading-runtime.md](trading-runtime.md)）。
 
@@ -65,7 +67,7 @@ SIM 實際送單另需 `AUTOTRADE_ALLOW_SIMULATION_ORDERS=1` 的專用 Gateway �
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `AUTOTRADE_CB_SYMBOLS` | 空 | 允許交易的 CB 代號；同時套用較長的成交價時效 |
+| `AUTOTRADE_CB_SYMBOLS` | 空 | 允許交易的 CB 代號；同時套用較長的成交價時效、只能整股，並加入 PAPER 合約表 |
 | `AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS` | 60 | 上述商品的成交價時效（5–3600 秒） |
 | `AUTOTRADE_ALLOWED_SYMBOLS` | 空 | 額外允許的股票代號 |
 | `AUTOTRADE_MAX_POSITION_PER_SYMBOL` | 2000 | 每檔股票／CB 部位上限（股數單位；1 張 = 1,000） |

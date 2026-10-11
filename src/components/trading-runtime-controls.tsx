@@ -20,7 +20,7 @@ export function TradingRuntimeControls({ strategyId, reason }: { strategyId: str
     const [runtime, setRuntime] = useState<Runtime | null>(null);
     const [message, setMessage] = useState('');
     const [busy, setBusy] = useState(false);
-    const [paperSymbol, setPaperSymbol] = useState('11011');
+    const [paperSymbol, setPaperSymbol] = useState('99991');
     const [paperPrice, setPaperPrice] = useState('100');
     useEffect(() => {
         let active = true;
@@ -108,9 +108,12 @@ export function TradingRuntimeControls({ strategyId, reason }: { strategyId: str
                     `PAPER 合成價格已設為 ${paperSymbol} ${paperPrice}`);
             }} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                 <span>測試用合成價格（僅 PAPER）</span>
-                <select aria-label='合成價格商品' value={paperSymbol} onChange={e => setPaperSymbol(e.target.value)}>
-                    {['11011', '2330', '2317', '0050', 'TXFR1'].map(symbol => <option key={symbol}>{symbol}</option>)}
-                </select>
+                {/* Any code the PAPER Gateway knows, including CBs given at launch; the Gateway validates it. */}
+                <input aria-label='合成價格商品' list='paper-price-symbols' required size={8} value={paperSymbol}
+                    onChange={e => setPaperSymbol(e.target.value.trim().toUpperCase())} />
+                <datalist id='paper-price-symbols'>
+                    {['99991', '2330', '2317', '0050', 'TXFR1'].map(symbol => <option key={symbol} value={symbol} />)}
+                </datalist>
                 <input aria-label='合成價格' type='number' min='0.01' step='any' required value={paperPrice} onChange={e => setPaperPrice(e.target.value)} />
                 <button disabled={busy} type='submit'>設定價格</button>
             </form>

@@ -414,7 +414,7 @@ class RiskLimits:
     """Portable simulation limits; dynamic checks require a fresh context."""
 
     allowed_accounts: tuple[str, ...] = ("SIM-001",)
-    allowed_symbols: tuple[str, ...] = ("2330", "2317", "0050", "11011", "TXFR1")
+    allowed_symbols: tuple[str, ...] = ("2330", "2317", "0050", "99991", "TXFR1")
     max_order_quantity: int = 10_000
     max_order_notional: Decimal = Decimal("5000000")
     max_position_per_symbol: int = 2_000

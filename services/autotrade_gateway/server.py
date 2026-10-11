@@ -176,14 +176,13 @@ def configured_simulation_risk_context(
         account = by_id.get(intent.account_id)
         if account is None:
             return None
-        # 11011 is the explicit OTC convertible-bond mapping; remaining
-        # stock symbols use the verified TSE contract shape. Futures remain
+        # The exchange (TSE stocks, OTC convertible bonds) comes from the
+        # sidecar's contract table. Futures and unknown codes remain
         # unavailable here rather than being guessed as stock contracts.
-        if intent.symbol == "TXFR1":
+        contract = provider.contract(intent.symbol)
+        if contract is None or contract.security_type != "STK":
             return None
-        return provider.stock_risk_context(
-            account, intent.symbol, exchange="OTC" if intent.symbol == "11011" else "TSE",
-        )
+        return provider.stock_risk_context(account, intent.symbol, exchange=contract.exchange)
 
     # A reference fixture is single-account by design.  It receives this
     # verified identity in memory only; it is never sent to an observer API.
@@ -1821,7 +1820,7 @@ def _create_server(
                 if not directory:
                     raise ValueError("AUTOTRADE_PRIVATE_STRATEGY_DIR is required for a private strategy")
                 plugin = load_private_strategy(directory, strategy_name)
-            transport = (PaperTransport(store) if selected_runtime == "PAPER" else
+            transport = (PaperTransport(store, cb_symbols=limits.board_lot_only_symbols) if selected_runtime == "PAPER" else
                          SidecarTransport(resolved_upstream_origin, os.getenv("AUTOTRADE_SIM_ACCOUNT_ID"),
                                           os.getenv("AUTOTRADE_SIM_FUTURES_ACCOUNT_ID")))
             runtime = ExecutionService(store, transport, getattr(server, "autotrade_event_hub").publish,

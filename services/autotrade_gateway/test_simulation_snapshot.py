@@ -53,7 +53,7 @@ class SimulationSnapshotTest(unittest.TestCase):
 
     def test_contract_resolution_uses_broker_exchange(self) -> None:
         contracts = {
-            "11011": {"security_type": "STK", "exchange": "OTC", "code": "11011", "target_code": None},
+            "99991": {"security_type": "STK", "exchange": "OTC", "code": "99991", "target_code": None},
             "TXFR1": {"security_type": "FUT", "exchange": "TAIFEX", "code": "TXFR1", "target_code": "TXFJ6"},
         }
 
@@ -62,7 +62,7 @@ class SimulationSnapshotTest(unittest.TestCase):
             return Response(contracts.get(request.full_url.rsplit("/", 1)[1], {"detail": "not found"}))
 
         provider = SimulationSnapshotProvider("http://127.0.0.1:21322", opener=opener)
-        cb = provider.contract("11011")
+        cb = provider.contract("99991")
         future = provider.contract("TXFR1")
         self.assertEqual((cb.security_type, cb.exchange), ("STK", "OTC"))  # type: ignore[union-attr]
         self.assertEqual(future.target_code, "TXFJ6")  # type: ignore[union-attr]

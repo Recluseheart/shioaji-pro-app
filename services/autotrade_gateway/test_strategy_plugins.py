@@ -32,7 +32,7 @@ class Scripted:
     config_fields = ({"name": "symbol", "label": "symbol", "type": "text"},)
 
     def default_config(self):
-        return {"symbol": "11011", "side": "BUY", "quantity": 1, "lot": "Common",
+        return {"symbol": "99991", "side": "BUY", "quantity": 1, "lot": "Common",
                 "max_signals": 1, "fail": False}
 
     def parse_config(self, raw):
@@ -98,7 +98,7 @@ class PluginExecutionTest(unittest.TestCase):
         self.service = ExecutionService(
             self.store, self.broker, lambda _: None, allow_execution=True,
             limits=RiskLimits(
-                cooldown_seconds=0, slow_quote_symbols=("11011",), board_lot_only_symbols=("11011",),
+                cooldown_seconds=0, slow_quote_symbols=("99991",), board_lot_only_symbols=("99991",),
             ),
             strategy_plugin=self.plugin,
         )
@@ -166,7 +166,7 @@ class PluginExecutionTest(unittest.TestCase):
         tight = RiskLimits(allowed_symbols=("2330",))
         self.service.coordinator.risk.limits = tight
         with self.assertRaises(ValueError):
-            self.configure(symbol="11011")
+            self.configure(symbol="99991")
 
     def run_ticks(self, count):
         for _ in range(count):

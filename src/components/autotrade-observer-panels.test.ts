@@ -34,7 +34,7 @@ afterEach(() => {
 describe('Risk limit values', () => {
     it('renders lists and multiplier maps as readable text, never [object Object]', () => {
         expect(riskValueText({ TXF: '200' })).toBe('TXF ×200');
-        expect(riskValueText(['2330', '11011'])).toBe('2330、11011');
+        expect(riskValueText(['2330', '99991'])).toBe('2330、99991');
         expect(riskValueText([])).toBe('無');
         expect(riskValueText(5)).toBe('5');
     });

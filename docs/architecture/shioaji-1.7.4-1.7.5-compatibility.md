@@ -10,7 +10,7 @@ evidence 對應 1.7.4。未列為 verified 的項目不得由 component 自行�
 | snapshots, kbars, ticks | normalized 1.7.4 read contract | upstream Web API contract | explicit POST read allowlist; retain JSON/time/decimal shape |
 | market SSE | SDK callbacks | upstream `/stream/data` contract | relay with `Last-Event-ID`; do not forward browser credentials |
 | Taiwan KBar time | market wall-clock is Asia/Taipei | existing UI displays market time | preserve timezone-aware value; never relabel wall-clock as UTC |
-| stock/CB/futures contract classification | 2330/11011 STK, TXFR1 FUT | UI supports stock/futures paths | map only through explicit stock/futures adapters |
+| stock/CB/futures contract classification | 2330/CB STK, TXFR1 FUT | UI supports stock/futures paths | map only through explicit stock/futures adapters |
 | order callback schema | sanitized fake-event contract only | sanitized 1.7.5 OpenAPI fixture | mock/integration only; terminal callback requires persisted broker identity |
 | broker trade reconciliation read | SDK trade status query evidence | local 1.7.5 OpenAPI: `POST /order/trades` and `POST /order/order_deal_records` accept `AccountRequest`; `GET /stream/data/order_event` is SSE | Gateway explicitly proxies both POST read routes and relays the order-event SSE without browser credentials. The local parser currently consumes only `trades`; `order_deal_records` and the event stream remain compatibility/read-only until their terminal semantics have dedicated fixtures. |
 | account signed / CA | not a development gate | no new live evidence | SIM/DISARMED only; CA and LIVE disabled |

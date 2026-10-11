@@ -241,7 +241,7 @@ PAPER_CONTRACTS: dict[str, ContractRef] = {
     "2330": ContractRef("STK", "TSE", "2330"),
     "2317": ContractRef("STK", "TSE", "2317"),
     "0050": ContractRef("STK", "TSE", "0050"),
-    "11011": ContractRef("STK", "OTC", "11011"),
+    "99991": ContractRef("STK", "OTC", "99991"),
     "TXFR1": ContractRef("FUT", "TAIFEX", "TXFR1"),
 }
 
@@ -259,17 +259,29 @@ class PaperTransport:
     futures_account_id: str | None = "PAPER-FUT"
     broker_id = "LOCAL"
 
-    def __init__(self, store: IntentStore, prices: dict[str, Decimal] | None = None) -> None:
+    def __init__(
+        self,
+        store: IntentStore,
+        prices: dict[str, Decimal] | None = None,
+        cb_symbols: tuple[str, ...] = (),
+    ) -> None:
         self.store = store
         self.rows: dict[str, dict] = {}
+        # Convertible bonds configured at launch (AUTOTRADE_CB_SYMBOLS) are
+        # OTC stock contracts; they start at a synthetic price of 100.
+        self.contracts = dict(PAPER_CONTRACTS)
+        for code in cb_symbols:
+            self.contracts.setdefault(code, ContractRef("STK", "OTC", code))
         self.multipliers: dict[str, Decimal] = dict(RiskLimits().futures_multipliers)
         self.prices = {
             "2330": Decimal("1000"),
             "2317": Decimal("200"),
             "0050": Decimal("100"),
-            "11011": Decimal("100"),
+            "99991": Decimal("100"),
             "TXFR1": Decimal("48700"),
         }
+        for code in cb_symbols:
+            self.prices.setdefault(code, Decimal("100"))
         for symbol, price in (prices or {}).items():
             self.set_price(symbol, price)
 
@@ -281,10 +293,10 @@ class PaperTransport:
         return self.broker_id if account_id in self.account_ids else None
 
     def resolve_contract(self, symbol: str) -> ContractRef | None:
-        return PAPER_CONTRACTS.get(symbol)
+        return self.contracts.get(symbol)
 
     def set_price(self, symbol: str, price: Decimal) -> None:
-        if symbol not in PAPER_CONTRACTS or not price.is_finite() or price <= 0:
+        if symbol not in self.contracts or not price.is_finite() or price <= 0:
             raise ValueError("unknown PAPER symbol or invalid synthetic price")
         self.prices[symbol] = price
 

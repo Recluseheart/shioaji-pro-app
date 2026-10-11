@@ -13,7 +13,7 @@
 - 五檔資料只取 `code`、`datetime`、前五筆 `bid_price`/`bid_volume` 與 `ask_price`/`ask_volume`，再寫入本機 observer store；不保存券商 raw payload。股票與期貨分別使用 STK/FOP v1 bid/ask callback。
 - `api.kbars(contract, start, end).dict()` 已對 `2330` 驗證為平行欄位：`ts`、`Open`、`High`、`Low`、`Close`、`Volume`、`Amount`；worker 只保存正規化後的 OHLCV/amount，並由 observer API 唯讀提供。
 - KBar nanosecond `ts` 依 Shioaji 市場資料契約解讀為 `Asia/Taipei` market wall-clock；不得將同一 wall-clock 再標為 UTC，否則 Dashboard 會錯移 8 小時。資料庫保存 timezone-aware ISO-8601，UI 明確使用 `Asia/Taipei` 顯示。
-- scope contract probe：`2330`（現貨）與 `11011`（可轉債）皆回傳 `STK`，分別位於 TSE/OTC；`TXFR1`（台指期近月）回傳 `FUT`／TAIFEX。可轉債因此使用 stock mapping，期貨使用獨立 futures mapping。
+- scope contract probe：`2330`（現貨）與一檔可轉債皆回傳 `STK`，分別位於 TSE/OTC；`TXFR1`（台指期近月）回傳 `FUT`／TAIFEX。可轉債因此使用 stock mapping，期貨使用獨立 futures mapping。
 - 帳戶 callback 的正確生命週期是：`login(subscribe_trade=False)` → `set_order_callback(...)` → 每帳戶 `subscribe_trade(account)`。
 - 在登入前呼叫 `set_order_callback` 會收到 `AuthError: Not authenticated`；adapter 已依此行為調整。
 
@@ -29,6 +29,6 @@ simulation 帳戶回傳的 `signed` 不作為本專案開發閘門；開發環�
 
 ## 尚待開盤時段驗證
 
-- `11011`（可轉債）與 `TXFR1`（期貨）的即時 callback 與 K 線回傳，需在 simulation 開盤時段各自建立 sanitized fixture 後才視為市場資料支援完成。
+- 可轉債與 `TXFR1`（期貨）的即時 callback 與 K 線回傳，需在 simulation 開盤時段各自建立 sanitized fixture 後才視為市場資料支援完成。
 - 現階段的完整看盤頁可選取這些商品並顯示已持久化資料；沒有資料時會明確顯示尚未取得，不會假裝即時。
 - 模擬 worker 每 60 秒（可由 `AUTOTRADE_RECONCILE_SECONDS` 調整，最低 10 秒）以唯讀 `update_status()`／trades／positions 快照對帳。重啟後的未知委託會先進入 `RECONCILING`；快照沒有可匹配證據即改為 `MANUAL_REVIEW`，絕不自動重送。

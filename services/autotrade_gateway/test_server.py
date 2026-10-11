@@ -226,13 +226,22 @@ class GatewayServerTest(unittest.TestCase):
 
     def test_explicit_simulation_risk_context_uses_discovered_account(self) -> None:
         class SnapshotProvider:
+            lookups: list[tuple[str, str]] = []
             def __init__(self, _origin: str) -> None: pass
             def simulation_stock_accounts(self):
                 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
                 return (SimulationStockAccount("B", "paper-account-1"),)
+            def contract(self, code: str):
+                from services.autotrade_gateway.simulation_snapshot import ContractRef
+                return {
+                    "2330": ContractRef("STK", "TSE", "2330"),
+                    "99991": ContractRef("STK", "OTC", "99991"),
+                    "TXFR1": ContractRef("FUT", "TAIFEX", "TXFR1"),
+                }.get(code)
             def stock_risk_context(self, account, symbol: str, *, exchange: str = "TSE"):
-                if (account.account_id, symbol, exchange) != ("paper-account-1", "2330", "TSE"):
+                if account.account_id != "paper-account-1" or (symbol, exchange) not in {("2330", "TSE"), ("99991", "OTC")}:
                     raise AssertionError("unexpected simulation snapshot lookup")
+                SnapshotProvider.lookups.append((symbol, exchange))
                 return RiskContext(
                     quote_price=Decimal("1000"), quote_at=datetime.now(timezone.utc),
                     positions={"2330": RiskPosition(0, Decimal("1000"))},
@@ -246,6 +255,11 @@ class GatewayServerTest(unittest.TestCase):
             coordinator.gate = Gate.ARMED
             status, verdict = coordinator.accept(Intent(Source.MANUAL_UI, "paper-account-1", "2330", "BUY", 1, "1000"))
             self.assertEqual((status, verdict.allowed), (Status.APPROVED, True))
+            # The exchange comes from the sidecar contract table (a CB is OTC);
+            # futures are never looked up as stock contracts.
+            coordinator.accept(Intent(Source.MANUAL_UI, "paper-account-1", "99991", "BUY", 1, "100"))
+            coordinator.accept(Intent(Source.MANUAL_UI, "paper-account-1", "TXFR1", "BUY", 1, "20000"))
+            self.assertEqual(SnapshotProvider.lookups, [("2330", "TSE"), ("99991", "OTC")])
             fixture = getattr(server, "strategy_runtime")._fixture_intent("test", datetime.now(timezone.utc))
             self.assertEqual(fixture.account_id, "paper-account-1")
             self.assertEqual(fixture.broker_request["body"]["stock_order"]["account"]["broker_id"], "B")
@@ -262,6 +276,10 @@ class GatewayServerTest(unittest.TestCase):
                 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
 
                 return (SimulationStockAccount("B", "paper-account-1"),)
+
+            def contract(self, code: str):
+                from services.autotrade_gateway.simulation_snapshot import ContractRef
+                return ContractRef("STK", "TSE", code)
 
             def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
                 return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
@@ -377,6 +395,10 @@ class GatewayServerTest(unittest.TestCase):
             def simulation_stock_accounts(self):
                 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
                 return (SimulationStockAccount("B", "paper-account-1"),)
+            def contract(self, code: str):
+                from services.autotrade_gateway.simulation_snapshot import ContractRef
+                return ContractRef("STK", "TSE", code)
+
             def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
                 return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
 
@@ -447,6 +469,10 @@ class GatewayServerTest(unittest.TestCase):
             def simulation_stock_accounts(self):
                 from services.autotrade_gateway.simulation_snapshot import SimulationStockAccount
                 return (SimulationStockAccount("B", "paper-account-1"),)
+            def contract(self, code: str):
+                from services.autotrade_gateway.simulation_snapshot import ContractRef
+                return ContractRef("STK", "TSE", code)
+
             def stock_risk_context(self, _account, _symbol: str, *, exchange: str = "TSE"):
                 return RiskContext(Decimal("1000"), datetime.now(timezone.utc))
 

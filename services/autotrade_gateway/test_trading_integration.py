@@ -273,21 +273,21 @@ class RiskRegressionTest(unittest.TestCase):
         )
 
     def test_convertible_bond_board_lot_and_slow_quote_age(self):
-        cb = manual(1, 101.5, lot="Common", code="11011")
+        cb = manual(1, 101.5, lot="Common", code="99991")
         aged = RiskContext(Decimal("101.5"), datetime.now(timezone.utc) - timedelta(seconds=30))
         self.assertIn("stale_quote", RiskEngine().evaluate(cb, Gate.ARMED, aged).reasons)
-        slow = RiskEngine(RiskLimits(slow_quote_symbols=("11011",), slow_quote_max_age_seconds=60))
+        slow = RiskEngine(RiskLimits(slow_quote_symbols=("99991",), slow_quote_max_age_seconds=60))
         self.assertTrue(slow.evaluate(cb, Gate.ARMED, aged).allowed)
         # One CB board lot is 1,000 units: 2 lots exceed a 2,000-unit symbol cap
         # once one lot is already held.
-        holding = replace(aged, positions={"11011": RiskPosition(1000, Decimal("101.5"))})
+        holding = replace(aged, positions={"99991": RiskPosition(1000, Decimal("101.5"))})
         self.assertIn(
             "position_limit_exceeded",
-            slow.evaluate(manual(2, 101.5, lot="Common", code="11011"), Gate.ARMED, holding).reasons,
+            slow.evaluate(manual(2, 101.5, lot="Common", code="99991"), Gate.ARMED, holding).reasons,
         )
 
     def test_odd_lots_are_1_to_999_shares_and_not_for_cbs(self):
-        engine = RiskEngine(RiskLimits(board_lot_only_symbols=("11011",)))
+        engine = RiskEngine(RiskLimits(board_lot_only_symbols=("99991",)))
         self.assertTrue(engine.evaluate(manual(999), Gate.ARMED, self.context()).allowed)
         self.assertIn(
             "odd_lot_quantity_exceeded",
@@ -295,7 +295,7 @@ class RiskRegressionTest(unittest.TestCase):
         )
         self.assertIn(
             "odd_lot_not_supported",
-            engine.evaluate(manual(5, 101.5, code="11011"), Gate.ARMED, self.context("101.5")).reasons,
+            engine.evaluate(manual(5, 101.5, code="99991"), Gate.ARMED, self.context("101.5")).reasons,
         )
 
     def test_nonfinite_and_unavailable_pnl_fail_closed(self):
@@ -670,7 +670,7 @@ class InstrumentExecutionTest(unittest.TestCase):
             self.assertIn("risk_context_unavailable", verdict.reasons)
 
     def test_convertible_bond_board_lot_fills_in_units(self):
-        order = manual(1, 100, lot="Common", code="11011", account=self.broker.account_id)
+        order = manual(1, 100, lot="Common", code="99991", account=self.broker.account_id)
         status, verdict = self.service.coordinator.accept(order)
         self.assertEqual(status, Status.APPROVED, verdict.reasons)
         self.service.tick()
@@ -678,7 +678,7 @@ class InstrumentExecutionTest(unittest.TestCase):
         self.assertEqual(self.store.status(order.intent_id), Status.FILLED)
         self.assertEqual(int(str(self.store.observation_fills()[0]["quantity"])), 1000)
         stock = [item for item in self.broker.position_snapshots if item.account_type == "S"]
-        self.assertEqual([(item.symbol, item.quantity) for item in stock], [("11011", "1000")])
+        self.assertEqual([(item.symbol, item.quantity) for item in stock], [("99991", "1000")])
 
     def test_dispatch_preflight_refusal_is_rejected_and_never_sent(self):
         order = manual(account=self.broker.account_id)
@@ -743,20 +743,34 @@ class InstrumentExecutionTest(unittest.TestCase):
         from services.autotrade_gateway.execution_service import risk_limits_from_environment
 
         limits = risk_limits_from_environment({
-            "AUTOTRADE_CB_SYMBOLS": "11011, 23301",
+            "AUTOTRADE_CB_SYMBOLS": "99991, 23301",
             "AUTOTRADE_MAX_FUTURES_POSITION": "3",
         })
         self.assertIn("23301", limits.allowed_symbols)
-        self.assertEqual(limits.slow_quote_symbols, ("11011", "23301"))
+        self.assertEqual(limits.slow_quote_symbols, ("99991", "23301"))
         self.assertEqual(limits.max_futures_position, 3)
         self.assertEqual(limits.cooldown_seconds, 2)
         for bad in (
-            {"AUTOTRADE_CB_SYMBOLS": "11011;DROP"},
+            {"AUTOTRADE_CB_SYMBOLS": "99991;DROP"},
             {"AUTOTRADE_MAX_FUTURES_ORDER_CONTRACTS": "0"},
             {"AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS": "abc"},
         ):
             with self.assertRaises(ValueError):
                 risk_limits_from_environment(bad)
+
+    def test_paper_accepts_cbs_configured_at_launch(self):
+        from services.autotrade_gateway.execution_service import PaperTransport
+        from services.autotrade_gateway.simulation_snapshot import ContractRef
+
+        store = SQLiteIntentStore(":memory:")
+        self.addCleanup(store.close)
+        paper = PaperTransport(store, cb_symbols=("23301",))
+        self.assertEqual(paper.resolve_contract("23301"), ContractRef("STK", "OTC", "23301"))
+        paper.set_price("23301", Decimal("104.5"))
+        self.assertEqual(paper.prices["23301"], Decimal("104.5"))
+        self.assertIsNone(PaperTransport(store).resolve_contract("23301"))
+        with self.assertRaises(ValueError):
+            PaperTransport(store).set_price("23301", Decimal("100"))
 
     def test_stock_only_sidecar_keeps_futures_unavailable(self):
         from unittest import mock

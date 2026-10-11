@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('../lib/api', () => ({ apiGet: api.get, apiPost: api.post }));
 
 import { normalizeAutotradeOverview } from '../autotrade/client';
+import { autotradeObserverStore } from '../autotrade/observer-store';
 import {
     automatedOrderObservations,
     CopyableIdentity,
@@ -14,11 +15,26 @@ import {
     filterTimeline,
     orderObservationText,
     panelSummary,
+    riskValueText,
     riskVerdictText,
 } from './autotrade-observer-panels';
 
 beforeEach(() => vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true));
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+    vi.unstubAllGlobals();
+    // The shared store keeps running briefly after the last panel unmounts;
+    // each test must start from a fresh Gateway read.
+    autotradeObserverStore.dispose();
+});
+
+describe('Risk limit values', () => {
+    it('renders lists and multiplier maps as readable text, never [object Object]', () => {
+        expect(riskValueText({ TXF: '200' })).toBe('TXF ×200');
+        expect(riskValueText(['2330', '11011'])).toBe('2330、11011');
+        expect(riskValueText([])).toBe('無');
+        expect(riskValueText(5)).toBe('5');
+    });
+});
 
 describe('Autotrade observer panel summaries', () => {
     it('filters signals, decisions, and immutable events by strategy, product, status, and time', () => {

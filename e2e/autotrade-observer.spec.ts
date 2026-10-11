@@ -679,11 +679,11 @@ test('Autotrade observer preserves its last durable projection when refresh beco
     await page.goto('/');
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('風控與限額', { exact: true }).click();
-    await expect(page.getByText('單筆最大數量：10000')).toBeVisible();
+    await expect(page.getByText('單筆最大數量（股）：10000')).toBeVisible();
     await expect(page.getByRole('status').filter({
         hasText: 'Gateway 更新暫時失敗；保留最後一次成功的唯讀資料，未重送任何委託。',
     })).toBeVisible({ timeout: 12_000 });
-    await expect(page.getByText('單筆最大數量：10000')).toBeVisible();
+    await expect(page.getByText('單筆最大數量（股）：10000')).toBeVisible();
     expect(overviewReads).toBeGreaterThanOrEqual(2);
     expect(orderMutations).toBe(0);
 });

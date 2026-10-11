@@ -1,6 +1,7 @@
 import { fetchAutotradeOverview, type AutotradeOverview } from './client';
 
 export const AUTOTRADE_OBSERVER_REFRESH_MS = 5_000;
+export const AUTOTRADE_OBSERVER_STOP_GRACE_MS = 2_000;
 
 export type AutotradeObserverState = {
     overview: AutotradeOverview | null;
@@ -44,25 +45,46 @@ export class AutotradeObserverStore {
     private refreshInFlight: Promise<void> | null = null;
     private refreshRequested = false;
     private eventSource: EventSourceLike | null = null;
+    private running = false;
+    private stopTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(
         private readonly fetchOverview: FetchOverview = fetchAutotradeOverview,
         private readonly refreshMs = AUTOTRADE_OBSERVER_REFRESH_MS,
         private readonly eventSourceFactory: EventSourceFactory = createAutotradeEventSource,
+        // Panels unmount and remount when a layout changes; a short grace period
+        // keeps one read loop and SSE stream instead of restarting them.
+        private readonly stopGraceMs = AUTOTRADE_OBSERVER_STOP_GRACE_MS,
     ) {}
 
     subscribe(listener: Listener): () => void {
         this.listeners.add(listener);
         listener(this.state);
-        if (this.listeners.size === 1) this.start();
+        if (this.stopTimer !== null) {
+            clearTimeout(this.stopTimer);
+            this.stopTimer = null;
+        }
+        if (!this.running) this.start();
         return () => {
             this.listeners.delete(listener);
-            if (this.listeners.size === 0) this.stop();
+            if (this.listeners.size > 0 || this.stopTimer !== null) return;
+            this.stopTimer = setTimeout(() => {
+                this.stopTimer = null;
+                if (this.listeners.size === 0) this.stop();
+            }, this.stopGraceMs);
         };
     }
 
     snapshot(): AutotradeObserverState {
         return this.state;
+    }
+
+    /** Stop immediately and forget cached observations (app teardown, tests). */
+    dispose(): void {
+        if (this.stopTimer !== null) clearTimeout(this.stopTimer);
+        this.stopTimer = null;
+        this.stop();
+        this.state = initialState;
     }
 
     refresh(): Promise<void> {
@@ -104,6 +126,7 @@ export class AutotradeObserverStore {
     }
 
     private start(): void {
+        this.running = true;
         void this.refresh();
         this.timer = setInterval(() => { void this.refresh(); }, this.refreshMs);
         this.eventSource = this.eventSourceFactory();
@@ -115,6 +138,7 @@ export class AutotradeObserverStore {
     }
 
     private stop(): void {
+        this.running = false;
         if (this.timer !== null) clearInterval(this.timer);
         this.timer = null;
         this.eventSource?.close();

@@ -7,6 +7,7 @@ import {
     previewReferenceStrategy,
     refreshAutotradeReconciliation,
     refreshAutotradePositionSnapshots,
+    riskReasonLabel,
     type AutotradeOverview,
     type AutotradeOrderObservation,
     type AutotradePositionObservation,
@@ -374,7 +375,7 @@ export function AutotradeObserverPanels({ kind }: { kind: AutotradeObserverPanel
                 <div style={{ display: 'grid', gap: 4, color: '#aeb7c6' }}>
                     <div>來源：{overview.risk.limits_source}</div>
                     {Object.entries(overview.risk.limits).map(([key, value]) => (
-                        <div key={key}>{riskLabel(key)}：{Array.isArray(value) ? value.join('、') : String(value)}</div>
+                        <div key={key}>{riskLabel(key)}：{riskValueText(value)}</div>
                     ))}
                 </div>
             )}
@@ -533,11 +534,26 @@ function formatPayload(value: Record<string, unknown>): string {
 function riskLabel(key: string): string {
     return ({
         allowed_accounts: '允許帳戶', allowed_symbols: '允許商品',
-        max_order_quantity: '單筆最大數量', max_order_notional: '單筆最大名目金額',
-        max_position_per_symbol: '單一商品最大部位', max_gross_exposure: '最大總曝險',
+        max_order_quantity: '單筆最大數量（股）', max_order_notional: '單筆最大名目金額',
+        max_position_per_symbol: '單一商品最大部位（股）', max_gross_exposure: '最大總曝險',
         max_daily_loss: '每日最大損失', max_quote_age_seconds: '最大行情秒數',
         max_price_deviation: '最大價格偏離',
+        max_orders_per_minute: '每分鐘最多委託數', cooldown_seconds: '委託冷卻秒數',
+        slow_quote_symbols: '冷門商品（較長成交價時效）', slow_quote_max_age_seconds: '冷門商品成交價時效（秒）',
+        board_lot_only_symbols: '只能整股的商品（CB）', allowed_futures_roots: '允許期貨商品',
+        futures_multipliers: '期貨契約乘數', max_futures_order_contracts: '期貨單筆最多口數',
+        max_futures_position: '期貨最大部位（口）', max_futures_notional: '期貨最大契約價值',
     } as Record<string, string>)[key] ?? key;
+}
+
+/** Human-readable limit value; lists and maps never render as raw objects. */
+export function riskValueText(value: unknown): string {
+    if (Array.isArray(value)) return value.length ? value.join('、') : '無';
+    if (value && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>);
+        return entries.length ? entries.map(([key, item]) => `${key} ×${String(item)}`).join('、') : '無';
+    }
+    return String(value);
 }
 
 export function riskVerdictText(verdict: AutotradeRiskVerdict | null | undefined): string | null {
@@ -551,18 +567,6 @@ export function automatedOrderObservations(
     orders: AutotradeOrderObservation[],
 ): AutotradeOrderObservation[] {
     return orders.filter((order) => order.source === 'STRATEGY' || order.source === 'SYSTEM_TRIGGER');
-}
-
-function riskReasonLabel(reason: string): string {
-    return ({
-        trading_gate_not_armed: '交易閘門尚未啟用',
-        risk_context_unavailable: '缺少權威市場與帳務風控快照',
-        stale_quote: '行情已過期或不可用',
-        price_deviation_exceeded: '委託價格偏離最新行情過大',
-        position_limit_exceeded: '預估商品部位超過限額',
-        gross_exposure_limit_exceeded: '預估總曝險超過限額',
-        daily_loss_limit_exceeded: '每日損失已達限額',
-    } as Record<string, string>)[reason] ?? reason;
 }
 
 function Badge({ label, value, tone }: { label: string; value: string; tone: string }) {

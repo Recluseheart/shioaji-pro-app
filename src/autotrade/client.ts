@@ -184,7 +184,7 @@ export type StrategyControlReceipt = {
     applied: boolean;
 };
 
-function riskReasonLabel(reason: string): string {
+export function riskReasonLabel(reason: string): string {
     return ({
         trading_gate_not_armed: '交易閘門尚未啟用',
         target_order_account_unverified: '目標委託的帳戶尚未驗證',
@@ -205,6 +205,9 @@ function riskReasonLabel(reason: string): string {
         order_rate_exceeded: '每分鐘委託數已達上限',
         outstanding_order_requires_reconciliation: '仍有未完成或待對帳的委託',
         execution_authority_expired: '送單時交易閘門已關閉或逾時',
+        odd_lot_quantity_exceeded: '零股單筆超過 999 股',
+        odd_lot_not_supported: '此商品（CB）不能下零股',
+        invalid_quantity: '數量無效',
         no_signal_condition: '目前行情未觸發策略條件',
         symbol_not_configured: '商品不在策略設定內',
         strategy_error: '策略程式錯誤',

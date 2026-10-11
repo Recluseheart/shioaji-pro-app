@@ -52,7 +52,7 @@ describe('AutotradeObserverStore', () => {
             }),
             close: vi.fn(),
         };
-        const store = new AutotradeObserverStore(fetchOverview, 60_000, () => source);
+        const store = new AutotradeObserverStore(fetchOverview, 60_000, () => source, 0);
         const unsubscribe = store.subscribe(vi.fn());
 
         await vi.waitFor(() => expect(fetchOverview).toHaveBeenCalledTimes(1));
@@ -60,6 +60,29 @@ describe('AutotradeObserverStore', () => {
         await vi.waitFor(() => expect(fetchOverview).toHaveBeenCalledTimes(2));
 
         unsubscribe();
-        expect(source.close).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(source.close).toHaveBeenCalledOnce());
+    });
+
+    it('does not restart reads or the SSE stream when a subscriber immediately re-subscribes', async () => {
+        // React re-subscribes whenever useSyncExternalStore receives a new
+        // subscribe function; that must never become a request storm.
+        const fetchOverview = vi.fn().mockResolvedValue(overview);
+        const source = { addEventListener: vi.fn(), close: vi.fn() };
+        const factory = vi.fn(() => source);
+        const store = new AutotradeObserverStore(fetchOverview, 60_000, factory, 50);
+
+        let unsubscribe = store.subscribe(vi.fn());
+        for (let render = 0; render < 20; render += 1) {
+            unsubscribe();
+            unsubscribe = store.subscribe(vi.fn());
+            await store.refresh();
+        }
+        expect(factory).toHaveBeenCalledTimes(1);
+        expect(source.close).not.toHaveBeenCalled();
+        // 1 initial read + 20 explicit refreshes; no extra reads from restarts.
+        expect(fetchOverview).toHaveBeenCalledTimes(21);
+
+        unsubscribe();
+        await vi.waitFor(() => expect(source.close).toHaveBeenCalledOnce());
     });
 });

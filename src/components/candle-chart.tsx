@@ -109,6 +109,13 @@ const TRADE_MODES: { key: TradeMode; label: string }[] = [
 // keep paging until this floor — one page per fetch, spans widen with tf
 const MAX_HISTORY_DAYS = 1095; // ~3 years
 
+// Module-level, so useSyncExternalStore keeps one subscription. An inline
+// subscribe function is a new reference each render: React would unsubscribe
+// and resubscribe every render, restarting the observer's Gateway reads and
+// SSE stream in a tight loop.
+const subscribeAutotradeObserver = (listener: () => void) => autotradeObserverStore.subscribe(listener);
+const autotradeObserverSnapshot = () => autotradeObserverStore.snapshot();
+
 export function CandleChart({
     panelId,
     contract,
@@ -224,8 +231,8 @@ export function CandleChart({
         [trades, contract],
     );
     const autotradeObserver = useSyncExternalStore(
-        (listener) => autotradeObserverStore.subscribe(listener),
-        () => autotradeObserverStore.snapshot(),
+        subscribeAutotradeObserver,
+        autotradeObserverSnapshot,
     );
     const automaticOrderOverlays = useMemo(
         () => autotradeOrderOverlays(autotradeObserver.overview?.orders ?? [], contract.code),

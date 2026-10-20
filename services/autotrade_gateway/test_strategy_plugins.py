@@ -213,7 +213,7 @@ class PluginExecutionTest(unittest.TestCase):
         self.strategy.control("start")
         self.service.tick()
         row = next(iter(self.broker.rows.values()))
-        row["status"].update(status="Cancelled", order_quantity=0, cancel_quantity=1)
+        row["status"].update(status="Cancelled", cancel_quantity=1)  # Shioaji keeps order_quantity
         self.run_ticks(3)
         orders = self.strategy_orders()
         self.assertEqual([(self.lot_of(i), status) for i, status in orders], [("Common", "CANCELLED")])

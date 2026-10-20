@@ -411,6 +411,30 @@ class ExecutionIntegrationTest(unittest.TestCase):
         self.assertEqual(self.store.status(command.intent_id), Status.COMPLETED)
         self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
 
+    def test_cancel_reported_as_ordered_and_cancelled_keeps_the_runtime_alive(self):
+        # Shioaji SIM after cancelling one lot: order_quantity 1, cancel_quantity 1.
+        self.service.control("arm", "paper test", "arm-sim-cancel")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        row = next(iter(self.broker.rows.values()))
+        row["status"].update(status="Cancelled", order_quantity=1, cancel_quantity=1, deals=[])
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
+        self.assertIsNone(self.service.last_error)
+
+    def test_cancelled_and_filled_beyond_the_order_is_rejected(self):
+        order = manual(quantity=2, price=950, account=self.broker.account_id)
+        trade = {
+            "contract": {"code": "2330"},
+            "order": {"id": "T1", "action": "Buy", "quantity": 2, "order_lot": "IntradayOdd",
+                      "account": {"account_id": self.broker.account_id, "broker_id": self.broker.broker_id}},
+            "status": {"id": "T1", "status": "Cancelled", "order_quantity": 2, "cancel_quantity": 2,
+                       "deals": [{"seq": "1", "quantity": 1, "price": "950", "ts": 1.0}]},
+        }
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            self.service._validate_trade(order, trade)
+
     def test_real_http_target_mapping_cancel_completes(self):
         self.service.control("arm", "paper test", "arm-http")
         order = manual(price=950, account=self.broker.account_id)

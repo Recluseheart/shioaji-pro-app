@@ -419,9 +419,10 @@ class PaperTransport:
                 raise ValueError("paper target is unavailable")
             changes = intent.operation_payload or {}
             if intent.operation == "CANCEL":
+                # Like Shioaji SIM: order_quantity keeps the ordered size and
+                # the cancelled part is reported separately.
                 target["status"]["status"] = "Cancelled"
                 target["status"]["cancel_quantity"] = target["_intent"].quantity
-                target["status"]["order_quantity"] = 0
             elif intent.operation == "UPDATE_PRICE":
                 target["status"]["modified_price"] = changes["price"]
             elif intent.operation == "UPDATE_QUANTITY":
@@ -927,16 +928,24 @@ class ExecutionService:
             raise ValueError("unapproved broker quantity")
         effective_quantity = status.get("order_quantity", order["quantity"])
         cancelled = status.get("cancel_quantity", 0)
+        # Shioaji SIM keeps order_quantity at the ordered size after a cancel
+        # (1 ordered, 1 cancelled); a remaining-size report (0 ordered,
+        # 1 cancelled) is accepted too. Either way the cancelled part alone
+        # never exceeds the order, which is checked again with fills below.
         if (
             type(effective_quantity) is not int
             or type(cancelled) is not int
             or effective_quantity < 0
             or cancelled < 0
+            or cancelled > intent.quantity
             or (
                 status.get("status") != "Cancelled"
                 and effective_quantity not in quantities
             )
-            or effective_quantity + cancelled > intent.quantity
+            or (
+                effective_quantity + cancelled > intent.quantity
+                and effective_quantity != intent.quantity
+            )
         ):
             raise ValueError("inconsistent broker quantity snapshot")
         deals = status.get("deals")
@@ -959,6 +968,8 @@ class ExecutionService:
             if not price.is_finite() or price <= 0 or timestamp > now():
                 raise ValueError("invalid fill price or timestamp")
             total += deal["quantity"]
+        if total + cancelled > intent.quantity:
+            raise ValueError("cancelled and filled quantity exceed the order")
         multiplier = risk_quantity(intent) // intent.quantity
         persisted = [
             fill

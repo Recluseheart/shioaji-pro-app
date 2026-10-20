@@ -197,12 +197,24 @@ def _symbol_list(value: str | None) -> tuple[str, ...]:
     return symbols
 
 
-def risk_limits_from_environment(environment: Mapping[str, str]) -> RiskLimits:
+# The simulation feed refreshes a snapshot's last trade 10-30 s late, so a
+# 5-second quote age would refuse most SIM orders; elsewhere it stays 5 s.
+SIM_MAX_QUOTE_AGE_SECONDS = 60
+# The simulation broker accepts CB prices only on this step (code 88 otherwise).
+SIM_CB_PRICE_STEP = Decimal("0.5")
+# How long the broker order list may be completely unreadable before
+# in-flight orders are treated as UNKNOWN and the gate closes.
+READBACK_OUTAGE_GRACE_SECONDS = 20
+
+
+def risk_limits_from_environment(environment: Mapping[str, str], runtime_mode: str = "PAPER") -> RiskLimits:
     """Operator-tunable SIM/PAPER limits. Accounts are never configurable here.
 
     ``AUTOTRADE_CB_SYMBOLS`` lists convertible bonds that may trade; they are
     allowed and use the longer last-trade age because they print rarely.
-    Invalid values refuse to start the Gateway instead of falling back.
+    ``AUTOTRADE_MAX_QUOTE_AGE_SECONDS`` overrides the quote age (SIM 60 s,
+    otherwise 5 s). Invalid values refuse to start the Gateway instead of
+    falling back.
     """
     base = RiskLimits(cooldown_seconds=2)
     cb = _symbol_list(environment.get("AUTOTRADE_CB_SYMBOLS"))
@@ -223,6 +235,11 @@ def risk_limits_from_environment(environment: Mapping[str, str]) -> RiskLimits:
         slow_quote_symbols=cb,
         board_lot_only_symbols=cb,
         slow_quote_max_age_seconds=integer("AUTOTRADE_SLOW_QUOTE_MAX_AGE_SECONDS", 60, 5, 3600),
+        max_quote_age_seconds=integer(
+            "AUTOTRADE_MAX_QUOTE_AGE_SECONDS",
+            SIM_MAX_QUOTE_AGE_SECONDS if runtime_mode.upper() == "SIM" else base.max_quote_age_seconds,
+            1, 3600,
+        ),
         max_position_per_symbol=integer(
             "AUTOTRADE_MAX_POSITION_PER_SYMBOL", base.max_position_per_symbol, 1, 1_000_000
         ),
@@ -419,9 +436,10 @@ class PaperTransport:
                 raise ValueError("paper target is unavailable")
             changes = intent.operation_payload or {}
             if intent.operation == "CANCEL":
+                # Like Shioaji SIM: order_quantity keeps the ordered size and
+                # the cancelled part is reported separately.
                 target["status"]["status"] = "Cancelled"
                 target["status"]["cancel_quantity"] = target["_intent"].quantity
-                target["status"]["order_quantity"] = 0
             elif intent.operation == "UPDATE_PRICE":
                 target["status"]["modified_price"] = changes["price"]
             elif intent.operation == "UPDATE_QUANTITY":
@@ -500,6 +518,7 @@ class ExecutionService:
         interval: float = 2,
         limits: RiskLimits | None = None,
         strategy_plugin: StrategyPlugin | None = None,
+        sim_cb_price_step: Decimal | None = SIM_CB_PRICE_STEP,
     ) -> None:
         self.store, self.transport, self.publish = store, transport, publish
         self.allow_execution, self.interval = allow_execution, interval
@@ -512,6 +531,7 @@ class ExecutionService:
         self.last_error: str | None = None
         self.arm_expires_at: float = 0
         self._last_account_snapshot: float = 0
+        self._readback_outage_since: float | None = None
         self.latest_trades: dict[str, dict] = {}
         previous_modes = {
             event["details"].get("mode")
@@ -541,6 +561,8 @@ class ExecutionService:
         self.strategy: MarketStrategyRuntime | PluginStrategyRuntime
         if strategy_plugin is not None:
             self.strategy = PluginStrategyRuntime(self.coordinator, strategy_plugin, transport)
+            if transport.mode == "SIM":
+                self.strategy.cb_price_step = sim_cb_price_step
         else:
             self.strategy = MarketStrategyRuntime(
                 self.coordinator,
@@ -679,15 +701,27 @@ class ExecutionService:
                 str(row["intent_id"]): row for row in self.store.observation_orders()
             }
             try:
-                self._apply_trades(self.transport.trades())
+                trades = self.transport.trades()
             except Exception:
-                self.coordinator.gate = self.store.trading_gate()
-                self.latest_trades = {}
-                for row in self.store.observation_orders():
-                    if row["status"] in {"PENDING_SUBMIT", "SUBMITTED", "PART_FILLED"}:
-                        self.store.mark_delivery_unknown(
-                            str(row["intent_id"]), "broker_readback_unavailable"
-                        )
+                # The order list could not be read at all (the SIM sidecar
+                # drops broker messages for 10-30 s at times). Within a short
+                # grace nothing is sent, nothing becomes UNKNOWN and the gate
+                # stays as it is; the next tick reads again.
+                if self._readback_outage_since is None:
+                    self._readback_outage_since = now().timestamp()
+                if now().timestamp() - self._readback_outage_since < READBACK_OUTAGE_GRACE_SECONDS:
+                    self.last_error = (
+                        f"券商委託回報暫時讀不到，{READBACK_OUTAGE_GRACE_SECONDS} 秒內自動重試；期間暫停送單"
+                    )
+                    return
+                self._close_on_readback_failure()
+                raise
+            self._readback_outage_since = None
+            try:
+                self._apply_trades(trades)
+            except Exception:
+                # Facts that do not match are never waited out.
+                self._close_on_readback_failure()
                 raise
             context = self.strategy.on_tick()
             if self.coordinator.gate is Gate.ARMED:
@@ -750,6 +784,15 @@ class ExecutionService:
                 if before.get(str(row["intent_id"])) != row:
                     self.publish(row)
             self.last_tick, self.last_error = now().isoformat(), None
+
+    def _close_on_readback_failure(self) -> None:
+        self.coordinator.gate = self.store.trading_gate()
+        self.latest_trades = {}
+        for row in self.store.observation_orders():
+            if row["status"] in {"PENDING_SUBMIT", "SUBMITTED", "PART_FILLED"}:
+                self.store.mark_delivery_unknown(
+                    str(row["intent_id"]), "broker_readback_unavailable"
+                )
 
     def _apply_trades(self, trades: list[dict]) -> None:
         by_id: dict[str, dict] = {}
@@ -927,16 +970,25 @@ class ExecutionService:
             raise ValueError("unapproved broker quantity")
         effective_quantity = status.get("order_quantity", order["quantity"])
         cancelled = status.get("cancel_quantity", 0)
+        # Shioaji SIM keeps order_quantity at the ordered size after a cancel
+        # (1 ordered, 1 cancelled); a remaining-size report (0 ordered,
+        # 1 cancelled) is accepted too. Either way the cancelled part alone
+        # never exceeds the order, which is checked again with fills below.
         if (
             type(effective_quantity) is not int
             or type(cancelled) is not int
             or effective_quantity < 0
             or cancelled < 0
+            or cancelled > intent.quantity
             or (
-                status.get("status") != "Cancelled"
+                # A broker rejection (Failed) reports nothing live: 0 ordered.
+                status.get("status") not in {"Cancelled", "Failed"}
                 and effective_quantity not in quantities
             )
-            or effective_quantity + cancelled > intent.quantity
+            or (
+                effective_quantity + cancelled > intent.quantity
+                and effective_quantity != intent.quantity
+            )
         ):
             raise ValueError("inconsistent broker quantity snapshot")
         deals = status.get("deals")
@@ -959,6 +1011,8 @@ class ExecutionService:
             if not price.is_finite() or price <= 0 or timestamp > now():
                 raise ValueError("invalid fill price or timestamp")
             total += deal["quantity"]
+        if total + cancelled > intent.quantity:
+            raise ValueError("cancelled and filled quantity exceed the order")
         multiplier = risk_quantity(intent) // intent.quantity
         persisted = [
             fill

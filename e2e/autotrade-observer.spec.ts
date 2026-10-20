@@ -859,7 +859,7 @@ test('Auto Orders defaults to durable strategy observations and exposes manual o
     await page.getByRole('button', { name: /新增面板/ }).click();
     await page.getByText('自動委託與持倉', { exact: true }).click();
     await expect(page.getByText(/2330 買 2 @ 1000 · 券商已接受/)).toBeVisible();
-    await expect(page.getByText(/策略 · 策略 reference · 執行 run-1/)).toBeVisible();
+    await expect(page.getByText(/策略 reference · 執行 run-1/)).toBeVisible();
     await expect(page.getByText('已成交 2（2 筆）')).toBeVisible();
     await expect(page.getByText(/賣 1 @ 999/)).toHaveCount(0);
 

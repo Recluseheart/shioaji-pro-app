@@ -411,6 +411,82 @@ class ExecutionIntegrationTest(unittest.TestCase):
         self.assertEqual(self.store.status(command.intent_id), Status.COMPLETED)
         self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
 
+    def test_cancel_reported_as_ordered_and_cancelled_keeps_the_runtime_alive(self):
+        # Shioaji SIM after cancelling one lot: order_quantity 1, cancel_quantity 1.
+        self.service.control("arm", "paper test", "arm-sim-cancel")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        row = next(iter(self.broker.rows.values()))
+        row["status"].update(status="Cancelled", order_quantity=1, cancel_quantity=1, deals=[])
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
+        self.assertIsNone(self.service.last_error)
+
+    def test_broker_rejection_with_zero_quantity_is_terminal_not_a_stall(self):
+        # Shioaji SIM rejecting a price tick: status Failed, order_quantity 0.
+        self.service.control("arm", "paper test", "arm-sim-reject")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        row = next(iter(self.broker.rows.values()))
+        row["status"].update(status="Failed", order_quantity=0, cancel_quantity=0, deals=[])
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.BROKER_REJECTED)
+        self.assertIsNone(self.service.last_error)
+
+    def test_unreadable_order_list_is_waited_out_for_twenty_seconds_only(self):
+        from unittest.mock import patch
+
+        self.service.control("arm", "paper test", "arm-outage")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.SUBMITTED)
+        queued = manual(price=940, account=self.broker.account_id)
+        self.service.coordinator.accept(queued)
+
+        def unreadable():
+            raise OSError("sidecar dropped the reply")
+
+        start = datetime.now(timezone.utc)
+        with patch.object(self.broker, "trades", unreadable):
+            for seconds in (0, 10, 19):
+                with patch("services.autotrade_gateway.execution_service.now", return_value=start + timedelta(seconds=seconds)):
+                    self.service.tick()  # no exception inside the grace
+                self.assertEqual(self.store.status(order.intent_id), Status.SUBMITTED)
+                self.assertEqual(self.store.status(queued.intent_id), Status.APPROVED)  # nothing sent
+                self.assertIs(self.service.coordinator.gate, Gate.ARMED)
+                self.assertIn("讀不到", self.service.last_error)
+            with patch("services.autotrade_gateway.execution_service.now", return_value=start + timedelta(seconds=21)):
+                with self.assertRaises(OSError):
+                    self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.UNKNOWN)
+        self.assertIsNot(self.service.coordinator.gate, Gate.ARMED)
+
+    def test_readable_but_mismatched_facts_are_never_waited_out(self):
+        self.service.control("arm", "paper test", "arm-mismatch")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        next(iter(self.broker.rows.values()))["order"]["quantity"] = 5  # not what was approved
+        with self.assertRaisesRegex(ValueError, "quantity"):
+            self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.UNKNOWN)
+
+    def test_cancelled_and_filled_beyond_the_order_is_rejected(self):
+        order = manual(quantity=2, price=950, account=self.broker.account_id)
+        trade = {
+            "contract": {"code": "2330"},
+            "order": {"id": "T1", "action": "Buy", "quantity": 2, "order_lot": "IntradayOdd",
+                      "account": {"account_id": self.broker.account_id, "broker_id": self.broker.broker_id}},
+            "status": {"id": "T1", "status": "Cancelled", "order_quantity": 2, "cancel_quantity": 2,
+                       "deals": [{"seq": "1", "quantity": 1, "price": "950", "ts": 1.0}]},
+        }
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            self.service._validate_trade(order, trade)
+
     def test_real_http_target_mapping_cancel_completes(self):
         self.service.control("arm", "paper test", "arm-http")
         order = manual(price=950, account=self.broker.account_id)
@@ -605,8 +681,15 @@ class RuntimeBoundaryTest(unittest.TestCase):
             raise TimeoutError()
 
         self.broker.trades = unavailable
-        with self.assertRaises(TimeoutError):
-            self.service.tick()
+        from unittest.mock import patch
+
+        start = datetime.now(timezone.utc)
+        with patch("services.autotrade_gateway.execution_service.now", return_value=start):
+            self.service.tick()  # a brief outage is retried, not escalated
+        self.assertNotEqual(self.store.status(self.order.intent_id), Status.UNKNOWN)
+        with patch("services.autotrade_gateway.execution_service.now", return_value=start + timedelta(seconds=21)):
+            with self.assertRaises(TimeoutError):
+                self.service.tick()
         self.assertEqual(self.service.coordinator.gate, Gate.DISARMED)
         self.assertEqual(self.store.status(self.order.intent_id), Status.UNKNOWN)
 
@@ -757,6 +840,18 @@ class InstrumentExecutionTest(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 risk_limits_from_environment(bad)
+
+    def test_sim_quote_age_is_sixty_seconds_and_stays_five_elsewhere(self):
+        from services.autotrade_gateway.execution_service import risk_limits_from_environment
+
+        self.assertEqual(risk_limits_from_environment({}, "SIM").max_quote_age_seconds, 60)
+        self.assertEqual(risk_limits_from_environment({}, "PAPER").max_quote_age_seconds, 5)
+        self.assertEqual(risk_limits_from_environment({}).max_quote_age_seconds, 5)
+        self.assertEqual(
+            risk_limits_from_environment({"AUTOTRADE_MAX_QUOTE_AGE_SECONDS": "15"}, "SIM").max_quote_age_seconds, 15,
+        )
+        with self.assertRaises(ValueError):
+            risk_limits_from_environment({"AUTOTRADE_MAX_QUOTE_AGE_SECONDS": "0"}, "SIM")
 
     def test_paper_accepts_cbs_configured_at_launch(self):
         from services.autotrade_gateway.execution_service import PaperTransport

@@ -718,6 +718,7 @@ export function dryRunDetails(document: Record<string, unknown>): string[] {
             ? verdict.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
         details.push(
             `預計委託：${String(proposal.symbol ?? '')} ${side} ${String(proposal.quantity ?? '')} 股 @ ${String(proposal.price ?? '')}`
+            + (typeof proposal.original_price === 'string' ? `（模擬盤價位取整，原價 ${proposal.original_price}）` : '')
             + (parts.length ? `（${parts.join('＋')}）` : '')
             + ` · 風控${verdict.allowed === true ? '允許' : `拒絕${reasons.length ? `（${reasons.map(riskReasonLabel).join('、')}）` : ''}`}`,
         );

@@ -571,10 +571,12 @@ def performance_document(store: IntentStore | None) -> dict[str, object]:
 def position_snapshots_document(store: IntentStore) -> list[dict[str, object]]:
     """Project durable broker position facts, including the account number."""
     items: list[dict[str, object]] = []
-    latest_paper_view = next((event["details"] for event in store.observation_audit_events()
-        if event["event_type"] == "PAPER_POSITION_VIEW"), None)
+    # Only the latest complete observation is current; a position closed
+    # since then must disappear rather than linger from an older batch.
+    latest_view = next((event["details"] for event in store.observation_audit_events()
+        if event["event_type"] in {"PAPER_POSITION_VIEW", "POSITION_SNAPSHOT_VIEW"}), None)
     for snapshot in store.observation_position_snapshots():
-        if isinstance(latest_paper_view, dict) and snapshot["snapshot_id"] not in latest_paper_view["snapshot_ids"]:
+        if isinstance(latest_view, dict) and snapshot["snapshot_id"] not in latest_view["snapshot_ids"]:
             continue
         account_id = snapshot.get("account_id")
         account_type = snapshot.get("account_type")
@@ -730,7 +732,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             })
             return
         try:
-            getattr(self.server, "order_store").record_position_snapshots(snapshots)
+            store = getattr(self.server, "order_store")
+            store.record_position_snapshots(snapshots)
+            store.record_audit_event(None, "POSITION_SNAPSHOT_VIEW", {
+                "snapshot_ids": [snapshot.snapshot_id for snapshot in snapshots],
+                "observed_at": snapshots[0].observed_at.isoformat() if snapshots else None,
+            })
         except ValueError:
             self._json(HTTPStatus.CONFLICT, {
                 "message": "position snapshot conflicts with durable facts; previous durable facts were retained",
@@ -1812,7 +1819,7 @@ def _create_server(
         )
         from .strategy_plugins import load_private_strategy
         try:
-            limits = risk_limits_from_environment(os.environ)
+            limits = risk_limits_from_environment(os.environ, selected_runtime)
             strategy_name = os.getenv("AUTOTRADE_STRATEGY", "price-threshold")
             plugin = None
             if strategy_name != "price-threshold":

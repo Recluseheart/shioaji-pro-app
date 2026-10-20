@@ -939,7 +939,8 @@ class ExecutionService:
             or cancelled < 0
             or cancelled > intent.quantity
             or (
-                status.get("status") != "Cancelled"
+                # A broker rejection (Failed) reports nothing live: 0 ordered.
+                status.get("status") not in {"Cancelled", "Failed"}
                 and effective_quantity not in quantities
             )
             or (

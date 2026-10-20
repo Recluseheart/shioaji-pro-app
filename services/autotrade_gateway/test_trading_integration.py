@@ -423,6 +423,18 @@ class ExecutionIntegrationTest(unittest.TestCase):
         self.assertEqual(self.store.status(order.intent_id), Status.CANCELLED)
         self.assertIsNone(self.service.last_error)
 
+    def test_broker_rejection_with_zero_quantity_is_terminal_not_a_stall(self):
+        # Shioaji SIM rejecting a price tick: status Failed, order_quantity 0.
+        self.service.control("arm", "paper test", "arm-sim-reject")
+        order = manual(price=950, account=self.broker.account_id)
+        self.service.coordinator.accept(order)
+        self.service.tick()
+        row = next(iter(self.broker.rows.values()))
+        row["status"].update(status="Failed", order_quantity=0, cancel_quantity=0, deals=[])
+        self.service.tick()
+        self.assertEqual(self.store.status(order.intent_id), Status.BROKER_REJECTED)
+        self.assertIsNone(self.service.last_error)
+
     def test_cancelled_and_filled_beyond_the_order_is_rejected(self):
         order = manual(quantity=2, price=950, account=self.broker.account_id)
         trade = {

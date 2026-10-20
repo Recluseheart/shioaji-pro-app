@@ -193,6 +193,34 @@ class GatewayServerTest(unittest.TestCase):
         self.assertEqual(getattr(self.server, "order_coordinator").gate, Gate.DISARMED)
         self.assertEqual(ReadServiceHandler.received, [])
 
+    def test_position_refresh_shows_only_the_latest_observation(self) -> None:
+        from services.autotrade_gateway.order_core import PositionSnapshot
+
+        batches = [
+            (PositionSnapshot(
+                snapshot_id="held-1", account_type="S", account_id="SIM-STOCK-1234",
+                symbol="2330", side="LONG", quantity="1", average_price="2415",
+                market_price="2410", unrealized_pnl="-5",
+                observed_at=datetime(2026, 10, 20, 3, 37, tzinfo=timezone.utc),
+            ),),
+            (),  # the position was sold: the broker now reports nothing
+        ]
+
+        class SnapshotProvider:
+            def position_snapshots(self):
+                return batches.pop(0)
+
+        self.server.position_snapshot_provider = SnapshotProvider()
+        documents = []
+        for _ in range(2):
+            with urlopen(Request(f"{self.base}/api/v1/autotrade/positions/refresh", data=b"", method="POST")):
+                pass
+            with urlopen(f"{self.base}/api/v1/autotrade/positions") as response:
+                documents.append(json.load(response)["items"])
+
+        self.assertEqual([item["symbol"] for item in documents[0]], ["2330"])
+        self.assertEqual(documents[1], [])
+
     def test_client_disconnect_while_writing_a_read_response_is_silent(self) -> None:
         handler = GatewayHandler.__new__(GatewayHandler)
         handler.send_response = Mock()

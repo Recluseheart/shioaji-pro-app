@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
 from typing import Mapping, Protocol, cast
@@ -195,6 +195,9 @@ class PluginStrategyRuntime(StrategyRuntime):
     signal_type = "PLUGIN_SIGNAL"
     execution_mode = "OBSERVE"
     market_driven = True
+    # Set by the execution service in SIM only: the simulation broker accepts
+    # CB prices only on this step, although the real CB tick is finer.
+    cb_price_step: Decimal | None = None
 
     def __init__(
         self,
@@ -446,22 +449,23 @@ class PluginStrategyRuntime(StrategyRuntime):
     def dry_run_document(self) -> dict[str, object]:
         markets, positions, contexts = self._views()
         try:
-            proposals = self.plugin.decide(self.config, markets, positions, self._activity())
+            raw = self.plugin.decide(self.config, markets, positions, self._activity())
         except Exception as error:  # noqa: BLE001 - private code must not crash the Gateway
             return {"mode": "DRY_RUN", "would_persist": False, "would_create_outbox": False,
                     "would_dispatch_broker": False, "risk": {"allowed": False, "reasons": ["strategy_error"]},
                     "error": type(error).__name__}
         results: list[dict[str, object]] = []
-        for proposal in proposals:
+        proposals = [self._priced(p) for p in raw]
+        for original, proposal in zip(raw, proposals):
             contract = self.resolver.resolve_contract(proposal.symbol)
             if contract is None or proposal.symbol not in self.allowed_symbols:
-                results.append({"proposal": self._proposal_document(proposal),
+                results.append({"proposal": self._proposal_document(proposal, original),
                                 "risk": {"allowed": False, "reasons": ["symbol_not_configured"]}})
                 continue
             try:
                 parts = self._parts(proposal, contract)
             except ValueError:
-                results.append({"proposal": self._proposal_document(proposal),
+                results.append({"proposal": self._proposal_document(proposal, original),
                                 "risk": {"allowed": False, "reasons": ["invalid_quantity"]}})
                 continue
             # Each part is evaluated alone; a later part is only sent after the
@@ -471,7 +475,7 @@ class PluginStrategyRuntime(StrategyRuntime):
                 intent = self._intent(proposal, contract, "preview", datetime.now(timezone.utc), part)
                 verdict = self._coordinator.risk.evaluate(intent, self._coordinator.gate, contexts.get(proposal.symbol))
                 reasons.extend(reason for reason in verdict.reasons if reason not in reasons)
-            results.append({"proposal": self._proposal_document(proposal),
+            results.append({"proposal": self._proposal_document(proposal, original),
                             "orders": [{"lot": part.lot, "quantity": part.quantity} for part in parts],
                             "risk": {"allowed": not reasons, "reasons": reasons}})
         first = results[0]["risk"] if results else {"allowed": False, "reasons": ["no_signal_condition"]}
@@ -490,9 +494,14 @@ class PluginStrategyRuntime(StrategyRuntime):
         }
 
     @staticmethod
-    def _proposal_document(proposal: OrderProposal) -> dict[str, object]:
-        return {"symbol": proposal.symbol, "side": proposal.side, "quantity": proposal.quantity,
-                "price": str(proposal.price), "lot": proposal.lot, "reason": proposal.reason}
+    def _proposal_document(proposal: OrderProposal, original: OrderProposal | None = None) -> dict[str, object]:
+        document: dict[str, object] = {
+            "symbol": proposal.symbol, "side": proposal.side, "quantity": proposal.quantity,
+            "price": str(proposal.price), "lot": proposal.lot, "reason": proposal.reason,
+        }
+        if original is not None and original.price != proposal.price:
+            document["original_price"] = str(original.price)
+        return document
 
     def on_tick(self) -> RiskContext:
         """Evaluate the plugin once; at most one new intent per tick."""
@@ -529,8 +538,22 @@ class PluginStrategyRuntime(StrategyRuntime):
                 self.control("pause")
                 return account_context
             for proposal in proposals[:1]:
-                self._submit(proposal, markets)
+                self._submit(self._priced(proposal), markets)
             return account_context
+
+    def _priced(self, proposal: OrderProposal) -> OrderProposal:
+        """Put a CB limit price on the configured price step (SIM only).
+
+        Buys round down and sells round up, so an order never pays more or
+        receives less than the strategy asked for.
+        """
+        step = self.cb_price_step
+        if step is None or proposal.symbol not in self._coordinator.risk.limits.board_lot_only_symbols:
+            return proposal
+        price = Decimal(str(proposal.price))
+        rounding = ROUND_FLOOR if proposal.side == "BUY" else ROUND_CEILING
+        stepped = (price / step).to_integral_value(rounding) * step
+        return proposal if stepped == price else replace(proposal, price=stepped)
 
     def _advance_queued_part(self) -> None:
         """Send the odd-lot remainder only after the board-lot part fully filled.

@@ -1819,7 +1819,7 @@ def _create_server(
         )
         from .strategy_plugins import load_private_strategy
         try:
-            limits = risk_limits_from_environment(os.environ)
+            limits = risk_limits_from_environment(os.environ, selected_runtime)
             strategy_name = os.getenv("AUTOTRADE_STRATEGY", "price-threshold")
             plugin = None
             if strategy_name != "price-threshold":

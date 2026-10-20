@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 from services.autotrade_gateway.execution_service import ExecutionService, PaperTransport
@@ -119,6 +120,33 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertEqual(document["proposals"][0]["proposal"]["side"], "BUY")
         self.assertEqual(self.store.observation_orders(), [])
         self.assertEqual(self.strategy.observations()[0]["config_schema"][0]["name"], "symbol")
+
+    def test_sim_cb_prices_go_on_the_half_point_step_in_the_safe_direction(self):
+        self.assertIsNone(self.strategy.cb_price_step)  # PAPER keeps the real price
+        self.strategy.cb_price_step = Decimal("0.5")    # what the SIM service sets
+        self.broker.set_price("99991", Decimal("102.05"))
+        self.configure()
+        proposal = self.strategy.dry_run_document()["proposals"][0]["proposal"]
+        self.assertEqual((proposal["price"], proposal["original_price"]), ("102.0", "102.05"))
+        self.configure(side="SELL")
+        self.assertEqual(self.strategy.dry_run_document()["proposals"][0]["proposal"]["price"], "102.5")
+        self.broker.set_price("99991", Decimal("103.5"))
+        self.assertEqual(self.strategy.dry_run_document()["proposals"][0]["proposal"]["price"], "103.5")
+        self.configure(symbol="2330", quantity=1)
+        self.broker.set_price("2330", Decimal("1002.5"))
+        self.assertEqual(self.strategy.dry_run_document()["proposals"][0]["proposal"]["price"], "1002.5")
+
+    def test_sim_cb_order_is_sent_at_the_stepped_price(self):
+        self.strategy.cb_price_step = Decimal("0.5")
+        self.broker.set_price("99991", Decimal("102.05"))
+        self.configure()
+        self.service.control("arm", "plugin test", "arm-step")
+        self.strategy.control("start")
+        self.service.tick()
+        order = self.store.observation_orders()[0]
+        self.assertEqual(order["limit_price"], "102.0")
+        intent = self.store.load_intent(str(order["intent_id"]))
+        self.assertEqual(intent.broker_request["body"]["stock_order"]["price"], 102.0)
 
     def test_convertible_bond_signal_reaches_a_board_lot_fill_once(self):
         self.configure()

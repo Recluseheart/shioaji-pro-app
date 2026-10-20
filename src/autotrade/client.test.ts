@@ -327,6 +327,13 @@ describe('Strategy dry-run details', () => {
             '條件：目前成立，啟動並啟用交易閘門後可能立即下單',
             '預計委託：2330 買 1500 股 @ 100（整股 1 張＋零股 500 股） · 風控拒絕（交易閘門尚未啟用）',
         ]);
+        expect(dryRunDetails({
+            mode: 'DRY_RUN',
+            proposals: [{
+                proposal: { symbol: '99991', side: 'BUY', quantity: 1000, price: '102.0', original_price: '102.05' },
+                orders: [{ lot: 'Common', quantity: 1 }], risk: { allowed: true, reasons: [] },
+            }],
+        })).toEqual(['預計委託：99991 買 1000 股 @ 102.0（模擬盤價位取整，原價 102.05）（整股 1 張） · 風控允許']);
         expect(dryRunDetails({ mode: 'DRY_RUN' })).toEqual([]);
     });
 });
